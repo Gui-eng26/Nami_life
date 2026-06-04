@@ -15,6 +15,7 @@ export async function sendTextMessage(phone, message) {
         }, {
             headers: {
                 'Content-Type': 'application/json',
+                'Client-Token': process.env.ZAPI_CLIENT_TOKEN
             }
         });
 
