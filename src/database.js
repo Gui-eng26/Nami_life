@@ -42,6 +42,15 @@ export async function updateUserName(userId, name) {
     if (error) throw new Error(`Erro ao atualizar nome: ${error.message}`);
 }
 
+export async function updateUser(userId, fields) {
+    const { error } = await supabase
+        .from('users')
+        .update({ ...fields, updated_at: new Date().toISOString() })
+        .eq('id', userId);
+
+    if (error) throw new Error(`Erro ao atualizar usuário: ${error.message}`);
+}
+
 // ============================================================
 // ESTADO DA CONVERSA
 // ============================================================
@@ -68,6 +77,10 @@ export async function updateConversationState(userId, state, context = {}) {
         }, { onConflict: 'user_id' });
 
     if (error) throw new Error(`Erro ao atualizar estado: ${error.message}`);
+}
+
+export async function saveConversationState(userId, { state, context }) {
+    return updateConversationState(userId, state, context);
 }
 
 // ============================================================
@@ -257,4 +270,21 @@ export async function getPendingReminders() {
         return [];
     }
     return data || [];
+}
+
+// ============================================================
+// LOGS DE AGENTES
+// ============================================================
+
+export async function logAgentInteraction({ userId, agent, userMessage, agentResponse }) {
+    const { error } = await supabase
+        .from('agent_logs')
+        .insert({
+            user_id: userId,
+            agent,
+            user_message: userMessage,
+            agent_response: agentResponse
+        });
+
+    if (error) console.error(`Erro ao salvar log de agente: ${error.message}`);
 }
