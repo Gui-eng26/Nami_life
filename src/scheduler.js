@@ -1,7 +1,8 @@
 import cron from 'node-cron';
 import 'dotenv/config';
-import { getPendingReminders, createDoseLog } from './database.js';
+import { getPendingReminders, getPendingFollowUps, createDoseLog } from './database.js';
 import { sendTextMessage } from './whatsapp.js';
+import { handleFollowUp } from './agentes/lembrete.js';
 
 // ============================================================
 // INICIA O SCHEDULER
@@ -11,34 +12,65 @@ import { sendTextMessage } from './whatsapp.js';
 export function startScheduler() {
     console.log('⏰ Scheduler da Nami iniciado...');
 
-    // Roda a cada minuto
-    // para: roda a cada 2 minutos e só loga se tiver lembretes
+    // Roda a cada 2 minutos
     cron.schedule('*/2 * * * *', async () => {
         await checkAndSendReminders();
     });
 }
 
 // ============================================================
-// VERIFICA E DISPARA LEMBRETES
+// VERIFICA E DISPARA LEMBRETES + FOLLOW-UPS
 // ============================================================
 
 async function checkAndSendReminders() {
     try {
+        // 1. Lembretes novos (lógica existente)
         const reminders = await getPendingReminders();
 
-        if (reminders.length === 0) return;
+        if (reminders.length > 0) {
+            console.log(`💊 ${reminders.length} lembrete(s) para disparar...`);
 
-        console.log(`💊 ${reminders.length} lembrete(s) para disparar...`);
-
-        for (const reminder of reminders) {
-            await sendReminder(reminder);
-
-            // Pequena pausa entre envios para não sobrecarregar a API
-            await sleep(1000);
+            for (const reminder of reminders) {
+                await sendReminder(reminder);
+                await sleep(1000);
+            }
         }
+
+        // 2. Follow-ups de doses sem resposta
+        await checkAndSendFollowUps();
 
     } catch (error) {
         console.error('❌ Erro no scheduler:', error.message);
+    }
+}
+
+// ============================================================
+// VERIFICA E DISPARA FOLLOW-UPS
+// ============================================================
+
+async function checkAndSendFollowUps() {
+    try {
+        const pendentes = await getPendingFollowUps();
+        if (pendentes.length === 0) return;
+
+        console.log(`🔔 ${pendentes.length} follow-up(s) para verificar...`);
+
+        for (const item of pendentes) {
+            const minutosSinceUltima = getMinutosSince(item.ultima_tentativa_at);
+            const tentativas = item.tentativas || 1;
+
+            const deveReenviar =
+                (tentativas === 1 && minutosSinceUltima >= 30) ||
+                (tentativas === 2 && minutosSinceUltima >= 60) ||
+                (tentativas === 3 && minutosSinceUltima >= 30);
+
+            if (deveReenviar) {
+                await handleFollowUp({ doseLog: item, reminder: item });
+                await sleep(1000);
+            }
+        }
+    } catch (error) {
+        console.error('❌ Erro nos follow-ups:', error.message);
     }
 }
 
@@ -52,13 +84,10 @@ async function sendReminder(reminder) {
             ? reminder.user_name.split(' ')[0]
             : 'você';
 
-        // Monta a mensagem de lembrete
         const message = buildReminderMessage(firstName, reminder);
 
-        // Envia a mensagem
         await sendTextMessage(reminder.phone, message);
 
-        // Registra no banco que o lembrete foi enviado
         await createDoseLog({
             medicationId: reminder.medication_id,
             scheduledAt: new Date().toISOString(),
@@ -114,9 +143,14 @@ async function sendLowStockAlert(reminder) {
 }
 
 // ============================================================
-// UTILITÁRIO
+// UTILITÁRIOS
 // ============================================================
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getMinutosSince(timestamp) {
+    if (!timestamp) return 0;
+    return (Date.now() - new Date(timestamp).getTime()) / 60000;
 }

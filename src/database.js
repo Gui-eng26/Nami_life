@@ -196,13 +196,17 @@ export async function saveSchedule({ medicationId, horario }) {
 // ============================================================
 
 export async function createDoseLog({ medicationId, scheduledAt, reminderSent, reminderSentAt }) {
+    const now = new Date().toISOString();
     const { data, error } = await supabase
         .from('dose_logs')
         .insert({
             medication_id: medicationId,
             scheduled_at: scheduledAt,
             reminder_sent: reminderSent,
-            reminder_sent_at: reminderSentAt
+            reminder_sent_at: reminderSentAt,
+            tentativas: 1,
+            ultima_tentativa_at: now,
+            status: 'pendente'
         })
         .select()
         .single();
@@ -229,7 +233,8 @@ export async function confirmDose(medicationId) {
         .from('dose_logs')
         .update({
             confirmed: true,
-            taken_at: new Date().toISOString()
+            taken_at: new Date().toISOString(),
+            status: 'confirmado'
         })
         .eq('id', log.id);
 
@@ -261,6 +266,92 @@ export async function getRecentDoses(userId, days = 3) {
 
     if (error) return [];
     return data || [];
+}
+
+// ============================================================
+// FOLLOW-UP DE DOSES (usado pelo agente_lembrete)
+// ============================================================
+
+export async function getPendingFollowUps() {
+    // Retorna dose_logs pendentes com dados de medicamento, schedule e usuário
+    const { data, error } = await supabase
+        .from('dose_logs')
+        .select(`
+            *,
+            medications (
+                id, nome, dosagem, user_id,
+                users (id, phone, name)
+            )
+        `)
+        .eq('status', 'pendente')
+        .eq('reminder_sent', true)
+        .eq('confirmed', false)
+        .not('ultima_tentativa_at', 'is', null);
+
+    if (error) {
+        console.error('Erro ao buscar follow-ups:', error.message);
+        return [];
+    }
+
+    // Normaliza para facilitar o uso no agente
+    return (data || []).map(log => ({
+        ...log,
+        med_nome: log.medications?.nome,
+        med_dosagem: log.medications?.dosagem,
+        user_id: log.medications?.user_id,
+        phone: log.medications?.users?.phone,
+        user_name: log.medications?.users?.name
+    }));
+}
+
+export async function updateDoseLogTentativa(doseLogId, tentativas) {
+    const { error } = await supabase
+        .from('dose_logs')
+        .update({
+            tentativas,
+            ultima_tentativa_at: new Date().toISOString()
+        })
+        .eq('id', doseLogId);
+
+    if (error) throw new Error(`Erro ao atualizar tentativa: ${error.message}`);
+}
+
+export async function markAsNaoInformado(doseLogId) {
+    const { error } = await supabase
+        .from('dose_logs')
+        .update({ status: 'nao_informado' })
+        .eq('id', doseLogId);
+
+    if (error) throw new Error(`Erro ao marcar nao_informado: ${error.message}`);
+}
+
+export async function getCaregivers(userId) {
+    const { data, error } = await supabase
+        .from('care_network')
+        .select(`
+            *,
+            caregiver:caregiver_id (id, phone, name)
+        `)
+        .eq('user_id', userId)
+        .eq('status', 'active');
+
+    if (error) {
+        console.error('Erro ao buscar cuidadores:', error.message);
+        return [];
+    }
+    return data || [];
+}
+
+export async function markCaregiverNotified(doseLogId) {
+    const { error } = await supabase
+        .from('dose_logs')
+        .update({
+            caregiver_notified: true,
+            caregiver_notified_at: new Date().toISOString()
+        })
+        .eq('id', doseLogId);
+
+    if (error) throw new Error(`Erro ao marcar cuidador notificado: ${error.message}`);
 }
 
 // ============================================================
