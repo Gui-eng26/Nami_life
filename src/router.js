@@ -36,7 +36,10 @@ export async function routeMessage({ user, message, image }) {
         response = await handleRecepcionista({
             user,
             message,
-            context: state?.context || {}
+            context: {
+                ...state?.context,
+                mensagem_inicial: state?.context?.mensagem_inicial || message
+            }
         });
 
     // 2. Usuário já está em fluxo de cadastro → agente_cadastro
