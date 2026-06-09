@@ -4,9 +4,6 @@ import { NAMI_SYSTEM_PROMPT } from '../prompts.js';
 import {
     getConversationState,
     updateConversationState,
-    saveMedication,
-    replaceMedication,
-    saveSchedule,
     confirmDose,
     updateUserName,
     getRecentDoses,
@@ -117,78 +114,14 @@ async function processAction(action, user) {
 
         case 'SET_USER_NAME':
             await updateUserName(user.id, action.name);
-            return { newState: 'adding_med' };
-
-        case 'SAVE_MEDICATION': {
-            const med = await saveMedication({
-                userId: user.id,
-                nome: action.nome,
-                dosagem: action.dosagem,
-                instrucoes: action.instrucoes || null,
-                estoque: action.estoque || 0
-            });
-
-            if (med.isDuplicate) {
-                return {
-                    message:
-                        `${user.name || 'Oi'}, já tenho o *${med.nome}* cadastrado! 💊\n\n` +
-                        `Cadastro atual: ${med.dosagem}, estoque: ${med.estoque_atual} unidades.\n\n` +
-                        `O que prefere?\n` +
-                        `1️⃣ *Substituir* — atualizar com as novas informações\n` +
-                        `2️⃣ *Manter* — deixar como está`,
-                    newState: 'confirming_duplicate',
-                    context: {
-                        medicationId: med.id,
-                        nome: action.nome,
-                        dosagem: action.dosagem,
-                        horarios: action.horarios,
-                        estoque: action.estoque
-                    }
-                };
-            }
-
-            if (action.horarios && action.horarios.length > 0) {
-                for (let horario of action.horarios) {
-                    if (typeof horario === 'object') {
-                        horario = horario.horario || horario.hora || Object.values(horario)[0];
-                    }
-                    const horarioStr = String(horario).trim().substring(0, 5);
-                    await saveSchedule({ medicationId: med.id, horario: horarioStr });
-                }
-            }
             return null;
-        }
-
-        case 'REPLACE_MEDICATION': {
-            await replaceMedication({
-                medicationId: action.medicationId,
-                dosagem: action.dosagem,
-                instrucoes: action.instrucoes || null,
-                estoque: action.estoque || 0,
-                horarios: action.horarios
-            });
-            return null;
-        }
-
-        case 'ADD_SCHEDULE': {
-            if (action.medicationId && action.horarios) {
-                for (let horario of action.horarios) {
-                    if (typeof horario === 'object') {
-                        horario = horario.horario || horario.hora || Object.values(horario)[0];
-                    }
-                    const horarioStr = String(horario).trim().substring(0, 5);
-                    await saveSchedule({ medicationId: action.medicationId, horario: horarioStr });
-                }
-            }
-            return null;
-        }
 
         case 'CONFIRM_DOSE':
             await confirmDose(action.medicationId);
             return null;
 
         default:
-            console.warn(`⚠️ Ação desconhecida: ${action.type}`);
+            console.warn(`⚠️ Ação desconhecida no agente principal: ${action.type}`);
             return null;
     }
 }

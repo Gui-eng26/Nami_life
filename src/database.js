@@ -87,7 +87,10 @@ export async function saveConversationState(userId, { state, context }) {
 // MEDICAMENTOS
 // ============================================================
 
-export async function saveMedication({ userId, nome, dosagem, instrucoes, estoque }) {
+export async function saveMedication({
+    userId, nome, dosagem, instrucoes, estoque,
+    forma, tipo_tratamento, tratamento_dias
+}) {
     // Verifica se já existe medicamento com mesmo nome
     const { data: existing } = await supabase
         .from('medications')
@@ -109,9 +112,12 @@ export async function saveMedication({ userId, nome, dosagem, instrucoes, estoqu
             user_id: userId,
             nome,
             dosagem,
-            instrucoes,
+            instrucoes: instrucoes || null,
             estoque_atual: estoque || 0,
-            estoque_minimo: 7
+            estoque_minimo: 7,
+            forma_farmaceutica: forma || 'comprimido',
+            tipo_tratamento: tipo_tratamento || 'continuo',
+            tratamento_dias: tratamento_dias || null
         })
         .select()
         .single();
