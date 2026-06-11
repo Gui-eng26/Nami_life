@@ -212,6 +212,7 @@ export async function createDoseLog({ medicationId, scheduledAt, reminderSent, r
         .single();
 
     if (error) throw new Error(`Erro ao criar log de dose: ${error.message}`);
+    console.log(`📝 DoseLog criado — tentativas: ${data.tentativas}, status: ${data.status}`);
     return data;
 }
 
@@ -237,6 +238,7 @@ export async function confirmDose(medicationId) {
             status: 'confirmado'
         })
         .eq('id', log.id);
+    console.log(`✅ Dose confirmada — log id: ${log.id}`);
 
     // Decrementa o estoque
     const { data: med } = await supabase
