@@ -370,6 +370,246 @@ export async function getPendingReminders() {
 }
 
 // ============================================================
+// RELATÓRIOS — CONSULTAS DE HISTÓRICO E ADESÃO
+// ============================================================
+
+// Doses de hoje — separadas em tomadas e pendentes
+export async function getDosesHoje(userId) {
+    // Início do dia de hoje no fuso de Brasília convertido para UTC
+    const agora = new Date();
+    const inicioDia = new Date(
+        agora.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
+            .split('/')
+            .reverse()
+            .join('-') + 'T03:00:00.000Z' // BRT = UTC-3, então meia-noite BRT = 03:00 UTC
+    );
+
+    const { data: tomadas } = await supabase
+        .from('dose_logs')
+        .select('*, medications(id, nome, user_id)')
+        .eq('confirmed', true)
+        .gte('taken_at', inicioDia.toISOString())
+        .eq('medications.user_id', userId);
+
+    const tomadasFiltradas = (tomadas || [])
+        .filter(d => d.medications?.user_id === userId)
+        .map(d => ({
+            medication_id: d.medication_id,
+            med_nome: d.medications.nome,
+            taken_at: d.taken_at
+        }));
+
+    // Schedules ativos sem dose confirmada hoje
+    const medications = await getUserMedications(userId);
+    const tomadosIds = tomadasFiltradas.map(d => d.medication_id);
+
+    const pendentes = [];
+    for (const med of medications) {
+        if (!tomadosIds.includes(med.id)) {
+            const schedules = (med.schedules || []).filter(s => s.ativo);
+            if (schedules.length > 0) {
+                pendentes.push({
+                    medication_id: med.id,
+                    med_nome: med.nome,
+                    horario: schedules[0].horario
+                });
+            }
+        }
+    }
+
+    return { tomadas: tomadasFiltradas, pendentes };
+}
+
+// Medicamentos ativos — alias semântico para getUserMedications
+export async function getMedicamentosAtivos(userId) {
+    return getUserMedications(userId);
+}
+
+// Estoque de todos os medicamentos ativos
+export async function getEstoque(userId) {
+    const { data } = await supabase
+        .from('medications')
+        .select('id, nome, estoque_atual, estoque_minimo, forma_farmaceutica')
+        .eq('user_id', userId)
+        .eq('ativo', true);
+    return data || [];
+}
+
+// Próximos medicamentos com base no horário atual (fuso Brasília)
+export async function getProximosMedicamentos(userId) {
+    const horaAtual = new Date().toLocaleTimeString('pt-BR', {
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: 'America/Sao_Paulo'
+    }); // "HH:MM"
+
+    const medications = await getUserMedications(userId);
+    const dosesHoje = await getDosesHoje(userId);
+    const tomadosIds = dosesHoje.tomadas.map(d => d.medication_id);
+
+    const passados = [];
+    const agoraList = [];
+    const proximos = [];
+
+    for (const med of medications) {
+        for (const schedule of (med.schedules || []).filter(s => s.ativo)) {
+            const horario = schedule.horario.substring(0, 5);
+            const confirmado = tomadosIds.includes(med.id);
+            const diff = _minutesDiff(horaAtual, horario);
+
+            if (diff < -120) {
+                passados.push({ nome: med.nome, horario, confirmado });
+            } else if (diff >= -120 && diff <= 30) {
+                agoraList.push({ nome: med.nome, horario, confirmado });
+            } else {
+                proximos.push({ nome: med.nome, horario });
+            }
+        }
+    }
+
+    // Ordena cada lista por horário
+    const byHorario = (a, b) => a.horario.localeCompare(b.horario);
+    return {
+        passados: passados.sort(byHorario),
+        agora: agoraList.sort(byHorario),
+        proximos: proximos.sort(byHorario)
+    };
+}
+
+// Diferença em minutos entre horaAtual (HH:MM) e horarioAlvo (HH:MM)
+// Positivo = alvo está no futuro; negativo = alvo está no passado
+function _minutesDiff(horaAtual, horarioAlvo) {
+    const [hA, mA] = horaAtual.split(':').map(Number);
+    const [hT, mT] = horarioAlvo.split(':').map(Number);
+    return (hT * 60 + mT) - (hA * 60 + mA);
+}
+
+// Adesão em um período (em dias) para um usuário
+export async function getAdesaoPeriodo(userId, dias = 7) {
+    const desde = new Date();
+    desde.setDate(desde.getDate() - dias);
+
+    const medications = await getUserMedications(userId);
+
+    let totalEsperado = 0;
+    let totalConfirmado = 0;
+    let piorMedicamento = null;
+    let piorPercentual = 101; // começa acima de 100 para capturar o menor
+
+    for (const med of medications) {
+        const schedulesAtivos = (med.schedules || []).filter(s => s.ativo).length;
+        if (schedulesAtivos === 0) continue;
+
+        const esperado = schedulesAtivos * dias;
+        totalEsperado += esperado;
+
+        const { data: confirmadas } = await supabase
+            .from('dose_logs')
+            .select('id')
+            .eq('medication_id', med.id)
+            .eq('confirmed', true)
+            .gte('taken_at', desde.toISOString());
+
+        const confirmado = (confirmadas || []).length;
+        totalConfirmado += confirmado;
+
+        const pct = Math.round((confirmado / esperado) * 100);
+        if (pct < piorPercentual) {
+            piorPercentual = pct;
+            piorMedicamento = med.nome;
+        }
+    }
+
+    const percentual = totalEsperado > 0
+        ? Math.round((totalConfirmado / totalEsperado) * 100)
+        : 0;
+
+    return { totalEsperado, totalConfirmado, percentual, piorMedicamento };
+}
+
+// Adesão detalhada por medicamento — usada no resumo semanal
+// Retorna breakdown individual + totais gerais
+export async function getAdesaoPorMedicamento(userId, dias = 7) {
+    const desde = new Date();
+    desde.setDate(desde.getDate() - dias);
+
+    const medications = await getUserMedications(userId);
+    const estoque = await (async () => {
+        const { data } = await supabase
+            .from('medications')
+            .select('id, estoque_atual, estoque_minimo')
+            .eq('user_id', userId)
+            .eq('ativo', true);
+        return data || [];
+    })();
+    const estoqueMap = Object.fromEntries(estoque.map(m => [m.id, m]));
+
+    let totalEsperado = 0;
+    let totalConfirmado = 0;
+    const porMedicamento = [];
+
+    for (const med of medications) {
+        const schedulesAtivos = (med.schedules || []).filter(s => s.ativo).length;
+        if (schedulesAtivos === 0) continue;
+
+        const esperado = schedulesAtivos * dias;
+        totalEsperado += esperado;
+
+        const { data: confirmadas } = await supabase
+            .from('dose_logs')
+            .select('id')
+            .eq('medication_id', med.id)
+            .eq('confirmed', true)
+            .gte('taken_at', desde.toISOString());
+
+        const confirmado = (confirmadas || []).length;
+        const naoRegistrado = esperado - confirmado;
+        totalConfirmado += confirmado;
+
+        const percentual = Math.round((confirmado / esperado) * 100);
+        const estoqueInfo = estoqueMap[med.id];
+
+        porMedicamento.push({
+            nome: med.nome,
+            doses_esperadas: esperado,
+            doses_tomadas: confirmado,
+            doses_nao_registradas: naoRegistrado,
+            percentual,
+            estoque_atual: estoqueInfo?.estoque_atual ?? null,
+            estoque_minimo: estoqueInfo?.estoque_minimo ?? 7,
+            estoque_status: estoqueInfo
+                ? (estoqueInfo.estoque_atual <= 0
+                    ? 'critico'
+                    : estoqueInfo.estoque_atual <= estoqueInfo.estoque_minimo
+                        ? 'baixo'
+                        : 'ok')
+                : 'desconhecido'
+        });
+    }
+
+    const percentualGeral = totalEsperado > 0
+        ? Math.round((totalConfirmado / totalEsperado) * 100)
+        : 0;
+
+    return {
+        porMedicamento,
+        totalEsperado,
+        totalConfirmado,
+        totalNaoRegistrado: totalEsperado - totalConfirmado,
+        percentualGeral
+    };
+}
+
+// Buscar todos os usuários onboarded (para resumo semanal)
+export async function getUsuariosAtivos() {
+    const { data } = await supabase
+        .from('users')
+        .select('*')
+        .eq('onboarded', true);
+    return data || [];
+}
+
+// ============================================================
 // LOGS DE AGENTES
 // ============================================================
 

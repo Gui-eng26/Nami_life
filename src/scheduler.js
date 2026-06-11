@@ -1,8 +1,9 @@
 import cron from 'node-cron';
 import 'dotenv/config';
-import { getPendingReminders, getPendingFollowUps, createDoseLog } from './database.js';
+import { getPendingReminders, getPendingFollowUps, createDoseLog, getUsuariosAtivos } from './database.js';
 import { sendTextMessage } from './whatsapp.js';
 import { handleFollowUp } from './agentes/lembrete.js';
+import { enviarResumoSemanal } from './agentes/relatorios.js';
 
 // ============================================================
 // INICIA O SCHEDULER
@@ -12,10 +13,25 @@ import { handleFollowUp } from './agentes/lembrete.js';
 export function startScheduler() {
     console.log('⏰ Scheduler da Nami iniciado...');
 
-    // Roda a cada 2 minutos
+    // Lembretes e follow-ups — a cada 2 minutos
     cron.schedule('*/2 * * * *', async () => {
         await checkAndSendReminders();
     });
+
+    // Resumo semanal — toda segunda-feira às 08:00 (horário de Brasília)
+    cron.schedule('0 8 * * 1', async () => {
+        console.log('📊 Enviando resumos semanais...');
+        try {
+            const usuarios = await getUsuariosAtivos();
+            console.log(`📊 ${usuarios.length} usuário(s) para resumo semanal`);
+            for (const user of usuarios) {
+                await enviarResumoSemanal(user);
+                await sleep(2000);
+            }
+        } catch (error) {
+            console.error('❌ Erro ao enviar resumos semanais:', error.message);
+        }
+    }, { timezone: 'America/Sao_Paulo' });
 }
 
 // ============================================================
