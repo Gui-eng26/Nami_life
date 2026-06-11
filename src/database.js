@@ -384,23 +384,24 @@ export async function getDosesHoje(userId) {
             .join('-') + 'T03:00:00.000Z' // BRT = UTC-3, então meia-noite BRT = 03:00 UTC
     );
 
+    // Busca IDs dos medicamentos do usuário primeiro para filtrar corretamente
+    const medications = await getUserMedications(userId);
+    const medicationIds = medications.map(m => m.id);
+
     const { data: tomadas } = await supabase
         .from('dose_logs')
-        .select('*, medications(id, nome, user_id)')
+        .select('*, medications(id, nome)')
         .eq('confirmed', true)
-        .gte('taken_at', inicioDia.toISOString())
-        .eq('medications.user_id', userId);
+        .in('medication_id', medicationIds)
+        .gte('taken_at', inicioDia.toISOString());
 
-    const tomadasFiltradas = (tomadas || [])
-        .filter(d => d.medications?.user_id === userId)
-        .map(d => ({
-            medication_id: d.medication_id,
-            med_nome: d.medications.nome,
-            taken_at: d.taken_at
-        }));
+    const tomadasFiltradas = (tomadas || []).map(d => ({
+        medication_id: d.medication_id,
+        med_nome: d.medications?.nome,
+        taken_at: d.taken_at
+    }));
 
     // Schedules ativos sem dose confirmada hoje
-    const medications = await getUserMedications(userId);
     const tomadosIds = tomadasFiltradas.map(d => d.medication_id);
 
     const pendentes = [];

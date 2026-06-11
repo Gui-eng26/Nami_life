@@ -1,8 +1,17 @@
-import { getConversationState, logAgentInteraction } from './database.js';
+import { getConversationState, logAgentInteraction, getRecentDoses } from './database.js';
 import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
 import { handleCadastro } from './agentes/cadastro.js';
 import { handleRelatorios, classificarIntencaoRelatorio } from './agentes/relatorios.js';
+
+// ============================================================
+// DOSE PENDENTE DE CONFIRMAÇÃO
+// ============================================================
+
+async function temDosePendente(userId) {
+    const doses = await getRecentDoses(userId, 1);
+    return doses.some(d => d.reminder_sent === true && d.confirmed === false);
+}
 
 // ============================================================
 // DETECÇÃO DE INTENÇÃO DE CADASTRO
@@ -65,7 +74,13 @@ export async function routeMessage({ user, message, image }) {
             context: { etapa: 'cad_nome' }
         });
 
-    // 4. Usuário idle com intenção de relatório → agente_relatorios
+    // 4. PRIORIDADE: dose pendente de confirmação → principal (antes dos relatórios)
+    } else if (currentState === 'idle' && await temDosePendente(user.id)) {
+        agentName = 'principal';
+        console.log(`💊 Dose pendente detectada, roteando para principal — ${user.phone}`);
+        response = await handlePrincipal({ user, message, image });
+
+    // 5. Usuário idle com intenção de relatório → agente_relatorios
     } else if (currentState === 'idle' && classificarIntencaoRelatorio(message)) {
         agentName = 'relatorios';
         console.log(`📊 Roteando para relatorios — ${user.phone}`);
@@ -80,7 +95,7 @@ export async function routeMessage({ user, message, image }) {
             response = await handlePrincipal({ user, message, image });
         }
 
-    // 5. Demais casos → agente_principal
+    // 6. Demais casos → agente_principal
     } else {
         agentName = 'principal';
         console.log(`🤖 Roteando para principal — ${user.phone}`);
