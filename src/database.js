@@ -256,18 +256,32 @@ export async function getRecentDoses(userId, days = 3) {
     const since = new Date();
     since.setDate(since.getDate() - days);
 
+    // Busca IDs dos medicamentos do usuário primeiro (mesmo padrão do BUG-017)
+    const { data: meds } = await supabase
+        .from('medications')
+        .select('id, nome')
+        .eq('user_id', userId)
+        .eq('ativo', true);
+
+    if (!meds || meds.length === 0) return [];
+
+    const medicationIds = meds.map(m => m.id);
+    const medNomeMap = Object.fromEntries(meds.map(m => [m.id, m.nome]));
+
     const { data, error } = await supabase
         .from('dose_logs')
-        .select(`
-      *,
-      medications (nome, user_id)
-    `)
+        .select('*')
+        .in('medication_id', medicationIds)
         .gte('scheduled_at', since.toISOString())
-        .eq('medications.user_id', userId)
         .order('scheduled_at', { ascending: false });
 
     if (error) return [];
-    return data || [];
+
+    // Reconstrói o shape esperado pelos consumers (medications.nome e medications.user_id)
+    return (data || []).map(d => ({
+        ...d,
+        medications: { nome: medNomeMap[d.medication_id], user_id: userId }
+    }));
 }
 
 // ============================================================

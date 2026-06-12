@@ -32,6 +32,18 @@ async function temDosePendente(userId) {
 }
 
 // ============================================================
+// DETECÇÃO DE CONFIRMAÇÃO DE DOSE
+// ============================================================
+
+function detectarConfirmacaoDose(message) {
+    if (!message) return false;
+    const termos = ['sim', 'tomei', 'já tomei', 'pode', 'ok', 'claro',
+        'feito', 'tá', 'foi', 'tomei sim', 'já tomei sim'];
+    const msg = message.toLowerCase().trim();
+    return termos.some(t => msg.includes(t));
+}
+
+// ============================================================
 // DETECÇÃO DE INTENÇÃO DE CADASTRO
 // ============================================================
 
@@ -97,10 +109,12 @@ export async function routeMessage({ user, message, image, messageId }) {
             context: { etapa: 'cad_nome' }
         });
 
-    // 4. PRIORIDADE: dose pendente de confirmação → principal (antes dos relatórios)
-    } else if (currentState === 'idle' && await temDosePendente(user.id)) {
+    // 4. PRIORIDADE: confirmação de dose — só intercepta se mensagem É confirmação E há dose real pendente
+    } else if (currentState === 'idle'
+        && detectarConfirmacaoDose(message)
+        && await temDosePendente(user.id)) {
         agentName = 'principal';
-        console.log(`💊 Dose pendente detectada, roteando para principal — ${user.phone}`);
+        console.log(`💊 Confirmação de dose detectada, roteando para principal — ${user.phone}`);
         response = await handlePrincipal({ user, message, image });
 
     // 5. Usuário idle com intenção de relatório → agente_relatorios

@@ -23,31 +23,53 @@ export function classificarIntencaoRelatorio(message) {
 
     const padroes = {
         tomei_hoje: [
-            'tomei hoje', 'já tomei', 'tomei alguma', 'registrei hoje',
-            'esqueci de tomar hoje', 'já tomei meus', 'tomei tudo',
-            'tomei o remédio', 'tomei meus remédios'
+            'tomei hoje?',
+            'já tomei meus remédios',
+            'tomei alguma coisa hoje',
+            'registrei hoje',
+            'esqueci de tomar hoje',
+            'tomei tudo hoje',
+            'tomei o remédio hoje'
         ],
         meus_remedios: [
-            'quais meus remédios', 'que remédios tenho', 'o que tenho cadastrado',
-            'quais remédios eu tomo', 'me mostra meus remédios', 'meus remédios',
-            'lista meus', 'remédios cadastrados', 'que remédios eu tomo'
+            'quais meus remédios',
+            'que remédios tenho',
+            'o que tenho cadastrado',
+            'quais remédios eu tomo',
+            'me mostra meus remédios',
+            'lista meus remédios',
+            'remédios cadastrados',
+            'quais são meus remédios',
+            'ver meus remédios'
         ],
         estoque: [
-            'quanto tenho', 'tô ficando sem', 'quando preciso comprar',
-            'quanto sobrou', 'falta muito', 'meu estoque', 'preciso comprar',
-            'quanto tenho ainda', 'tô sem remédio'
+            'quanto tenho de cada',
+            'tô ficando sem remédio',
+            'quando preciso comprar',
+            'quanto sobrou',
+            'como está meu estoque',
+            'preciso comprar remédio',
+            'quanto tenho ainda de',
+            'tô sem remédio'
         ],
         proximo_remedio: [
-            'que tomar agora', 'próximo remédio', 'tenho remédio pra tomar',
-            'esqueci de tomar alguma', 'que remédio tomo', 'o que devo tomar',
-            'qual o próximo', 'devo tomar agora', 'o que tenho que tomar',
-            'que horas é o próximo'
+            'o que tenho que tomar',
+            'que horas é o próximo',
+            'tenho remédio pra tomar agora',
+            'esqueci de tomar alguma coisa',
+            'qual o próximo remédio',
+            'o que devo tomar agora',
+            'que remédio tomo agora'
         ],
         adesao: [
-            'esqueci muito', 'tenho esquecido', 'minha adesão', 'tô tomando direitinho',
-            'doses perdi', 'faltei alguma dose', 'como tá meu histórico',
-            'tô me cuidando', 'quantas vezes esqueci', 'minha adesão tá',
-            'tomando certinho', 'me cuidando bem'
+            'quantas vezes esqueci',
+            'tenho esquecido muito',
+            'como está minha adesão',
+            'tô tomando direitinho',
+            'quantas doses perdi',
+            'faltei alguma dose',
+            'como tá meu histórico',
+            'tô me cuidando bem'
         ]
     };
 
