@@ -191,6 +191,16 @@ export async function saveSchedule({ medicationId, horario }) {
     if (error) throw new Error(`Erro ao salvar horário: ${error.message}`);
 }
 
+// Busca o número de schedules ativos de um medicamento (= doses por dia)
+export async function getMedicamentoDosesPerDia(medicationId) {
+    const { data } = await supabase
+        .from('schedules')
+        .select('id')
+        .eq('medication_id', medicationId)
+        .eq('ativo', true);
+    return (data || []).length;
+}
+
 // ============================================================
 // REGISTRO DE DOSES
 // ============================================================

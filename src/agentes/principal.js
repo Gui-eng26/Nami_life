@@ -7,7 +7,8 @@ import {
     confirmDose,
     updateUserName,
     getRecentDoses,
-    getUserMedications
+    getUserMedications,
+    updateMedicationStock
 } from '../database.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -118,6 +119,10 @@ async function processAction(action, user) {
 
         case 'CONFIRM_DOSE':
             await confirmDose(action.medicationId);
+            return null;
+
+        case 'UPDATE_STOCK':
+            await updateMedicationStock(action.medicationId, action.quantidade);
             return null;
 
         default:

@@ -64,6 +64,24 @@ cad_estoque:
   - pomada → "Quantos tubos você tem agora?"
   - outros → "Qual a quantidade em estoque?"
 
+SE etapa = 'cad_estoque' E context.alerta_estoque_baixo existe:
+  Após registrar a quantidade informada, inclua um aviso natural antes
+  de avançar para a confirmação.
+  Use os valores de context.alerta_estoque_baixo: dias_restantes, estoque, doses_por_dia.
+
+  Exemplo (dias_restantes = 0):
+  "Entendi! Só um aviso: com {estoque} comprimido(s) e {doses_por_dia}x ao dia,
+   você já está sem estoque suficiente para hoje mesmo. Quer cadastrar
+   assim mesmo e comprar mais em breve, ou prefere registrar a quantidade
+   depois da compra?"
+
+  Exemplo (dias_restantes <= 5):
+  "Anotado! Só um aviso: com {estoque} comprimido(s) e {doses_por_dia}x ao dia,
+   seu estoque dura apenas {dias_restantes} dias. Não se esqueça de fazer a
+   recompra em breve! Vou te lembrar quando estiver acabando. 💊"
+
+  Se dias_restantes > 5: seguir normalmente para confirmação sem alerta.
+
 cad_confirmacao:
   Exibe o resumo completo UMA ÚNICA VEZ e pergunta se está tudo certo.
   Use exatamente este formato:
@@ -198,8 +216,26 @@ export async function handleCadastro({ user, message, state, context }) {
     const etapaAtual = context?.etapa || 'cad_nome';
     console.log(`💊 Cadastro — etapa: ${etapaAtual} — ${user.phone}`);
 
-    const systemPrompt = buildSystemPrompt(etapaAtual, context || {}, user.name);
-    const claudeResponse = await callClaude({ systemPrompt, message, context });
+    // Pré-calcula alerta de estoque baixo antes de chamar Claude,
+    // para que o prompt possa mencionar o aviso na mesma mensagem de coleta
+    let contextParaClaude = context || {};
+    if (etapaAtual === 'cad_estoque') {
+        const estoque = parseInt(message) || 0;
+        const horarios = context?.horarios || [];
+        const dosesPerDia = horarios.length || 1;
+        const diasRestantes = Math.floor(estoque / dosesPerDia);
+        contextParaClaude = {
+            ...contextParaClaude,
+            alerta_estoque_baixo: diasRestantes <= 5 ? {
+                dias_restantes: diasRestantes,
+                estoque,
+                doses_por_dia: dosesPerDia
+            } : null
+        };
+    }
+
+    const systemPrompt = buildSystemPrompt(etapaAtual, contextParaClaude, user.name);
+    const claudeResponse = await callClaude({ systemPrompt, message, context: contextParaClaude });
 
     const proximaEtapa = claudeResponse.proximaEtapa || 'cad_nome';
     const novoContext = claudeResponse.novoContext || {};
