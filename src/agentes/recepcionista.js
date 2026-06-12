@@ -174,11 +174,32 @@ SE etapa = 'recep_lgpd':
       avisar quando o estoque estiver acabando. Por onde quer começar?"
 
   Se o usuário recusar:
-    Agradeça pela honestidade com calor e sem pressão.
-    Diga que entende completamente e que ele pode voltar quando quiser.
-    Não insista, não explique mais sobre LGPD.
-    Exemplo: "Tudo bem, entendo! Seus dados, sua escolha 😊
+    Explique brevemente por que o consentimento é necessário — sem pressão,
+    sem tentar convencer, apenas informando.
+    Diga que sem o consentimento o serviço não pode funcionar pela LGPD.
+    Deixe a porta aberta para ele voltar quando quiser.
+    Exemplo: "Entendo e respeito sua decisão! 😊
+    Pela Lei Geral de Proteção de Dados (LGPD), preciso do seu consentimento
+    para guardar seu nome e telefone — sem isso, infelizmente não consigo
+    personalizar seus lembretes e o serviço não funciona.
     Se mudar de ideia, é só me chamar. Estarei aqui!"
+
+SE etapa = 'lgpd_recusado':
+  O usuário recusou os termos LGPD anteriormente e voltou a conversar.
+  Reconheça que ele esteve aqui antes, de forma calorosa e sem pressão.
+  Pergunte se mudou de ideia. NÃO reapresente os termos ainda.
+  Exemplo: "Olá de novo! 😊 Da última vez você preferiu não compartilhar
+  seus dados, o que é completamente válido.
+  Se mudou de ideia e quer configurar seus lembretes, é só me dizer!"
+
+SE etapa = 'recep_lgpd_reapresentacao':
+  O usuário confirmou que mudou de ideia. Reapresente os termos LGPD
+  completos para que ele dê um consentimento explícito e consciente.
+  Exemplo: "Ótimo! Para eu poder te ajudar, preciso guardar seu nome e
+  telefone para personalizar seus lembretes. Seus dados ficam protegidos
+  e são usados exclusivamente para esse fim, conforme a LGPD.
+  Você concorda?"
+  Aguarde um "Sim" explícito antes de continuar.
 
 ---
 
@@ -240,6 +261,24 @@ export async function handleRecepcionista({ user, message, context }) {
         lgpdRecusado = !lgpdAccepted && contemRecusa(message);
         updatedContext = { ...context, etapa: 'recep_lgpd' }; // spread preserva mensagem_inicial
 
+    } else if (etapa === 'lgpd_recusado') {
+        // Usuário volta após ter recusado LGPD — verificar se mudou de ideia
+        const mudouDeIdeia = isLgpdAccepted(message);
+        if (mudouDeIdeia) {
+            nextEtapa = 'recep_lgpd_reapresentacao';
+            updatedContext = { ...context, etapa: 'recep_lgpd_reapresentacao' };
+        } else {
+            nextEtapa = 'lgpd_recusado';
+            updatedContext = { ...context, etapa: 'lgpd_recusado' };
+        }
+
+    } else if (etapa === 'recep_lgpd_reapresentacao') {
+        // Usuário deu novo aceite explícito após reapresentação dos termos
+        lgpdAccepted = isLgpdAccepted(message);
+        lgpdRecusado = !lgpdAccepted && contemRecusa(message);
+        nextEtapa = lgpdAccepted ? 'recep_lgpd' : 'lgpd_recusado';
+        updatedContext = { ...context, etapa: nextEtapa };
+
     } else {
         // Fallback — reinicia o fluxo
         nextEtapa = 'recep_boas_vindas';
@@ -292,7 +331,7 @@ export async function handleRecepcionista({ user, message, context }) {
 
     } else if (lgpdRecusado) {
         // Correção 4: recusa explícita — encerra com dignidade, não bloqueia retorno
-        await saveConversationState(user.id, { state: 'lgpd_recusado', context: {} });
+        await saveConversationState(user.id, { state: 'lgpd_recusado', context: { etapa: 'lgpd_recusado' } });
         console.log(`ℹ️  Recepcionista: LGPD recusada por ${user.phone}`);
 
     } else {
