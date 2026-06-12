@@ -4,6 +4,10 @@ import { saveConversationState, updateUser } from '../database.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// ============================================================
+// KEYWORDS DE ACEITE / RECUSA LGPD
+// ============================================================
+
 const LGPD_ACCEPT_KEYWORDS = ['sim', 's', 'pode', 'concordo', 'aceito', 'ok', 'claro', 'com certeza', 'yes'];
 
 function isLgpdAccepted(message) {
@@ -11,8 +15,44 @@ function isLgpdAccepted(message) {
     return LGPD_ACCEPT_KEYWORDS.some(kw => normalized.includes(kw));
 }
 
+function contemRecusa(message) {
+    const msg = message.toLowerCase().trim();
+    return ['não', 'nao', 'nope', 'recuso', 'não aceito', 'não concordo',
+        'prefiro não', 'não quero'].some(t => msg.includes(t));
+}
+
+// ============================================================
+// VALIDAÇÃO DE NOME
+// ============================================================
+
+function pareceNome(message) {
+    if (!message) return false;
+    const msg = message.toLowerCase().trim();
+
+    // Sinais de que NÃO é um nome
+    const sinaisDeRemedio = [
+        /\d+\s*(mg|ml|mcg|g|%)/, // dosagem: "500mg", "0,5%"
+        /\d+\s*\/\s*\d+\s*(h|hora|horas)/, // posologia: "12/12h", "8/8 horas"
+        /de\s+\d+\s+em\s+\d+/, // "de 8 em 8 horas"
+        /tomei|tomo|preciso tomar|remédio|remedio|medicamento|comprimido/,
+        /nitroglicerina|nimesulida|losartana|metformina|atenolol|omeprazol|dipirona/
+    ];
+
+    return !sinaisDeRemedio.some(pattern =>
+        typeof pattern === 'string'
+            ? msg.includes(pattern)
+            : pattern.test(msg)
+    );
+}
+
+// ============================================================
+// SYSTEM PROMPT
+// ============================================================
+
 function buildSystemPrompt(etapa, context) {
     const mensagemInicial = context.mensagem_inicial || '';
+    const temContextoMedicamento = !!context.contexto_medicamento;
+
     return `Você é a Nami, uma assistente de saúde pessoal que ajuda pessoas a não esquecerem seus medicamentos de uso contínuo.
 
 Você está no momento de boas-vindas com um novo usuário.
@@ -56,7 +96,14 @@ SE etapa = 'recep_boas_vindas':
   Essa mensagem está em mensagem_inicial. Leia-a com atenção ANTES de responder.
   Você deve REAGIR ao conteúdo dela — não apenas se apresentar.
 
-  Se CADASTRAR (usuário mencionou remédio, posologia, horário, tratamento):
+${temContextoMedicamento ? `  ATENÇÃO — o usuário acabou de informar um medicamento ou contexto de saúde
+  em vez do nome. Você deve:
+  1. Mostrar que entendeu o que ele disse (cite o remédio/contexto que está em contexto_medicamento)
+  2. Confirmar se é o remédio que quer cadastrar
+  3. Pedir o nome de forma natural para continuar
+  Exemplo: "Parece que você quer cadastrar a nimesulida, certo? 💊
+  Antes de registrar tudo, como posso te chamar?"` :
+`  Se CADASTRAR (usuário mencionou remédio, posologia, horário, tratamento):
     Mostre que você OUVIU. Cite o remédio ou situação mencionada pelo usuário.
     Apresente-se brevemente e peça o nome como passo natural para continuar.
     Exemplo: "Oi! Vi que você precisa tomar nimesulida de 12 em 12 horas —
@@ -67,7 +114,7 @@ SE etapa = 'recep_boas_vindas':
     Responda à curiosidade com apresentação breve e envolvente. Peça o nome.
 
   Se NEUTRO (saudação simples, sem contexto):
-    Apresente-se com calor. Peça o nome.
+    Apresente-se com calor. Peça o nome.`}
 
   Em todos os casos: termine pedindo o nome do usuário.
   NÃO mencione LGPD ou coleta de dados neste momento.
@@ -100,7 +147,22 @@ SE etapa = 'recep_lgpd':
   Se o usuário confirmar:
     Agradeça e faça a transição para o próximo passo de forma natural.
 
-    Se CADASTRAR:
+    Se CADASTRAR e mensagem_inicial contém informações de medicamento
+    (remédio, posologia, horário):
+      Após agradecer pelo aceite, demonstre que lembrou do contexto.
+      Use as informações que o usuário já forneceu — NÃO pergunte o que você já sabe.
+      Exemplo (quando usuário já informou remédio e posologia):
+      "Perfeito, {nome}! Agora posso te ajudar de verdade 💊
+      Vi que você precisa tomar {remédio} de {posologia} — vamos
+      organizar isso certinho. Só preciso de mais alguns detalhes
+      para configurar seus lembretes. Qual a dosagem?"
+      Se o usuário informou o horário da última dose, calcule o próximo
+      horário esperado e pergunte se já tomou.
+      Exemplo: "Vi que sua última dose foi às 21:30 de ontem.
+      Se você toma de 12 em 12 horas, o próximo seria às 09:30 —
+      já tomou hoje?"
+
+    Se CADASTRAR sem contexto rico:
       Vá direto para o cadastro.
       Exemplo: "Perfeito, {nome}! Agora vamos ao que interessa —
       cadastrar seu medicamento! 💊 Qual é o nome do remédio?"
@@ -112,8 +174,11 @@ SE etapa = 'recep_lgpd':
       avisar quando o estoque estiver acabando. Por onde quer começar?"
 
   Se o usuário recusar:
-    Agradeça pela honestidade, diga que entende e que ele pode voltar
-    quando quiser.
+    Agradeça pela honestidade com calor e sem pressão.
+    Diga que entende completamente e que ele pode voltar quando quiser.
+    Não insista, não explique mais sobre LGPD.
+    Exemplo: "Tudo bem, entendo! Seus dados, sua escolha 😊
+    Se mudar de ideia, é só me chamar. Estarei aqui!"
 
 ---
 
@@ -127,32 +192,56 @@ Responda APENAS com a mensagem que deve ser enviada ao usuário.
 Sem explicações, sem prefixos, sem aspas.`;
 }
 
+// ============================================================
+// HANDLER PRINCIPAL
+// ============================================================
+
 export async function handleRecepcionista({ user, message, context }) {
     const etapa = context?.etapa;
     let nextEtapa;
     let updatedContext = { ...context };
     let lgpdAccepted = false;
+    let lgpdRecusado = false;
 
     if (!etapa) {
+        // Primeira mensagem — inicializa o fluxo
         nextEtapa = 'recep_boas_vindas';
         updatedContext = {
             etapa: 'recep_boas_vindas',
             nome_coletado: null,
             mensagem_inicial: context.mensagem_inicial
         };
+
     } else if (etapa === 'recep_boas_vindas') {
-        const nome = message.trim();
-        nextEtapa = 'recep_coleta_nome';
-        updatedContext = {
-            etapa: 'recep_coleta_nome',
-            nome_coletado: nome,
-            mensagem_inicial: context.mensagem_inicial
-        };
+        if (pareceNome(message)) {
+            // Resposta parece um nome — fluxo normal
+            nextEtapa = 'recep_coleta_nome';
+            updatedContext = {
+                etapa: 'recep_coleta_nome',
+                nome_coletado: message.trim(),
+                mensagem_inicial: context.mensagem_inicial
+            };
+        } else {
+            // Resposta parece um medicamento/contexto — NÃO salvar como nome.
+            // Atualiza mensagem_inicial com esse contexto mais rico e
+            // mantém na etapa boas_vindas para perguntar o nome de verdade.
+            nextEtapa = 'recep_boas_vindas';
+            updatedContext = {
+                etapa: 'recep_boas_vindas',
+                nome_coletado: null,
+                mensagem_inicial: message,          // substitui "Oi" por contexto mais rico
+                contexto_medicamento: message       // sinaliza ao prompt que há contexto de remédio
+            };
+        }
+
     } else if (etapa === 'recep_coleta_nome' || etapa === 'recep_lgpd') {
         nextEtapa = 'recep_lgpd';
         lgpdAccepted = isLgpdAccepted(message);
+        lgpdRecusado = !lgpdAccepted && contemRecusa(message);
         updatedContext = { ...context, etapa: 'recep_lgpd' }; // spread preserva mensagem_inicial
+
     } else {
+        // Fallback — reinicia o fluxo
         nextEtapa = 'recep_boas_vindas';
         updatedContext = {
             etapa: 'recep_boas_vindas',
@@ -172,8 +261,13 @@ export async function handleRecepcionista({ user, message, context }) {
     const responseText = response.content[0].text.trim();
 
     if (lgpdAccepted) {
+        // Correção 3: validar nome antes de salvar — nunca persistir medicamento como nome
+        const nomeParaSalvar = pareceNome(context.nome_coletado || '')
+            ? context.nome_coletado
+            : null;
+
         await updateUser(user.id, {
-            name: context.nome_coletado,
+            name: nomeParaSalvar,
             onboarded: true,
             lgpd_accepted: true,
             lgpd_accepted_at: new Date().toISOString()
@@ -195,6 +289,12 @@ export async function handleRecepcionista({ user, message, context }) {
             await saveConversationState(user.id, { state: 'idle', context: {} });
             console.log(`✅ Recepcionista: onboarding concluído para ${user.phone}`);
         }
+
+    } else if (lgpdRecusado) {
+        // Correção 4: recusa explícita — encerra com dignidade, não bloqueia retorno
+        await saveConversationState(user.id, { state: 'lgpd_recusado', context: {} });
+        console.log(`ℹ️  Recepcionista: LGPD recusada por ${user.phone}`);
+
     } else {
         await saveConversationState(user.id, { state: nextEtapa, context: updatedContext });
     }
