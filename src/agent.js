@@ -3,7 +3,7 @@ import { getOrCreateUser } from './database.js';
 import { sendTextMessage } from './whatsapp.js';
 import { routeMessage } from './router.js';
 
-export async function handleIncomingMessage({ phone, text, audio, image }) {
+export async function handleIncomingMessage({ phone, text, audio, image, messageId }) {
     try {
         const user = await getOrCreateUser(phone);
 
@@ -15,7 +15,8 @@ export async function handleIncomingMessage({ phone, text, audio, image }) {
             return;
         }
 
-        const response = await routeMessage({ user, message: text, image });
+        const response = await routeMessage({ user, message: text, image, messageId });
+        if (!response) return; // mensagem duplicada — router retornou null
         await sendTextMessage(phone, response);
 
     } catch (error) {

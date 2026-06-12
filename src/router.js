@@ -5,6 +5,24 @@ import { handleCadastro } from './agentes/cadastro.js';
 import { handleRelatorios, classificarIntencaoRelatorio } from './agentes/relatorios.js';
 
 // ============================================================
+// IDEMPOTÊNCIA — descarta eventos duplicados da Z-API
+// ============================================================
+
+const processedMessages = new Map();
+const MESSAGE_TTL_MS = 30_000;
+
+function isDuplicateMessage(messageId) {
+    if (!messageId) return false;
+    const now = Date.now();
+    for (const [id, ts] of processedMessages.entries()) {
+        if (now - ts > MESSAGE_TTL_MS) processedMessages.delete(id);
+    }
+    if (processedMessages.has(messageId)) return true;
+    processedMessages.set(messageId, now);
+    return false;
+}
+
+// ============================================================
 // DOSE PENDENTE DE CONFIRMAÇÃO
 // ============================================================
 
@@ -32,7 +50,12 @@ function detectarIntencaoCadastro(message) {
 // ROTEADOR PRINCIPAL
 // ============================================================
 
-export async function routeMessage({ user, message, image }) {
+export async function routeMessage({ user, message, image, messageId }) {
+    if (isDuplicateMessage(messageId)) {
+        console.log(`⚠️  Mensagem duplicada ignorada: ${messageId}`);
+        return null;
+    }
+
     const state = await getConversationState(user.id);
     const currentState = state?.state || 'idle';
 

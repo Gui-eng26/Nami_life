@@ -30,8 +30,9 @@ app.post('/webhook/whatsapp', async (req, res) => {
         processedMessages.add(messageId);
         setTimeout(() => processedMessages.delete(messageId), 30000);
 
+        console.log(`📦 Z-API payload:`, JSON.stringify(req.body, null, 2));
         console.log(`📩 Mensagem recebida de ${phone}: ${text || '[mídia]'}`);
-        await handleIncomingMessage({ phone, text, audio, image });
+        await handleIncomingMessage({ phone, text, audio, image, messageId });
 
     } catch (error) {
         console.error('❌ Erro no webhook:', error.message);
