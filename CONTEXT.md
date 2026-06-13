@@ -1,4 +1,4 @@
-# 🌿 NAMI — Contexto do Projeto
+# 🌿 NAMI — Contexto do Projeto (v6 — 12/06/2026)
 
 ---
 
@@ -16,15 +16,24 @@ A Nami é um agente de IA via WhatsApp que ajuda pessoas a seguirem seus tratame
 
 ---
 
-## Funcionalidades do MVP
+## Persona central: Mariana
 
-1. Usuário cadastra medicamentos (texto, áudio ou foto da receita)
-2. Nami envia lembretes nos horários certos via WhatsApp
-3. Usuário confirma que tomou (SIM/NÃO)
-4. Nami registra cada dose no banco
-5. Usuário pode consultar histórico ("tomei hoje?")
-6. Nami alerta quando o estoque estiver acabando
-7. Usuário atualiza estoque após recompra
+38 anos, professora, dois filhos, gerencia dois tratamentos contínuos em horários diferentes. O problema dela não é falta de vontade — é esquecimento causado pela rotina corrida. Toda decisão de produto deve passar pelo filtro: "isso resolve o problema da Mariana?"
+
+**Insight de pesquisa importante:** o público idoso pode ser suficientemente auto-motivado. O público mais promissor são adultos em tratamento contínuo com rotina ocupada e cuidadores de familiares.
+
+---
+
+## Filosofia de produto — não negociável
+
+**A Nami nunca ignora o que o usuário disse.**
+Quando um usuário chega com uma mensagem rica ("preciso tomar nimesulida de 12 em 12 horas"), a Nami deve reagir a isso — não iniciar um script genérico como se a mensagem não existisse. Cada mensagem tem conteúdo próprio que merece resposta.
+
+**O fluxo serve o usuário, não o contrário.**
+O onboarding tem etapas necessárias (nome, LGPD), mas essas etapas devem ser apresentadas de forma que façam sentido para o objetivo do usuário. Se ele chegou querendo cadastrar um remédio, as etapas anteriores devem ser justificadas nesse contexto.
+
+**Diferença entre Nami e bot genérico:**
+Frases como "Que ótimo! Estou aqui exatamente para isso..." e "Antes de cadastrar seu medicamento..." mostram conexão com o que o usuário pediu. Não é seguir etapas de forma seca e fria.
 
 ---
 
@@ -38,6 +47,10 @@ A Nami é um agente de IA via WhatsApp que ajuda pessoas a seguirem seus tratame
 | Banco de dados | **Supabase** (PostgreSQL) |
 | Scheduler | **node-cron** (lembretes automáticos) |
 | Hospedagem | **Railway** (produção ativa) |
+| Versionamento | **GitHub** — Gui-eng26/Nami_life |
+
+**URL de produção:** `https://namilife-production.up.railway.app`
+**Webhook Z-API:** `POST /webhook/whatsapp`
 
 ---
 
@@ -46,20 +59,25 @@ A Nami é um agente de IA via WhatsApp que ajuda pessoas a seguirem seus tratame
 ```
 nami-backend/
 ├── src/
-│   ├── index.js              → Entry point + webhook receiver do Z-API
-│   ├── agent.js              → Orquestrador principal — chama router, processa ações
-│   ├── router.js             → Roteador de agentes — decide qual agente responde
+│   ├── index.js              → Entry point + webhook + proteção idempotência
+│   ├── agent.js              → Orquestrador — chama routeMessage
+│   ├── router.js             → Roteador central de agentes
 │   ├── database.js           → Todas as queries no Supabase
-│   ├── whatsapp.js           → Envio de mensagens e parse do payload Z-API
-│   ├── scheduler.js          → Cron job — verifica e dispara lembretes a cada 2min
-│   ├── prompts.js            → System prompt da Nami (agente principal)
+│   ├── whatsapp.js           → Envio de mensagens e parse Z-API
+│   ├── scheduler.js          → Cron: lembretes + follow-ups + resumo semanal
+│   ├── prompts.js            → System prompt do agente_principal
 │   └── agentes/
-│       └── recepcionista.js  → Agente de boas-vindas para novos usuários
-├── .env                      → Variáveis de ambiente (nunca subir pro GitHub)
-├── .gitignore
-├── package.json
-├── CONTEXT.md                → Este arquivo
-└── BRIEFING_V2.md            → Briefing de implementação da arquitetura multi-agente
+│       ├── recepcionista.js  → Onboarding de novos usuários (v3)
+│       ├── principal.js      → Conversa geral + confirmação de doses
+│       ├── cadastro.js       → Fluxo dedicado de cadastro de medicamentos
+│       ├── lembrete.js       → Follow-up espaçado (30min/1h/30min)
+│       └── relatorios.js     → Consultas de histórico (híbrido: query + Claude)
+├── CONTEXT.md                → Este arquivo — ponto de partida de toda sessão
+├── BRIEFING_V2.md            → Briefing da arquitetura multi-agente
+├── BRIEFING_CADASTRO.md      → Briefing do agente_cadastro
+├── BRIEFING_LEMBRETE.md      → Briefing do agente_lembrete
+├── BRIEFING_RELATORIOS.md    → Briefing do agente_relatorios
+└── package.json
 ```
 
 ---
@@ -67,8 +85,8 @@ nami-backend/
 ## Variáveis de Ambiente (.env)
 
 ```env
-SUPABASE_URL=https://[PROJECT_ID].supabase.co
-SUPABASE_SERVICE_KEY=sb_secret_...   # secret key — bypassa RLS
+SUPABASE_URL=https://[PROJECT_ID].supabase.co   # SEM /rest/v1/ no final!
+SUPABASE_SERVICE_KEY=sb_secret_...               # secret key — bypassa RLS
 ANTHROPIC_API_KEY=sk-ant-api03-...
 ZAPI_INSTANCE_ID=[ID da instância]
 ZAPI_TOKEN=[Token de integração]
@@ -76,214 +94,364 @@ ZAPI_CLIENT_TOKEN=[Client-Token da aba Segurança na Z-API]
 PORT=3000
 ```
 
-⚠️ `ZAPI_CLIENT_TOKEN` é obrigatório em toda requisição à Z-API. Está localizado
-em **Segurança** no painel da Z-API — é diferente do `ZAPI_TOKEN`.
-
-⚠️ `SUPABASE_URL` deve ser somente a URL base: `https://[ID].supabase.co`
-Sem `/rest/v1/` ou qualquer sufixo — o cliente Supabase adiciona isso automaticamente.
+⚠️ `ZAPI_CLIENT_TOKEN` está em **Segurança** no painel Z-API — diferente do `ZAPI_TOKEN`.
+⚠️ `SUPABASE_URL` deve ser apenas a URL base — sem sufixos.
 
 ---
 
 ## Banco de Dados — Supabase (PostgreSQL)
 
-### Tabelas principais
+### Tabelas
 
-**users** — cada paciente
+**users**
 ```sql
 id, phone (unique), name, onboarded, lgpd_accepted, lgpd_accepted_at,
 created_at, updated_at
 ```
 
-**medications** — medicamentos cadastrados
+**medications**
 ```sql
-id, user_id (FK), nome, dosagem, instrucoes,
-estoque_atual, estoque_minimo (default 7), ativo
+id, user_id (FK), nome, dosagem, instrucoes, estoque_atual,
+estoque_minimo (default 7 — não mais usado para alerta),
+forma_farmaceutica, tipo_tratamento, tratamento_dias,
+tratamento_fim, ativo, created_at
 ```
 
-**schedules** — horários de lembrete
+**schedules**
 ```sql
-id, medication_id (FK), horario (time), dias_semana (text[]), ativo
+id, medication_id (FK), horario (time HH:MM), dias_semana (text[]), ativo
 ```
 
-**dose_logs** — registro de cada dose
+**dose_logs**
 ```sql
 id, medication_id (FK), scheduled_at, reminder_sent, reminder_sent_at,
-taken_at, confirmed, response_raw
+taken_at, confirmed, response_raw, status (pendente/confirmado/nao_informado/nao_tomado),
+tentativas, ultima_tentativa_at, caregiver_notified, caregiver_notified_at
 ```
 
-**conversation_state** — estado atual da conversa por usuário
+**conversation_state**
 ```sql
 id, user_id (FK unique), state (text), context (jsonb), updated_at
 ```
 
-**message_logs** — log de todas as mensagens
+**message_logs, agent_logs** — histórico de mensagens e interações por agente
+
+**care_network** — rede de cuidado (estrutura preparada, ainda sem interface)
 ```sql
-id, user_id (FK), direction (inbound/outbound), content, media_type, created_at
+id, user_id, caregiver_id, relationship, permissions (jsonb), status
 ```
 
-**agent_logs** — log de interações por agente
-```sql
-id, user_id (FK), agent (text), user_message (text), agent_response (text), created_at
+### ⚠️ Padrão crítico no Supabase JS SDK
+Filtros via join NÃO funcionam: `.eq('medications.user_id', userId)` retorna todos os registros.
+Sempre usar abordagem em duas etapas:
+```javascript
+const meds = await getUserMedications(userId);
+const ids = meds.map(m => m.id);
+.in('medication_id', ids)
 ```
-
-### Função SQL importante
-```sql
-get_pending_reminders() -- retorna lembretes que devem ser disparados agora (±2min)
-```
-
-### Status do banco
-- ✅ Schema criado e rodando no Supabase
-- ✅ RLS habilitado em todas as tabelas (backend usa service_role key)
+Funções já corrigidas: `getDosesHoje`, `getRecentDoses`.
 
 ---
 
-## Arquitetura Multi-Agente (v2)
+## Arquitetura Multi-Agente
 
-A Nami evoluiu de um agente único para uma arquitetura multi-agente com roteador central.
-
-### Roteador (`router.js`)
+### Fluxo do Roteador
 
 ```
-mensagem chega
+mensagem chega → index.js (proteção idempotência por messageId)
       ↓
 getOrCreateUser(phone)
       ↓
-usuario.onboarded === false?
-  → sim → agente_recepcionista
-  → não → lê state da conversation_state
-            ↓
-        'cadastro'     → agente_cadastro (futuro)
-        'lembrete'     → agente_lembrete (futuro)
-        null / 'idle'  → agente_principal
+user.onboarded === false? → agente_recepcionista
+      ↓
+detectarConfirmacaoDose(msg) AND temDosePendente(userId)? → agente_principal
+      ↓
+state === 'adding_med'? → agente_cadastro
+      ↓
+detectarIntencaoCadastro(msg)? → agente_cadastro
+      ↓
+classificarIntencaoRelatorio(msg)? → agente_relatorios (se retornar null → principal)
+      ↓
+agente_principal
 ```
 
 ### Agentes implementados
 
 | Agente | Arquivo | Status |
 |---|---|---|
-| recepcionista | `src/agentes/recepcionista.js` | ✅ Implementado |
-| principal | `src/agent.js` | ✅ Implementado |
-| cadastro | `src/agentes/cadastro.js` | 🔜 Fase 2 |
-| lembrete | `src/agentes/lembrete.js` | 🔜 Fase 2 |
-| relatorios | `src/agentes/relatorios.js` | 🔜 Fase 3 |
-| medicacoes | `src/agentes/medicacoes.js` | 🔜 Fase 3 (RAG) |
+| agente_roteador | src/router.js | ✅ Ativo |
+| agente_recepcionista | src/agentes/recepcionista.js | ✅ v3 |
+| agente_principal | src/agentes/principal.js | ✅ Ativo |
+| agente_cadastro | src/agentes/cadastro.js | ✅ Ativo |
+| agente_lembrete | src/agentes/lembrete.js | ✅ Ativo |
+| agente_relatorios | src/agentes/relatorios.js | ✅ Ativo |
+| agente_medicacoes (RAG) | — | 🔜 Fase 3 |
+| leitor_receita | — | 🔜 Fase 4 |
+| agente_acompanhamento | — | 🔜 Fase 4 |
 
 ---
 
-## Fluxo Principal de uma Mensagem
+## Recepcionista v3 — Fluxo Detalhado
 
+### 3 categorias de intenção (primeira mensagem)
+- **CADASTRAR** — usuário mencionou remédio, posologia, tratamento
+- **DESCOBRIR** — quer entender o que a Nami faz
+- **NEUTRO** — saudação simples
+
+### Etapas
 ```
-1. Usuário envia mensagem no WhatsApp
-2. Z-API recebe e dispara webhook POST /webhook/whatsapp
-3. index.js recebe → parseZApiPayload() extrai phone/text/audio/image
-4. agent.js → handleIncomingMessage()
-   ├── getOrCreateUser(phone)
-   └── routeMessage({ user, message }) → router.js decide o agente
-       ├── agente_recepcionista → se onboarded = false
-       └── agente_principal     → se onboarded = true e state = idle
-           ├── getConversationState(userId)
-           ├── getUserMedications(userId)
-           ├── getRecentDoses(userId)
-           ├── callClaude() → retorna JSON {message, newState, context, action}
-           ├── processAction() → SAVE_MEDICATION / CONFIRM_DOSE / SET_USER_NAME
-           ├── updateConversationState()
-           └── sendTextMessage(phone, message)
-```
-
-## Fluxo do Agente Recepcionista
-
-```
-Etapa 1: recep_boas_vindas
-  → Nami se apresenta e pergunta o nome
-
-Etapa 2: recep_coleta_nome
-  → Nami salva o nome, explica o que faz, pede aceite LGPD
-
-Etapa 3: recep_lgpd
-  → Usuário confirma → lgpd_accepted=true, onboarded=true
-  → Passa controle para agente principal
+recep_boas_vindas    → apresentação + pede nome
+                       SE mensagem parece remédio (pareceNome() = false):
+                         não salva como nome, pede nome de verdade
+recep_coleta_nome    → salva nome, apresenta LGPD
+recep_lgpd           → aceite ou recusa
+lgpd_recusado        → explica motivo + deixa porta aberta
+lgpd_recusado_retorno → usuário volta, Nami pergunta se mudou de ideia  
+recep_lgpd_reapresentacao → reapresenta termos para novo aceite explícito
 ```
 
-## Fluxo do Scheduler
+### Validações críticas
+- `pareceNome(message)` — detecta padrões de medicamento antes de salvar nome
+- `isLgpdAccepted(message)` — keywords: sim, s, pode, concordo, aceito, ok, claro...
+- `contemRecusa(message)` — keywords: não, nao, recuso, não aceito...
+- Nome inválido nunca chega ao banco — validação antes do `updateUser`
+
+### Transição pós-LGPD
+- Intenção CADASTRAR → `state: 'adding_med'` → agente_cadastro assume automaticamente
+- Outras intenções → `state: 'idle'` → agente_principal
+
+---
+
+## Agente Cadastro — Fluxo de 8 Etapas
 
 ```
-A cada 2 minutos:
-1. getPendingReminders() → busca via função SQL no Supabase
-2. Para cada lembrete:
-   ├── sendTextMessage() → envia lembrete no WhatsApp
-   ├── createDoseLog() → registra envio no banco
-   └── Se estoque_atual <= estoque_minimo → envia alerta de recompra
+cad_nome → cad_forma → cad_dosagem → cad_tipo_tratamento →
+cad_horarios → cad_estoque → cad_confirmacao → cad_salvo
+```
+
+**Validação de estoque no cadastro (MH-018):**
+Na etapa `cad_estoque`, calcula `diasRestantes = floor(estoque / horarios.length)`.
+Se `<= 5`, injeta `alerta_estoque_baixo` no contexto — Claude menciona antes de confirmar.
+
+---
+
+## Agente Lembrete — Follow-up Espaçado
+
+```
+Tentativa 1: horário agendado
+Tentativa 2: +30 minutos (tom gentil)
+Tentativa 3: +1 hora (último aviso)
+Após tent. 3: +30min → nao_informado + notifica cuidadores ativos
 ```
 
 ---
 
-## Personalidade da Nami
+## Agente Relatórios — Modelo Híbrido
 
-- **Tom:** calorosa, empática, acolhedora — como uma enfermeira de confiança
-- **Público:** adultos em tratamento contínuo — linguagem simples, frases curtas
-- **Emojis:** com moderação — 💊 ✅ ⏰ 🌿
-- **Limites:** NÃO dá conselhos médicos, NÃO altera posologia sem confirmação
-- **Resposta (agente principal):** SEMPRE em JSON válido `{message, newState, context, action}`
+| Consulta | Tipo | Ativadores |
+|---|---|---|
+| Tomei hoje? | Query direta | "tomei hoje?", "já tomei meus remédios"... |
+| Meus remédios | Query direta | "quais meus remédios", "que remédios tenho"... |
+| Estoque | Query direta | "quanto tenho de cada", "tô ficando sem remédio"... |
+| Próximo remédio | Query direta | "o que tenho que tomar", "qual o próximo remédio"... |
+| Adesão | Claude empático | "quantas vezes esqueci", "minha adesão tá boa"... |
+| Resumo semanal | Claude proativo | Automático toda segunda às 08h |
 
-### Estados da conversa (campo `state` na `conversation_state`)
-- `idle` — aguardando
-- `onboarding` — primeiro acesso, coletando nome (legado)
-- `adding_med` — cadastrando medicamento
-- `confirming` — aguardando confirmação de dose
-- `recep_boas_vindas` — recepcionista: etapa 1
-- `recep_coleta_nome` — recepcionista: etapa 2
-- `recep_lgpd` — recepcionista: etapa 3
+⚠️ Termos muito genéricos como "meus remédios" sozinho não ativam o agente —
+precisa de contexto de pergunta explícita.
 
 ---
 
-## Status Atual do Projeto
+## Lógica de Estoque em Dias (MH-017)
 
-### ✅ Concluído
-- Supabase com schema completo e RLS habilitado
-- Z-API configurado, webhook apontando para Railway
-- WhatsApp conectado à instância nami-mvp
-- Backend em produção no Railway (24/7)
-- URL pública: `https://namilife-production.up.railway.app`
-- Nami respondendo mensagens reais em produção
-- Arquitetura multi-agente implementada (router + recepcionista)
+```javascript
+diasRestantes = floor(estoque_atual / dosesPerDia)
+dosesPerDia   = schedules ativos do medicamento
+threshold     = 5 dias
+```
 
-### 🔜 Próximas fases
-
-**Fase 2 — Especialização de agentes**
-- `agente_cadastro` — fluxo dedicado de cadastro de medicamentos
-- `agente_lembrete` — lógica de follow-up e escalação
-- Dashboard de relatórios para administrador
-- Timestamp de confirmação real vs. horário agendado
-
-**Fase 3 — Inteligência e escala**
-- `agente_medicacoes` com RAG no bulário ANVISA
-- `leitor_receita` — OCR de receitas médicas
-- `agente_acompanhamento` — NPS e feedback
-- Conformidade LGPD completa
+Alerta dispara junto com o **primeiro lembrete do dia** quando `diasRestantes <= 5`.
+Alerta diário até usuário informar nova quantidade.
+Usuário pode responder "comprei 30 comprimidos de X" → ação `UPDATE_STOCK`.
 
 ---
 
-## Como rodar localmente
+## Decisões Arquiteturais — Raciocínio por trás
+
+### Por que subagentes em vez de prompt único?
+Prompt único com toda a complexidade da Nami causa sobrecarga — o modelo
+confunde contextos, mistura cadastro com confirmação de dose, perde etapas.
+Subagentes com prompts focados performam melhor do que um modelo mais caro
+com prompt sobrecarregado. Essa foi a decisão central da v2.
+
+### Por que NÃO abandonar subagentes mesmo com bugs de contexto?
+Tentação recorrente — mas os bugs de contexto (BUG-020, 021) não são falha
+da arquitetura multi-agente. São falhas de design do primeiro turno e de
+filtros SQL quebrados. A correção é cirúrgica, não estrutural.
+
+### Por que modelo híbrido no agente_relatorios?
+Consultas estruturadas (tomei hoje?, estoque) não precisam do Claude —
+query direta é mais rápida, mais barata e mais previsível. Consultas abertas
+(adesão, motivação) precisam de linguagem empática — aí o Claude agrega.
+
+### Por que não LangGraph?
+Considerado na fase de planejamento. Decisão: começar com orquestração manual
+(router.js) por ser mais simples de debugar e suficiente para o estágio atual.
+LangGraph entra quando a complexidade justificar — ainda não chegou lá.
+
+### Por que RAG ainda não foi implementado?
+O bulário ANVISA (especialista_medicacoes) é Fase 3. Antes disso, o fluxo
+básico de cadastro, lembrete e confirmação precisa estar sólido. RAG em cima
+de base instável gera mais problemas do que resolve.
+
+---
+
+## Padrões de Bugs Recorrentes
+
+### Filtro via join no Supabase JS SDK (BUG-017, BUG-023)
+`.eq('tabela_relacionada.campo', valor)` não funciona.
+Sempre usar abordagem em duas etapas com `.in()`.
+
+### Variáveis de ambiente no Railway
+Sempre verificar: SUPABASE_URL sem /rest/v1/, ZAPI_CLIENT_TOKEN em Segurança.
+
+### Idempotência no webhook Z-API
+Z-API pode entregar o mesmo evento duas vezes. Proteção implementada via
+`processedMessages` Set no index.js com TTL de 30 segundos.
+
+### Detecção de confirmação de dose agressiva demais
+`detectarConfirmacaoDose` deve sempre ser combinada com `temDosePendente`.
+Sem dose real no banco, qualquer "sim" vai para o contexto correto da conversa.
+
+---
+
+## Status dos Bugs (atualizado 12/06/2026)
+
+Todos os 24 bugs identificados até hoje estão corrigidos.
+BUG-025 (duplicação de confirmação de dose) — aguardando validação nos logs.
+
+---
+
+## Backlog Priorizado
+
+### Alta prioridade
+- MH-014 — Remover/pausar lembrete via conversa (agente_cadastro)
+- MH-015 — Alterar horário de lembrete via conversa (agente_cadastro)
+- MH-003 — Timestamp real de confirmação vs. horário agendado
+- MH-004 — Transcrição de áudio via Whisper
+
+### Média prioridade
+- MH-016 — Confirmação de encerramento para tratamento temporário
+- MH-020 — Conformidade LGPD: exclusão de dados ao recusar
+- MH-021 — Variação natural do nome nos prompts (evitar "Ótimo, {nome}!" repetido)
+- MH-009 — Dashboard de relatórios para administrador
+
+### Fase 3+
+- MH-007 — RAG no bulário ANVISA (agente_medicacoes)
+- MH-008 — Leitura de receitas por imagem
+- MH-010 — agente_acompanhamento (NPS)
+- MH-012 — Dosagem com propriedade via bulário
+- Rede de cuidado — interface para adicionar cuidadores, convites, permissões
+
+---
+
+## Decisões em Aberto / Tensões Não Resolvidas
+
+**Tensão: confirmação de dose vs. resposta contextual**
+O router precisa decidir se "Sim" é confirmação de dose ou resposta à
+conversa. Solução atual (dose pendente + pattern matching) funciona mas
+é frágil. Em algum momento pode precisar de uma abordagem baseada em
+estado explícito da conversa.
+
+**Tensão: agente_relatorios capturando frases da Nami**
+Quando a Nami menciona horários ou remédios na própria resposta, o usuário
+às vezes repete a frase e o classificador captura. Solução atual: termos
+mais específicos. Solução definitiva pode precisar de análise de contexto
+conversacional.
+
+**Em aberto: MH-014 e MH-015**
+Como o usuário expressa que quer parar ou alterar um lembrete é muito variado.
+"Não preciso mais", "pode parar", "mudei o horário", "tô bem agora"...
+Precisará de classificador robusto, provavelmente via Claude em vez de regex.
+
+**Em aberto: tratamento de tratamentos temporários**
+Quando `tratamento_fim` chega, o scheduler deve perguntar se o usuário quer
+encerrar ou prorrogar — antes de desativar. Ainda não implementado.
+
+---
+
+## Modo de Trabalho — Ritmo Estabelecido
+
+### Fluxo padrão de implementação
+```
+1. Identificar problema ou melhoria
+2. Analisar causa raiz com evidências (logs, código) — nunca hipóteses não identificadas
+3. Gerar BRIEFING_[TEMA].md com causa raiz confirmada, correção cirúrgica e critérios de sucesso
+4. Guilherme salva o briefing na raiz do projeto
+5. Guilherme abre Claude Code no terminal: claude
+6. Instrução ao Code: "Leia o CONTEXT.md e o BRIEFING_[TEMA].md. Implemente na ordem indicada."
+7. Code mostra diff antes de salvar — Guilherme aprova
+8. git add . && git commit -m "descrição" && git push
+9. Railway detecta push e faz redeploy automático
+10. Verificar logs do Railway para confirmar deploy limpo
+11. Testar no WhatsApp e trazer logs/prints para análise
+```
+
+### Filosofia de debugging — inegociável
+- **Nunca propor solução sem causa raiz confirmada.** Hipóteses devem ser identificadas como hipóteses.
+- **Analisar no contexto completo da Nami** — não o bug como fato isolado.
+- **Evidências primeiro:** logs do Railway, código atual, dados do Supabase — nessa ordem.
+- **Correções cirúrgicas** — mexer apenas no que precisa. Não refatorar por refatorar.
+- **Se a causa raiz não está clara**, dizer isso explicitamente e propor como investigar antes de implementar.
+
+### Filosofia de produto — inegociável
+- A Nami nunca ignora o que o usuário disse. Toda mensagem tem conteúdo próprio.
+- O fluxo serve o usuário, não o contrário. Etapas necessárias devem ser justificadas no contexto do objetivo do usuário.
+- Antes de qualquer decisão técnica, passar pelo filtro: "isso resolve o problema da Mariana?"
+- Qualidade conversacional não é negociável — a Nami deve soar como uma assistente calorosa, não um bot com scripts.
+
+### Dois contextos de trabalho
+- **Este chat (Claude.ai):** arquitetura, decisões estratégicas, análise de bugs, geração de briefings e relatórios
+- **Claude Code (VS Code terminal):** implementação, leitura de arquivos, edição de código, git
+- O handoff entre os dois é feito via BRIEFING_[TEMA].md — o briefing é o contrato entre os dois contextos
+
+### Estrutura de documentação
+- `CONTEXT.md` — documento vivo, atualizado a cada sessão, ponto de partida de todo trabalho
+- `BRIEFING_[TEMA].md` — instrução de implementação para o Claude Code, com causa raiz e critérios de sucesso
+- `Nami_Relatorio_v[N].docx` — relatório de sessão no Google Drive (pasta Desenvolvimento Nami)
+- Relatórios capturam o quê foi feito. CONTEXT.md captura o porquê e o como.
+
+
+
+1. Ler este CONTEXT.md completo
+2. Verificar o relatório mais recente em Google Drive > Desenvolvimento Nami
+3. Checar os logs do Railway para qualquer erro recente
+4. Confirmar qual é o próximo item prioritário do backlog
+
+**Prompt de início recomendado:**
+"Leia o CONTEXT.md. Estamos retomando o projeto Nami. O último relatório
+foi o v[X]. Vamos continuar com [próximo item]."
+
+---
+
+## Como Rodar Localmente
 
 ```bash
 npm install
 node src/index.js
 ```
 
-Para desenvolvimento local com webhook, use ngrok:
+Para testes com webhook local:
 ```bash
 ngrok http 3000
-# Atualizar URL do webhook no painel Z-API com a URL gerada
+# Atualizar URL em Z-API > Webhooks e configurações gerais > Ao receber
 ```
 
-Em produção, o webhook aponta permanentemente para:
-```
-https://namilife-production.up.railway.app/webhook/whatsapp
-```
+Em produção, webhook aponta permanentemente para Railway.
 
 ---
 
-## Dependências instaladas
+## Dependências
 
 ```json
 "dependencies": {
