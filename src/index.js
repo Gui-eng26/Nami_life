@@ -21,7 +21,7 @@ app.post('/webhook/whatsapp', async (req, res) => {
         const parsed = parseZApiPayload(req.body);
         if (!parsed) return;
 
-        const { phone, text, audio, image } = parsed;
+        const { phone, text, audio, image, referenceMessageId } = parsed;
         if (!text && !audio && !image) return;
 
         // Proteção contra webhook duplicado
@@ -32,7 +32,7 @@ app.post('/webhook/whatsapp', async (req, res) => {
 
         console.log(`📦 Z-API payload:`, JSON.stringify(req.body, null, 2));
         console.log(`📩 Mensagem recebida de ${phone}: ${text || '[mídia]'}`);
-        await handleIncomingMessage({ phone, text, audio, image, messageId });
+        await handleIncomingMessage({ phone, text, audio, image, messageId, referenceMessageId });
 
     } catch (error) {
         console.error('❌ Erro no webhook:', error.message);

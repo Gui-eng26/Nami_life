@@ -205,7 +205,7 @@ export async function getMedicamentoDosesPerDia(medicationId) {
 // REGISTRO DE DOSES
 // ============================================================
 
-export async function createDoseLog({ medicationId, scheduledAt, reminderSent, reminderSentAt }) {
+export async function createDoseLog({ medicationId, scheduledAt, reminderSent, reminderSentAt, zapiMessageId = null }) {
     const now = new Date().toISOString();
     const { data, error } = await supabase
         .from('dose_logs')
@@ -216,13 +216,14 @@ export async function createDoseLog({ medicationId, scheduledAt, reminderSent, r
             reminder_sent_at: reminderSentAt,
             tentativas: 1,
             ultima_tentativa_at: now,
-            status: 'pendente'
+            status: 'pendente',
+            zapi_message_id: zapiMessageId
         })
         .select()
         .single();
 
     if (error) throw new Error(`Erro ao criar log de dose: ${error.message}`);
-    console.log(`📝 DoseLog criado — tentativas: ${data.tentativas}, status: ${data.status}`);
+    console.log(`📝 DoseLog criado — tentativas: ${data.tentativas}, status: ${data.status}${zapiMessageId ? `, msgId: ${zapiMessageId}` : ''}`);
     return data;
 }
 
@@ -340,6 +341,63 @@ export async function updateDoseLogTentativa(doseLogId, tentativas) {
         .eq('id', doseLogId);
 
     if (error) throw new Error(`Erro ao atualizar tentativa: ${error.message}`);
+}
+
+export async function updateDoseLogZapiMessageId(doseLogId, zapiMessageId) {
+    const { error } = await supabase
+        .from('dose_logs')
+        .update({ zapi_message_id: zapiMessageId })
+        .eq('id', doseLogId);
+
+    if (error) console.error(`⚠️ Erro ao atualizar zapi_message_id no dose_log: ${error.message}`);
+}
+
+export async function getDoseLogByZapiMessageId(zapiMessageId) {
+    if (!zapiMessageId) return null;
+
+    const { data, error } = await supabase
+        .from('dose_logs')
+        .select(`
+            *,
+            medications (id, nome, user_id)
+        `)
+        .eq('zapi_message_id', zapiMessageId)
+        .eq('confirmed', false)
+        .single();
+
+    if (error || !data) return null;
+
+    return {
+        ...data,
+        med_nome: data.medications?.nome
+    };
+}
+
+export async function confirmDoseByLogId(doseLogId) {
+    const { data: log, error: fetchError } = await supabase
+        .from('dose_logs')
+        .select('*, medications(id, nome, estoque_atual)')
+        .eq('id', doseLogId)
+        .single();
+
+    if (fetchError || !log) throw new Error(`Dose log não encontrado: ${doseLogId}`);
+
+    const { error: updateError } = await supabase
+        .from('dose_logs')
+        .update({
+            confirmed: true,
+            taken_at: new Date().toISOString(),
+            status: 'confirmado'
+        })
+        .eq('id', doseLogId);
+
+    if (updateError) throw new Error(`Erro ao confirmar dose: ${updateError.message}`);
+    console.log(`✅ Dose confirmada por log id: ${doseLogId}`);
+
+    const estoque = log.medications?.estoque_atual;
+    if (estoque !== null && estoque > 0) {
+        await updateMedicationStock(log.medication_id, estoque - 1);
+    }
 }
 
 export async function markAsNaoInformado(doseLogId) {

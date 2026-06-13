@@ -97,19 +97,28 @@ async function checkAndSendFollowUps() {
 
 async function sendReminder(reminder) {
     try {
+        // MH-022: Não enviar lembrete se estoque zerado
+        if (reminder.estoque_atual !== null && reminder.estoque_atual <= 0) {
+            console.log(`⚠️ Lembrete ignorado — estoque zerado para ${reminder.med_nome} (${reminder.phone})`);
+            return;
+        }
+
         const firstName = reminder.user_name
             ? reminder.user_name.split(' ')[0]
             : 'você';
 
         const message = buildReminderMessage(firstName, reminder);
 
-        await sendTextMessage(reminder.phone, message);
+        // BUG-029: capturar o ID da mensagem enviada pela Z-API
+        const zapiResult = await sendTextMessage(reminder.phone, message);
+        const zapiMessageId = zapiResult?.zapiMessageId || null;
 
         await createDoseLog({
             medicationId: reminder.medication_id,
             scheduledAt: new Date().toISOString(),
             reminderSent: true,
-            reminderSentAt: new Date().toISOString()
+            reminderSentAt: new Date().toISOString(),
+            zapiMessageId
         });
 
         console.log(`✅ Lembrete enviado para ${reminder.phone} — ${reminder.med_nome}`);

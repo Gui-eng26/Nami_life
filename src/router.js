@@ -1,4 +1,5 @@
-import { getConversationState, logAgentInteraction, getRecentDoses } from './database.js';
+import { getConversationState, logAgentInteraction, getRecentDoses,
+    getDoseLogByZapiMessageId, confirmDoseByLogId } from './database.js';
 import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
 import { handleCadastro } from './agentes/cadastro.js';
@@ -62,10 +63,30 @@ function detectarIntencaoCadastro(message) {
 // ROTEADOR PRINCIPAL
 // ============================================================
 
-export async function routeMessage({ user, message, image, messageId }) {
+export async function routeMessage({ user, message, image, messageId, referenceMessageId }) {
     if (isDuplicateMessage(messageId)) {
         console.log(`⚠️  Mensagem duplicada ignorada: ${messageId}`);
         return null;
+    }
+
+    // FAST-PATH: confirmação por referência de mensagem (função "responder" do WhatsApp)
+    if (referenceMessageId && detectarConfirmacaoDose(message)) {
+        const doseLog = await getDoseLogByZapiMessageId(referenceMessageId);
+        if (doseLog && doseLog.confirmed === false) {
+            await confirmDoseByLogId(doseLog.id);
+            const nomeRemedio = doseLog.med_nome || 'seu remédio';
+            console.log(`✅ [FAST-PATH] Dose confirmada via referenceMessageId — ${user.phone} — ${nomeRemedio}`);
+
+            await logAgentInteraction({
+                userId: user.id,
+                agent: 'fast_path_reference',
+                userMessage: message,
+                agentResponse: `Dose confirmada: ${nomeRemedio}`
+            });
+
+            const firstName = user.name ? user.name.split(' ')[0] : 'você';
+            return `✅ Anotei! Dose do *${nomeRemedio}* confirmada, ${firstName}. Continue assim! 💪💊`;
+        }
     }
 
     const state = await getConversationState(user.id);

@@ -19,8 +19,13 @@ export async function sendTextMessage(phone, message) {
             }
         });
 
-        console.log(`✅ Mensagem enviada para ${cleanPhone}`);
-        return response.data;
+        const zapiMessageId = response.data?.zaapId
+            || response.data?.messageId
+            || response.data?.id
+            || null;
+
+        console.log(`✅ Mensagem enviada para ${cleanPhone}${zapiMessageId ? ` — msgId: ${zapiMessageId}` : ''}`);
+        return { ...response.data, zapiMessageId };
 
     } catch (error) {
         console.error(`❌ Erro Z-API:`, error.response?.status, error.response?.data || error.message);
@@ -51,6 +56,7 @@ export function parseZApiPayload(body) {
     const text = body.text?.message || null;
     const audio = body.audio?.audioUrl || null;
     const image = body.image?.imageUrl || null;
+    const referenceMessageId = body.referenceMessageId || null;
 
-    return { phone, text, audio, image };
+    return { phone, text, audio, image, referenceMessageId };
 }

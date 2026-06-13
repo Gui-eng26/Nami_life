@@ -1,6 +1,7 @@
 import { sendTextMessage } from '../whatsapp.js';
 import {
     updateDoseLogTentativa,
+    updateDoseLogZapiMessageId,
     markAsNaoInformado,
     getCaregivers,
     markCaregiverNotified
@@ -96,8 +97,16 @@ export async function handleFollowUp({ doseLog, reminder }) {
     try {
         if (tentativa <= 3) {
             const message = buildFollowUpMessage(tentativa, reminder);
-            await sendTextMessage(reminder.phone, message);
+            const zapiResult = await sendTextMessage(reminder.phone, message);
+            const zapiMessageId = zapiResult?.zapiMessageId || null;
+
             await updateDoseLogTentativa(doseLog.id, tentativa);
+
+            // BUG-029: atualizar com o ID do follow-up mais recente para confirmação via "responder"
+            if (zapiMessageId) {
+                await updateDoseLogZapiMessageId(doseLog.id, zapiMessageId);
+            }
+
             console.log(`🔔 Follow-up tentativa ${tentativa} enviado para ${reminder.phone} — ${reminder.med_nome}`);
         } else {
             // 3 tentativas esgotadas — marca como não informado e avisa cuidadores
