@@ -45,6 +45,18 @@ function detectarConfirmacaoDose(message) {
 }
 
 // ============================================================
+// DETECÇÃO DE AFIRMAÇÃO SIMPLES (pós-onboarding)
+// Separada de detectarConfirmacaoDose para não misturar contextos
+// ============================================================
+
+function isAffirmativeSimple(message) {
+    if (!message) return false;
+    const termos = ['sim', 'ok', 'pode', 'claro', 'quero', 'vamos', 'bora', 'vou', 's'];
+    const msg = message.toLowerCase().trim();
+    return termos.some(t => msg === t || msg.startsWith(t + ' '));
+}
+
+// ============================================================
 // DETECÇÃO DE INTENÇÃO DE CADASTRO
 // ============================================================
 
@@ -108,7 +120,24 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             }
         });
 
-    // 2. Usuário já está em fluxo de cadastro → agente_cadastro
+    // 2. Usuário concluiu onboarding agora — respondendo "por onde quer começar?"
+    } else if (currentState === 'post_onboarding') {
+        if (detectarIntencaoCadastro(message) || isAffirmativeSimple(message)) {
+            agentName = 'cadastro';
+            console.log(`💊 Roteando para cadastro (pós-onboarding) — ${user.phone}`);
+            response = await handleCadastro({
+                user,
+                message,
+                state,
+                context: { etapa: 'cad_nome' }
+            });
+        } else {
+            agentName = 'principal';
+            console.log(`🤖 Roteando para principal (pós-onboarding) — ${user.phone}`);
+            response = await handlePrincipal({ user, message, image });
+        }
+
+    // 3. Usuário já está em fluxo de cadastro → agente_cadastro
     } else if (currentState === 'adding_med') {
         agentName = 'cadastro';
         console.log(`💊 Roteando para cadastro (estado adding_med) — ${user.phone}`);

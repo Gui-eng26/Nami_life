@@ -325,8 +325,8 @@ export async function handleRecepcionista({ user, message, context }) {
             });
             console.log(`✅ Recepcionista: onboarding concluído — roteando para cadastro (${user.phone})`);
         } else {
-            await saveConversationState(user.id, { state: 'idle', context: {} });
-            console.log(`✅ Recepcionista: onboarding concluído para ${user.phone}`);
+            await saveConversationState(user.id, { state: 'post_onboarding', context: {} });
+            console.log(`✅ Recepcionista: onboarding concluído — aguardando intenção (${user.phone})`);
         }
 
     } else if (lgpdRecusado) {
