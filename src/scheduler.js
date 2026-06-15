@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import 'dotenv/config';
 import { getPendingReminders, getPendingFollowUps, createDoseLog,
-    getUsuariosAtivos, getMedicamentoDosesPerDia } from './database.js';
+    getUsuariosAtivos } from './database.js';
 import { sendTextMessage } from './whatsapp.js';
 import { handleFollowUp } from './agentes/lembrete.js';
 import { enviarResumoSemanal } from './agentes/relatorios.js';
@@ -97,10 +97,13 @@ async function checkAndSendFollowUps() {
 
 async function sendReminder(reminder) {
     try {
-        // MH-022: Não enviar lembrete se estoque zerado
+        // MH-026: Estoque zerado — mensagem especial, sem criar dose_log
         if (reminder.estoque_atual !== null && reminder.estoque_atual <= 0) {
-            console.log(`⚠️ Lembrete ignorado — estoque zerado para ${reminder.med_nome} (${reminder.phone})`);
-            return;
+            const firstName = reminder.user_name?.split(' ')[0] || 'você';
+            const message = buildEstoqueZeradoMessage(firstName, reminder);
+            await sendTextMessage(reminder.phone, message);
+            console.log(`📦 Aviso de estoque zerado enviado para ${reminder.phone} — ${reminder.med_nome}`);
+            return; // não cria dose_log — não há dose real para confirmar
         }
 
         const firstName = reminder.user_name
@@ -123,10 +126,6 @@ async function sendReminder(reminder) {
 
         console.log(`✅ Lembrete enviado para ${reminder.phone} — ${reminder.med_nome}`);
 
-        // Verifica estoque em dias (nova lógica) e envia alerta se necessário
-        await sleep(2000);
-        await verificarEstoqueBaixo(reminder);
-
     } catch (error) {
         console.error(`❌ Erro ao enviar lembrete para ${reminder.phone}:`, error.message);
     }
@@ -145,53 +144,16 @@ function buildReminderMessage(firstName, reminder) {
 }
 
 // ============================================================
-// VERIFICA E ENVIA ALERTA DE ESTOQUE BAIXO (lógica em dias)
+// MENSAGEM DE ESTOQUE ZERADO
 // ============================================================
 
-async function verificarEstoqueBaixo(reminder) {
-    try {
-        const dosesPerDia = await getMedicamentoDosesPerDia(reminder.medication_id);
-        if (dosesPerDia === 0) return;
-
-        const diasRestantes = Math.floor(reminder.estoque_atual / dosesPerDia);
-
-        if (diasRestantes <= 5) {
-            await sendEstoqueBaixoAlert(reminder, diasRestantes, dosesPerDia);
-        }
-    } catch (error) {
-        console.error('❌ Erro ao verificar estoque:', error.message);
-    }
-}
-
-function buildEstoqueBaixoMessage(firstName, reminder, diasRestantes) {
-    const urgencia = diasRestantes === 0
-        ? 'seu estoque acabou'
-        : diasRestantes === 1
-            ? 'seu estoque acaba *amanhã*'
-            : `seu estoque acaba em *${diasRestantes} dias*`;
-
+function buildEstoqueZeradoMessage(firstName, reminder) {
     return (
-        `⚠️ Atenção, ${firstName}!\n\n` +
-        `Você tem *${reminder.estoque_atual}* ${reminder.estoque_atual === 1 ? 'unidade' : 'unidades'} ` +
-        `de *${reminder.med_nome}* — ${urgencia}.\n\n` +
-        `Quando fizer a recompra, me avise a nova quantidade! ` +
-        `É só responder algo como: *"Comprei 30 comprimidos de ${reminder.med_nome}"* 💊`
+        `⏰ ${firstName}, está na hora do seu *${reminder.med_nome}*!\n\n` +
+        `⚠️ Seu estoque está zerado — não foi possível registrar a dose.\n\n` +
+        `Quando fizer a recompra, me avise a nova quantidade:\n` +
+        `*"Comprei 30 comprimidos de ${reminder.med_nome}"* 💊`
     );
-}
-
-async function sendEstoqueBaixoAlert(reminder, diasRestantes, dosesPerDia) {
-    try {
-        const firstName = reminder.user_name
-            ? reminder.user_name.split(' ')[0]
-            : 'você';
-
-        const message = buildEstoqueBaixoMessage(firstName, reminder, diasRestantes);
-        await sendTextMessage(reminder.phone, message);
-        console.log(`📦 Alerta de estoque enviado para ${reminder.phone} — ${diasRestantes} dias restantes (${dosesPerDia}x/dia)`);
-
-    } catch (error) {
-        console.error('❌ Erro ao enviar alerta de estoque:', error.message);
-    }
 }
 
 // ============================================================

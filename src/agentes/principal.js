@@ -8,10 +8,35 @@ import {
     updateUserName,
     getRecentDoses,
     getUserMedications,
-    updateMedicationStock
+    updateMedicationStock,
+    getEstoqueInfoParaAlerta,
+    contarConfirmacoesHoje,
+    calcularAlertaEstoque
 } from '../database.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+function buildAlertaEstoqueMessage(info) {
+    const { medNome, novoEstoque, diasRestantes } = info;
+
+    if (diasRestantes === 0) {
+        return (
+            `\n\n⚠️ *Atenção:* você acabou de tomar o último comprimido do *${medNome}* disponível. ` +
+            `Não esqueça de providenciar a recompra!\n` +
+            `Quando comprar, me avise: *"Comprei 30 comprimidos de ${medNome}"* 💊`
+        );
+    }
+
+    const prazo = diasRestantes === 1
+        ? 'mais *1 dia*'
+        : `mais *${diasRestantes} dias*`;
+
+    return (
+        `\n\n⚠️ *Lembrete de estoque:* você tem *${novoEstoque}* ${novoEstoque === 1 ? 'unidade' : 'unidades'} ` +
+        `do *${medNome}* — suficiente para ${prazo}. ` +
+        `Bom momento para planejar a recompra! 💊`
+    );
+}
 
 export async function handlePrincipal({ user, message, image }) {
     const state = await getConversationState(user.id);
@@ -29,7 +54,14 @@ export async function handlePrincipal({ user, message, image }) {
     if (claudeResponse.action) {
         const override = await processAction(claudeResponse.action, user);
         if (override) {
-            claudeResponse = { ...claudeResponse, ...override };
+            if (override.alertaEstoque) {
+                claudeResponse = {
+                    ...claudeResponse,
+                    message: claudeResponse.message + override.alertaEstoque
+                };
+            } else {
+                claudeResponse = { ...claudeResponse, ...override };
+            }
         }
     }
 
@@ -119,6 +151,25 @@ async function processAction(action, user) {
 
         case 'CONFIRM_DOSE':
             await confirmDose(action.medicationId);
+
+            // Verificar se deve emitir alerta de estoque pós-confirmação
+            try {
+                const estoqueInfo = await getEstoqueInfoParaAlerta(action.medicationId);
+                if (estoqueInfo) {
+                    const confirmacoesDoDia = await contarConfirmacoesHoje(action.medicationId);
+                    const deveAlertar = calcularAlertaEstoque({
+                        diasRestantes: estoqueInfo.diasRestantes,
+                        tipo_tratamento: estoqueInfo.tipo_tratamento,
+                        tratamento_dias: estoqueInfo.tratamento_dias,
+                        confirmacoesDoDia
+                    });
+                    if (deveAlertar) {
+                        return { alertaEstoque: buildAlertaEstoqueMessage(estoqueInfo) };
+                    }
+                }
+            } catch (e) {
+                console.error('⚠️ Erro ao verificar alerta de estoque pós-confirmação:', e.message);
+            }
             return null;
 
         case 'UPDATE_STOCK':

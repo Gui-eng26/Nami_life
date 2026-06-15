@@ -1,9 +1,36 @@
 import { getConversationState, logAgentInteraction, getRecentDoses,
-    getDoseLogByZapiMessageId, confirmDoseByLogId } from './database.js';
+    getDoseLogByZapiMessageId, confirmDoseByLogId,
+    getEstoqueInfoParaAlerta, contarConfirmacoesHoje, calcularAlertaEstoque } from './database.js';
 import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
 import { handleCadastro } from './agentes/cadastro.js';
 import { handleRelatorios, classificarIntencaoRelatorio } from './agentes/relatorios.js';
+
+// ============================================================
+// MENSAGEM DE ALERTA DE ESTOQUE PÓS-CONFIRMAÇÃO
+// ============================================================
+
+function buildAlertaEstoqueMessage(info) {
+    const { medNome, novoEstoque, diasRestantes } = info;
+
+    if (diasRestantes === 0) {
+        return (
+            `\n\n⚠️ *Atenção:* você acabou de tomar o último comprimido do *${medNome}* disponível. ` +
+            `Não esqueça de providenciar a recompra!\n` +
+            `Quando comprar, me avise: *"Comprei 30 comprimidos de ${medNome}"* 💊`
+        );
+    }
+
+    const prazo = diasRestantes === 1
+        ? 'mais *1 dia*'
+        : `mais *${diasRestantes} dias*`;
+
+    return (
+        `\n\n⚠️ *Lembrete de estoque:* você tem *${novoEstoque}* ${novoEstoque === 1 ? 'unidade' : 'unidades'} ` +
+        `do *${medNome}* — suficiente para ${prazo}. ` +
+        `Bom momento para planejar a recompra! 💊`
+    );
+}
 
 // ============================================================
 // IDEMPOTÊNCIA — descarta eventos duplicados da Z-API
@@ -92,6 +119,8 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         if (doseLog && doseLog.confirmed === false) {
             await confirmDoseByLogId(doseLog.id);
             const nomeRemedio = doseLog.med_nome || 'seu remédio';
+            const firstName = user.name ? user.name.split(' ')[0] : 'você';
+
             console.log(`✅ [FAST-PATH] Dose confirmada via referenceMessageId — ${user.phone} — ${nomeRemedio}`);
 
             await logAgentInteraction({
@@ -101,8 +130,25 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                 agentResponse: `Dose confirmada: ${nomeRemedio}`
             });
 
-            const firstName = user.name ? user.name.split(' ')[0] : 'você';
-            return `✅ Anotei! Dose do *${nomeRemedio}* confirmada, ${firstName}. Continue assim! 💪💊`;
+            // Verificar alerta de estoque pós-confirmação
+            let alertaSufixo = '';
+            try {
+                const estoqueInfo = await getEstoqueInfoParaAlerta(doseLog.medication_id);
+                if (estoqueInfo) {
+                    const confirmacoesDoDia = await contarConfirmacoesHoje(doseLog.medication_id);
+                    const deveAlertar = calcularAlertaEstoque({
+                        diasRestantes: estoqueInfo.diasRestantes,
+                        tipo_tratamento: estoqueInfo.tipo_tratamento,
+                        tratamento_dias: estoqueInfo.tratamento_dias,
+                        confirmacoesDoDia
+                    });
+                    if (deveAlertar) alertaSufixo = buildAlertaEstoqueMessage(estoqueInfo);
+                }
+            } catch (e) {
+                console.error('⚠️ Erro ao verificar alerta estoque (fast-path):', e.message);
+            }
+
+            return `✅ Anotei! Dose do *${nomeRemedio}* confirmada, ${firstName}. Continue assim! 💪💊${alertaSufixo}`;
         }
     }
 

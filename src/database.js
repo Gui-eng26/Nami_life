@@ -695,6 +695,75 @@ export async function getUsuariosAtivos() {
 }
 
 // ============================================================
+// ALERTA DE ESTOQUE — SUPORTE PÓS-CONFIRMAÇÃO
+// ============================================================
+
+// Retorna info de estoque do medicamento para decisão de alerta
+export async function getEstoqueInfoParaAlerta(medicationId) {
+    const { data: med } = await supabase
+        .from('medications')
+        .select('nome, estoque_atual, tipo_tratamento, tratamento_dias')
+        .eq('id', medicationId)
+        .single();
+
+    if (!med) return null;
+
+    const { data: schedules } = await supabase
+        .from('schedules')
+        .select('id')
+        .eq('medication_id', medicationId)
+        .eq('ativo', true);
+
+    const dosesPerDia = (schedules || []).length;
+    if (dosesPerDia === 0) return null;
+
+    const diasRestantes = Math.floor(med.estoque_atual / dosesPerDia);
+
+    return {
+        medNome: med.nome,
+        novoEstoque: med.estoque_atual,
+        dosesPerDia,
+        diasRestantes,
+        tipo_tratamento: med.tipo_tratamento || 'continuo',
+        tratamento_dias: med.tratamento_dias || null
+    };
+}
+
+// Conta confirmações de hoje para o medicamento (determina se é 1ª do dia)
+export async function contarConfirmacoesHoje(medicationId) {
+    const agora = new Date();
+    const dataBRT = agora.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    const [dia, mes, ano] = dataBRT.split('/');
+    const inicioDiaBRT = new Date(`${ano}-${mes}-${dia}T00:00:00-03:00`);
+
+    const { data } = await supabase
+        .from('dose_logs')
+        .select('id')
+        .eq('medication_id', medicationId)
+        .eq('confirmed', true)
+        .gte('taken_at', inicioDiaBRT.toISOString());
+
+    return (data || []).length;
+}
+
+// Decide se deve enviar alerta de estoque após confirmação
+// Retorna false se não deve alertar, ou true se deve
+export function calcularAlertaEstoque({ diasRestantes, tipo_tratamento, tratamento_dias, confirmacoesDoDia }) {
+    // Agudo com tratamento curto (<=5 dias): ignora faixa 2-5, só alerta no último dia
+    const limiteAlerta = (tipo_tratamento === 'agudo' && tratamento_dias && tratamento_dias <= 5)
+        ? 1
+        : 5;
+
+    if (diasRestantes > limiteAlerta) return false;
+
+    // diasRestantes = 0: alerta sempre (último comprimido tomado)
+    if (diasRestantes === 0) return true;
+
+    // diasRestantes 1-5 (ou 1 para agudo curto): só na 1ª confirmação do dia
+    return confirmacoesDoDia <= 1;
+}
+
+// ============================================================
 // LOGS DE AGENTES
 // ============================================================
 

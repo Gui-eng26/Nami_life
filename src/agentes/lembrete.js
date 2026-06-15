@@ -4,7 +4,9 @@ import {
     updateDoseLogZapiMessageId,
     markAsNaoInformado,
     getCaregivers,
-    markCaregiverNotified
+    markCaregiverNotified,
+    getEstoqueInfoParaAlerta,
+    calcularAlertaEstoque
 } from '../database.js';
 
 // ============================================================
@@ -35,6 +37,26 @@ function buildFollowUpMessage(tentativa, reminder) {
 
     // Fallback seguro (não deveria ser chamado fora de tentativa 2 ou 3)
     return `💊 ${nome}, lembrete do *${remedio}*. Já tomou? Responda *SIM* ou *NÃO*`;
+}
+
+// ============================================================
+// MENSAGEM DE ALERTA DE ESTOQUE (caso nao_informado)
+// ============================================================
+
+function buildAlertaEstoqueNaoInformadoMessage(firstName, info) {
+    const { medNome, novoEstoque, diasRestantes } = info;
+
+    const prazo = diasRestantes === 0
+        ? 'está esgotado'
+        : diasRestantes === 1
+            ? 'dura mais 1 dia'
+            : `dura mais ${diasRestantes} dias`;
+
+    return (
+        `⚠️ ${firstName}, não recebi confirmação da sua dose do *${medNome}*.\n\n` +
+        `Seu estoque atual é de *${novoEstoque}* unidades — ${prazo}.\n` +
+        `Quando puder, me avise se tomou, e não esqueça de providenciar a recompra! 💊`
+    );
 }
 
 // ============================================================
@@ -113,6 +135,27 @@ export async function handleFollowUp({ doseLog, reminder }) {
             await markAsNaoInformado(doseLog.id);
             console.log(`⚠️ Dose marcada como nao_informado (${doseLog.id}) — ${reminder.phone} — ${reminder.med_nome}`);
             await notificarCuidadores(doseLog, reminder);
+
+            // MH-026: verificar alerta de estoque (sem verificar 1ª do dia — urgência prevalece)
+            try {
+                const estoqueInfo = await getEstoqueInfoParaAlerta(doseLog.medication_id);
+                if (estoqueInfo) {
+                    const deveAlertar = calcularAlertaEstoque({
+                        diasRestantes: estoqueInfo.diasRestantes,
+                        tipo_tratamento: estoqueInfo.tipo_tratamento,
+                        tratamento_dias: estoqueInfo.tratamento_dias,
+                        confirmacoesDoDia: 0  // força envio (sem verificação de 1ª do dia)
+                    });
+                    if (deveAlertar) {
+                        const firstName = reminder.user_name?.split(' ')[0] || 'você';
+                        const msg = buildAlertaEstoqueNaoInformadoMessage(firstName, estoqueInfo);
+                        await sendTextMessage(reminder.phone, msg);
+                        console.log(`📦 Alerta de estoque (nao_informado) enviado para ${reminder.phone} — ${estoqueInfo.medNome}`);
+                    }
+                }
+            } catch (e) {
+                console.error('⚠️ Erro ao enviar alerta estoque (nao_informado):', e.message);
+            }
         }
     } catch (error) {
         console.error(`❌ Erro no follow-up para ${reminder.phone}:`, error.message);
