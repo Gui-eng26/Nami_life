@@ -65,7 +65,12 @@ function detectarIntencaoCadastro(message) {
     const termos = [
         'cadastrar', 'adicionar remédio', 'novo remédio', 'registrar remédio',
         'quero cadastrar', 'tenho um remédio', 'adicionar medicamento',
-        'novo medicamento', 'registrar medicamento', 'quero adicionar'
+        'novo medicamento', 'registrar medicamento', 'quero adicionar',
+        // Variações com "mais um" e "outro"
+        'adicionar mais', 'mais um remédio', 'mais um medicamento',
+        'outro remédio', 'outro medicamento', 'incluir remédio',
+        'incluir medicamento', 'colocar remédio', 'colocar medicamento',
+        'inserir remédio', 'inserir medicamento'
     ];
     const msg = message.toLowerCase();
     return termos.some(t => msg.includes(t));
@@ -148,7 +153,19 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             context: state?.context || {}
         });
 
-    // 3. Usuário idle com intenção explícita de cadastro → agente_cadastro
+    // Handler para estado fantasma criado pelo agente_principal
+    // Redireciona para o fluxo estruturado do agente_cadastro
+    } else if (currentState === 'cadastrando_medicamento') {
+        agentName = 'cadastro';
+        console.log(`💊 Roteando para cadastro (estado cadastrando_medicamento corrigido) — ${user.phone}`);
+        response = await handleCadastro({
+            user,
+            message,
+            state,
+            context: { etapa: 'cad_nome' }  // reinicia do zero de forma estruturada
+        });
+
+    // 4. Usuário idle com intenção explícita de cadastro → agente_cadastro
     } else if (currentState === 'idle' && detectarIntencaoCadastro(message)) {
         agentName = 'cadastro';
         console.log(`💊 Roteando para cadastro (intenção detectada) — ${user.phone}`);
