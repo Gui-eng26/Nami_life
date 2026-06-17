@@ -65,9 +65,24 @@ async function temDosePendente(userId) {
 
 function detectarConfirmacaoDose(message) {
     if (!message) return false;
+    const msg = message.toLowerCase().trim();
+
+    // PRIMEIRO: negação explícita invalida qualquer confirmação
+    // Prioridade à negação — falso negativo é recuperável via follow-up;
+    // falso positivo corrompe dados de adesão
+    const negacoes = [
+        'não tomei', 'nao tomei',
+        'não vou tomar', 'nao vou tomar',
+        'não vou mais', 'nao vou mais',
+        'ainda não tomei', 'ainda nao tomei',
+        'não tomou', 'nao tomou',
+        'não consigo tomar', 'nao consigo tomar',
+        'não consigo', 'nao consigo'
+    ];
+    if (negacoes.some(n => msg.includes(n))) return false;
+
     const termos = ['sim', 'tomei', 'já tomei', 'pode', 'ok', 'claro',
         'feito', 'tá', 'foi', 'tomei sim', 'já tomei sim'];
-    const msg = message.toLowerCase().trim();
     return termos.some(t => msg.includes(t));
 }
 

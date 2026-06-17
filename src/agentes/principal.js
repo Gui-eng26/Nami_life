@@ -11,7 +11,8 @@ import {
     updateMedicationStock,
     getEstoqueInfoParaAlerta,
     contarConfirmacoesHoje,
-    calcularAlertaEstoque
+    calcularAlertaEstoque,
+    registrarNaoTomado
 } from '../database.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -169,6 +170,13 @@ async function processAction(action, user) {
                 }
             } catch (e) {
                 console.error('⚠️ Erro ao verificar alerta de estoque pós-confirmação:', e.message);
+            }
+            return null;
+
+        case 'REGISTER_NAO_TOMADO':
+            if (action.medicationId) {
+                await registrarNaoTomado(action.medicationId);
+                console.log(`🚫 Dose registrada como não tomada via REGISTER_NAO_TOMADO — ${action.medicationId}`);
             }
             return null;
 

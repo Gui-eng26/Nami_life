@@ -409,6 +409,32 @@ export async function markAsNaoInformado(doseLogId) {
     if (error) throw new Error(`Erro ao marcar nao_informado: ${error.message}`);
 }
 
+export async function registrarNaoTomado(medicationId) {
+    const { data: log, error: fetchError } = await supabase
+        .from('dose_logs')
+        .select('id')
+        .eq('medication_id', medicationId)
+        .eq('status', 'pendente')
+        .eq('confirmed', false)
+        .order('scheduled_at', { ascending: false })
+        .limit(1)
+        .single();
+
+    if (fetchError || !log) {
+        console.log(`⚠️ Nenhum log pendente encontrado para registrarNaoTomado — medication: ${medicationId}`);
+        return null;
+    }
+
+    const { error: updateError } = await supabase
+        .from('dose_logs')
+        .update({ status: 'nao_tomado' })
+        .eq('id', log.id);
+
+    if (updateError) throw new Error(`Erro ao registrar não tomado: ${updateError.message}`);
+    console.log(`🚫 Dose registrada como nao_tomado — log id: ${log.id}`);
+    return log.id;
+}
+
 export async function getCaregivers(userId) {
     const { data, error } = await supabase
         .from('care_network')
