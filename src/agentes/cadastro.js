@@ -96,6 +96,16 @@ cad_confirmacao:
 
   Está tudo certinho?"
 
+  EXPRESSÕES QUE CONTAM COMO CONFIRMAÇÃO (avance para cad_salvo):
+  "sim", "é isso", "está", "tá", "tá bom", "ok", "pode", "salva", "salvar",
+  "confirmar", "confirmo", "perfeito", "certo", "correto", "isso mesmo",
+  "beleza", "pode salvar", "pode cadastrar", "isso", "está certo",
+  "está certinho", "tudo certo", "certinho", "pode sim", "vai", "vamos"
+
+  EXPRESSÕES QUE INDICAM CORREÇÃO (mantenha em cad_confirmacao ou volte à etapa relevante):
+  "não", "errado", "muda", "altera", "quero mudar", "não está certo",
+  "não é isso", "corrige", "tem erro"
+
 cad_salvo:
   Usuário confirmou os dados.
   - Preencha o campo action com SAVE_MEDICATION

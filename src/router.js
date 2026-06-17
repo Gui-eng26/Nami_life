@@ -1,6 +1,7 @@
 import { getConversationState, logAgentInteraction, getRecentDoses,
     getDoseLogByZapiMessageId, confirmDoseByLogId,
-    getEstoqueInfoParaAlerta, contarConfirmacoesHoje, calcularAlertaEstoque } from './database.js';
+    getEstoqueInfoParaAlerta, contarConfirmacoesHoje, calcularAlertaEstoque,
+    saveConversationState } from './database.js';
 import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
 import { handleCadastro } from './agentes/cadastro.js';
@@ -244,6 +245,17 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             agentName = 'principal';
             console.log(`🤖 Roteando para principal (pós-onboarding) — ${user.phone}`);
             response = await handlePrincipal({ user, message, image });
+
+            // Preserva post_onboarding por mais 1 troca para capturar o "sim" seguinte.
+            // Após 1 troca (exchanges >= 1), deixa o principal gerenciar o estado normalmente.
+            const exchanges = state?.context?.exchanges || 0;
+            if (exchanges < 1) {
+                await saveConversationState(user.id, {
+                    state: 'post_onboarding',
+                    context: { exchanges: exchanges + 1 }
+                });
+                console.log(`🔄 post_onboarding preservado (exchanges: ${exchanges + 1}) — ${user.phone}`);
+            }
         }
 
     // 3. Usuário no meio de um fluxo de configuração
