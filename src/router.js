@@ -5,6 +5,7 @@ import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
 import { handleCadastro } from './agentes/cadastro.js';
 import { handleRelatorios, classificarIntencaoRelatorio } from './agentes/relatorios.js';
+import { handleConfiguracao } from './agentes/configuracao.js';
 
 // ============================================================
 // MENSAGEM DE ALERTA DE ESTOQUE PÓS-CONFIRMAÇÃO
@@ -96,6 +97,48 @@ function isAffirmativeSimple(message) {
     const termos = ['sim', 'ok', 'pode', 'claro', 'quero', 'vamos', 'bora', 'vou', 's'];
     const msg = message.toLowerCase().trim();
     return termos.some(t => msg === t || msg.startsWith(t + ' '));
+}
+
+// ============================================================
+// DETECÇÃO DE INTENÇÃO DE CONFIGURAÇÃO
+// ============================================================
+
+function detectarIntencaoConfiguracao(message) {
+    if (!message) return false;
+    const msg = message.toLowerCase();
+
+    // Casos diretos — detectados sem precisar de combinação
+    const casosDiretos = [
+        'pausar', 'reativar', 'encerrar tratamento',
+        'alterar horário', 'alterar horario',
+        'mudar horário', 'mudar horario',
+        'trocar horário', 'trocar horario',
+        'não vou mais tomar', 'nao vou mais tomar'
+    ];
+    if (casosDiretos.some(t => msg.includes(t))) return true;
+
+    // Combinatório: palavra de ação + palavra de objeto
+    const palavrasAcao = [
+        'parar', 'cancela', 'cancelar', 'desativar', 'suspender',
+        'tirar', 'remover', 'apagar', 'excluir', 'deletar',
+        'encerrar', 'finalizar', 'acabar',
+        'mudar', 'alterar', 'trocar', 'modificar',
+        'ativar', 'retomar', 'voltar',
+        'não preciso', 'nao preciso',
+        'não precisa', 'nao precisa',
+        'não quero mais', 'nao quero mais',
+        'não me lembra', 'nao me lembra',
+        'não me lembre', 'nao me lembre'
+    ];
+    const palavrasObjeto = [
+        'lembrete', 'aviso', 'alarme', 'alerta', 'notificação', 'notificacao',
+        'remédio', 'remedio', 'medicamento', 'tratamento',
+        'horário', 'horario', 'hora'
+    ];
+
+    const temAcao = palavrasAcao.some(p => msg.includes(p));
+    const temObjeto = palavrasObjeto.some(p => msg.includes(p));
+    return temAcao && temObjeto;
 }
 
 // ============================================================
@@ -203,7 +246,25 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             response = await handlePrincipal({ user, message, image });
         }
 
-    // 3. Usuário já está em fluxo de cadastro → agente_cadastro
+    // 3. Usuário no meio de um fluxo de configuração
+    } else if (currentState === 'configurando') {
+        agentName = 'configuracao';
+        console.log(`⚙️ Roteando para configuração (estado configurando) — ${user.phone}`);
+        response = await handleConfiguracao({
+            user, message, state,
+            context: state?.context || {}
+        });
+
+    // 3b. Usuário em idle com intenção de configuração detectada
+    } else if (currentState === 'idle' && detectarIntencaoConfiguracao(message)) {
+        agentName = 'configuracao';
+        console.log(`⚙️ Roteando para configuração (intenção detectada) — ${user.phone}`);
+        response = await handleConfiguracao({
+            user, message, state,
+            context: { etapa: 'identif_intencao' }
+        });
+
+    // 4. Usuário já está em fluxo de cadastro → agente_cadastro
     } else if (currentState === 'adding_med') {
         agentName = 'cadastro';
         console.log(`💊 Roteando para cadastro (estado adding_med) — ${user.phone}`);

@@ -435,6 +435,56 @@ export async function registrarNaoTomado(medicationId) {
     return log.id;
 }
 
+// ============================================================
+// CONFIGURAÇÃO DE MEDICAMENTOS
+// ============================================================
+
+export async function pausarMedicamento(medicationId) {
+    const { error } = await supabase
+        .from('schedules')
+        .update({ ativo: false })
+        .eq('medication_id', medicationId);
+    if (error) throw new Error(`Erro ao pausar: ${error.message}`);
+    console.log(`⏸️ Schedules pausados — medication: ${medicationId}`);
+}
+
+export async function reativarMedicamento(medicationId) {
+    const { error } = await supabase
+        .from('schedules')
+        .update({ ativo: true })
+        .eq('medication_id', medicationId);
+    if (error) throw new Error(`Erro ao reativar: ${error.message}`);
+    console.log(`▶️ Schedules reativados — medication: ${medicationId}`);
+}
+
+export async function encerrarTratamento(medicationId) {
+    const { error: errMed } = await supabase
+        .from('medications')
+        .update({ ativo: false })
+        .eq('id', medicationId);
+    if (errMed) throw new Error(`Erro ao encerrar: ${errMed.message}`);
+
+    const { error: errSched } = await supabase
+        .from('schedules')
+        .update({ ativo: false })
+        .eq('medication_id', medicationId);
+    if (errSched) throw new Error(`Erro ao desativar schedules: ${errSched.message}`);
+
+    console.log(`🔴 Tratamento encerrado — medication: ${medicationId}`);
+}
+
+export async function alterarHorarioSchedule(scheduleId, novoHorario) {
+    const horarioFormatado = novoHorario.length === 5
+        ? `${novoHorario}:00`
+        : novoHorario;
+    const { error } = await supabase
+        .from('schedules')
+        .update({ horario: horarioFormatado })
+        .eq('id', scheduleId);
+    if (error) throw new Error(`Erro ao alterar horário: ${error.message}`);
+    console.log(`🕐 Horário alterado — schedule: ${scheduleId} → ${horarioFormatado}`);
+}
+
 export async function getCaregivers(userId) {
     const { data, error } = await supabase
         .from('care_network')
