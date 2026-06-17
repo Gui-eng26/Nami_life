@@ -597,6 +597,7 @@ function _minutesDiff(horaAtual, horarioAlvo) {
 
 // Adesão em um período (em dias) para um usuário
 export async function getAdesaoPeriodo(userId, dias = 7) {
+    const agora = new Date();
     const desde = new Date();
     desde.setDate(desde.getDate() - dias);
 
@@ -611,7 +612,10 @@ export async function getAdesaoPeriodo(userId, dias = 7) {
         const schedulesAtivos = (med.schedules || []).filter(s => s.ativo).length;
         if (schedulesAtivos === 0) continue;
 
-        const esperado = schedulesAtivos * dias;
+        const medCriadoEm = new Date(med.created_at);
+        const inicioEfetivo = medCriadoEm > desde ? medCriadoEm : desde;
+        const diasEfetivos = Math.max(1, Math.ceil((agora - inicioEfetivo) / (1000 * 60 * 60 * 24)));
+        const esperado = schedulesAtivos * diasEfetivos;
         totalEsperado += esperado;
 
         const { data: confirmadas } = await supabase
@@ -641,6 +645,7 @@ export async function getAdesaoPeriodo(userId, dias = 7) {
 // Adesão detalhada por medicamento — usada no resumo semanal
 // Retorna breakdown individual + totais gerais
 export async function getAdesaoPorMedicamento(userId, dias = 7) {
+    const agora = new Date();
     const desde = new Date();
     desde.setDate(desde.getDate() - dias);
 
@@ -663,7 +668,10 @@ export async function getAdesaoPorMedicamento(userId, dias = 7) {
         const schedulesAtivos = (med.schedules || []).filter(s => s.ativo).length;
         if (schedulesAtivos === 0) continue;
 
-        const esperado = schedulesAtivos * dias;
+        const medCriadoEm = new Date(med.created_at);
+        const inicioEfetivo = medCriadoEm > desde ? medCriadoEm : desde;
+        const diasEfetivos = Math.max(1, Math.ceil((agora - inicioEfetivo) / (1000 * 60 * 60 * 24)));
+        const esperado = schedulesAtivos * diasEfetivos;
         totalEsperado += esperado;
 
         const { data: confirmadas } = await supabase
