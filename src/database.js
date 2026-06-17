@@ -205,7 +205,7 @@ export async function getMedicamentoDosesPerDia(medicationId) {
 // REGISTRO DE DOSES
 // ============================================================
 
-export async function createDoseLog({ medicationId, scheduledAt, reminderSent, reminderSentAt, zapiMessageId = null }) {
+export async function createDoseLog({ medicationId, scheduledAt, reminderSent, reminderSentAt, zapiMessageId = null, status = 'pendente' }) {
     const now = new Date().toISOString();
     const { data, error } = await supabase
         .from('dose_logs')
@@ -216,7 +216,7 @@ export async function createDoseLog({ medicationId, scheduledAt, reminderSent, r
             reminder_sent_at: reminderSentAt,
             tentativas: 1,
             ultima_tentativa_at: now,
-            status: 'pendente',
+            status: status,
             zapi_message_id: zapiMessageId
         })
         .select()

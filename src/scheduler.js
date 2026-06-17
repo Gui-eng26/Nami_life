@@ -97,13 +97,23 @@ async function checkAndSendFollowUps() {
 
 async function sendReminder(reminder) {
     try {
-        // MH-026: Estoque zerado — mensagem especial, sem criar dose_log
         if (reminder.estoque_atual !== null && reminder.estoque_atual <= 0) {
             const firstName = reminder.user_name?.split(' ')[0] || 'você';
             const message = buildEstoqueZeradoMessage(firstName, reminder);
             await sendTextMessage(reminder.phone, message);
+
+            // Cria dose_log com status 'sem_estoque' para ativar deduplicação do scheduler
+            // Sem isso, o stored procedure retorna o mesmo medicamento no próximo ciclo
+            await createDoseLog({
+                medicationId: reminder.medication_id,
+                scheduledAt: new Date().toISOString(),
+                reminderSent: true,
+                reminderSentAt: new Date().toISOString(),
+                status: 'sem_estoque'
+            });
+
             console.log(`📦 Aviso de estoque zerado enviado para ${reminder.phone} — ${reminder.med_nome}`);
-            return; // não cria dose_log — não há dose real para confirmar
+            return;
         }
 
         const firstName = reminder.user_name
