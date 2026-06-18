@@ -1,4 +1,4 @@
-# 🌿 NAMI — Contexto do Projeto (v6 — 12/06/2026)
+# 🌿 NAMI — Contexto do Projeto (v7 — 18/06/2026)
 
 ---
 
@@ -47,7 +47,7 @@ Frases como "Que ótimo! Estou aqui exatamente para isso..." e "Antes de cadastr
 | Banco de dados | **Supabase** (PostgreSQL) |
 | Scheduler | **node-cron** (lembretes automáticos) |
 | Hospedagem | **Railway** (produção ativa) |
-| Versionamento | **GitHub** — Gui-eng26/Nami_life |
+| Versionamento | **GitHub** — Gui-eng26/Nami_life (público) |
 
 **URL de produção:** `https://namilife-production.up.railway.app`
 **Webhook Z-API:** `POST /webhook/whatsapp`
@@ -71,12 +71,12 @@ nami-backend/
 │       ├── principal.js      → Conversa geral + confirmação de doses
 │       ├── cadastro.js       → Fluxo dedicado de cadastro de medicamentos
 │       ├── lembrete.js       → Follow-up espaçado (30min/1h/30min)
-│       └── relatorios.js     → Consultas de histórico (híbrido: query + Claude)
+│       ├── relatorios.js     → Consultas de histórico (híbrido: query + Claude)
+│       └── configuracao.js   → Pausar/reativar/encerrar/alterar horário ← NOVO
+├── briefings/                → Briefings de implementação por tema ← NOVO
+│   ├── bugs/
+│   └── features/
 ├── CONTEXT.md                → Este arquivo — ponto de partida de toda sessão
-├── BRIEFING_V2.md            → Briefing da arquitetura multi-agente
-├── BRIEFING_CADASTRO.md      → Briefing do agente_cadastro
-├── BRIEFING_LEMBRETE.md      → Briefing do agente_lembrete
-├── BRIEFING_RELATORIOS.md    → Briefing do agente_relatorios
 └── package.json
 ```
 
@@ -125,8 +125,10 @@ id, medication_id (FK), horario (time HH:MM), dias_semana (text[]), ativo
 **dose_logs**
 ```sql
 id, medication_id (FK), scheduled_at, reminder_sent, reminder_sent_at,
-taken_at, confirmed, response_raw, status (pendente/confirmado/nao_informado/nao_tomado),
-tentativas, ultima_tentativa_at, caregiver_notified, caregiver_notified_at
+taken_at, confirmed, response_raw,
+status (pendente/confirmado/nao_informado/nao_tomado/sem_estoque),
+tentativas, ultima_tentativa_at, caregiver_notified, caregiver_notified_at,
+zapi_message_id (text) ← para fast-path de confirmação via referenceMessageId
 ```
 
 **conversation_state**
@@ -149,13 +151,17 @@ const meds = await getUserMedications(userId);
 const ids = meds.map(m => m.id);
 .in('medication_id', ids)
 ```
-Funções já corrigidas: `getDosesHoje`, `getRecentDoses`.
+
+### Stored Procedure: get_pending_reminders
+Atualizada em 15/06/2026 (BUG-031): todas as comparações de data e dia da semana
+usam `AT TIME ZONE 'America/Sao_Paulo'` para evitar duplicação de lembretes noturnos
+que cruzam meia-noite UTC.
 
 ---
 
 ## Arquitetura Multi-Agente
 
-### Fluxo do Roteador
+### Fluxo do Roteador (ordem de verificação)
 
 ```
 mensagem chega → index.js (proteção idempotência por messageId)
@@ -164,13 +170,21 @@ getOrCreateUser(phone)
       ↓
 user.onboarded === false? → agente_recepcionista
       ↓
-detectarConfirmacaoDose(msg) AND temDosePendente(userId)? → agente_principal
+referenceMessageId + detectarConfirmacaoDose? → FAST-PATH (confirmação direta sem LLM)
       ↓
-state === 'adding_med'? → agente_cadastro
+state === 'post_onboarding'? → cadastro (se afirmativo/cadastro) ou principal (exchanges counter)
       ↓
-detectarIntencaoCadastro(msg)? → agente_cadastro
+state === 'configurando'? → agente_configuracao
       ↓
-classificarIntencaoRelatorio(msg)? → agente_relatorios (se retornar null → principal)
+state === 'idle' + detectarIntencaoConfiguracao? → agente_configuracao
+      ↓
+state === 'adding_med' ou 'cadastrando_medicamento'? → agente_cadastro
+      ↓
+state === 'idle' + detectarIntencaoCadastro? → agente_cadastro
+      ↓
+detectarConfirmacaoDose AND temDosePendente? → agente_principal
+      ↓
+classificarIntencaoRelatorio? → agente_relatorios (se retornar null → principal)
       ↓
 agente_principal
 ```
@@ -185,40 +199,48 @@ agente_principal
 | agente_cadastro | src/agentes/cadastro.js | ✅ Ativo |
 | agente_lembrete | src/agentes/lembrete.js | ✅ Ativo |
 | agente_relatorios | src/agentes/relatorios.js | ✅ Ativo |
+| agente_configuracao | src/agentes/configuracao.js | ✅ Ativo (novo em 17/06) |
 | agente_medicacoes (RAG) | — | 🔜 Fase 3 |
-| leitor_receita | — | 🔜 Fase 4 |
-| agente_acompanhamento | — | 🔜 Fase 4 |
 
 ---
 
 ## Recepcionista v3 — Fluxo Detalhado
 
 ### 3 categorias de intenção (primeira mensagem)
-- **CADASTRAR** — usuário mencionou remédio, posologia, tratamento
-- **DESCOBRIR** — quer entender o que a Nami faz
-- **NEUTRO** — saudação simples
+- **CADASTRAR** — usuário mencionou remédio, posologia, tratamento → `state: adding_med`
+- **DESCOBRIR** — quer entender o que a Nami faz → `state: post_onboarding`
+- **NEUTRO** — saudação simples → `state: post_onboarding`
 
 ### Etapas
 ```
 recep_boas_vindas    → apresentação + pede nome
-                       SE mensagem parece remédio (pareceNome() = false):
-                         não salva como nome, pede nome de verdade
 recep_coleta_nome    → salva nome, apresenta LGPD
 recep_lgpd           → aceite ou recusa
 lgpd_recusado        → explica motivo + deixa porta aberta
-lgpd_recusado_retorno → usuário volta, Nami pergunta se mudou de ideia  
-recep_lgpd_reapresentacao → reapresenta termos para novo aceite explícito
 ```
 
-### Validações críticas
-- `pareceNome(message)` — detecta padrões de medicamento antes de salvar nome
-- `isLgpdAccepted(message)` — keywords: sim, s, pode, concordo, aceito, ok, claro...
-- `contemRecusa(message)` — keywords: não, nao, recuso, não aceito...
-- Nome inválido nunca chega ao banco — validação antes do `updateUser`
+### Estado post_onboarding (BUG-034)
+Após LGPD aceito para intenção NEUTRO/DESCOBRIR, estado vai para `post_onboarding`.
+O router mantém esse estado por até **1 troca** após roteamento para o principal
+(contador `exchanges` no contexto). Isso garante que "Sim" como segunda resposta
+ainda seja capturado como intenção de cadastro.
 
-### Transição pós-LGPD
-- Intenção CADASTRAR → `state: 'adding_med'` → agente_cadastro assume automaticamente
-- Outras intenções → `state: 'idle'` → agente_principal
+---
+
+## Agente Configuracao — Fluxo
+
+Arquitetura híbrida: detecção ampla no router (combinatória com word-boundary via
+`contemPalavraLivre()`) + 1 chamada Claude para classificação precisa de intenção.
+
+**Ações suportadas:** pausar lembretes, reativar, encerrar tratamento, alterar horário.
+
+**State machine (6 etapas):**
+```
+identif_intencao → identif_acao (se ambíguo) → identif_medicamento →
+identif_schedule → obter_horario → confirm_acao → executa + idle
+```
+
+Toda alteração no banco requer confirmação explícita do usuário.
 
 ---
 
@@ -229,9 +251,61 @@ cad_nome → cad_forma → cad_dosagem → cad_tipo_tratamento →
 cad_horarios → cad_estoque → cad_confirmacao → cad_salvo
 ```
 
-**Validação de estoque no cadastro (MH-018):**
+**Validação de estoque no cadastro (atualizado 18/06):**
 Na etapa `cad_estoque`, calcula `diasRestantes = floor(estoque / horarios.length)`.
-Se `<= 5`, injeta `alerta_estoque_baixo` no contexto — Claude menciona antes de confirmar.
+- Tratamento **agudo** (com `tratamento_dias`): alerta apenas se `diasRestantes < tratamento_dias`
+- Tratamento **contínuo**: alerta quando `diasRestantes <= 5`
+
+Mensagem de alerta para agudo menciona insuficiência para o tratamento (sem "recompra").
+
+---
+
+## Lógica de Alertas de Estoque (MH-026 — atualizado 15/06)
+
+**Regra fundamental:** alertas de estoque NUNCA chegam junto com o lembrete.
+O lembrete é enviado → usuário confirma → alerta embutido na resposta de confirmação.
+
+| diasRestantes (pós-confirmação) | Comportamento |
+|---|---|
+| > 5 | Sem alerta |
+| 1–5 | Alerta na 1ª confirmação do dia |
+| 0 | Alerta em toda confirmação |
+
+**Estoque zerado:** lembrete não é enviado. Uma mensagem alternativa é disparada
+informando que o estoque está zerado e pedindo para informar a nova quantidade.
+Um `dose_log` com `status: 'sem_estoque'` é criado para ativar a deduplicação
+do scheduler (evita múltiplos envios).
+
+---
+
+## Confirmação de Dose — Regras Críticas
+
+**detectarConfirmacaoDose:** filtra negações ANTES de verificar termos positivos.
+"Não tomei" nunca será detectado como confirmação (BUG-036).
+
+**REGISTER_NAO_TOMADO:** quando usuário diz explicitamente que não vai tomar
+e pede para registrar ("pode registrar"), Claude usa esta action em vez de
+CONFIRM_DOSE. O dose_log é marcado como `nao_tomado` e sai automaticamente
+dos follow-ups (getPendingFollowUps filtra por status = 'pendente').
+
+**Fast-path (BUG-029 — parcialmente implementado):** quando `referenceMessageId`
+existe e aponta para um `dose_logs.zapi_message_id`, a dose é confirmada diretamente
+sem chamar o LLM. Porém o Z-API retorna IDs no formato `019EC...` enquanto o
+`referenceMessageId` usa formato WhatsApp nativo (`3EB...`). Fast-path está
+implementado mas inativo até identificar o campo correto no response da Z-API.
+
+---
+
+## Contexto Injetado no agente_principal (buildUserMessage)
+
+Para cada medicamento, o contexto inclui:
+- `nome`, `dosagem`, `estoque_atual`, `horários`
+- `tipo_tratamento` (contínuo/agudo)
+- Se `tratamento_dias` preenchido: `duração total`, `doses totais do tratamento`,
+  `dias decorridos desde o início`, `dias restantes`, `doses restantes estimadas`
+
+Isso permite respostas corretas para perguntas como "quantas doses ainda faltam?"
+sem o Claude precisar calcular.
 
 ---
 
@@ -243,6 +317,8 @@ Tentativa 2: +30 minutos (tom gentil)
 Tentativa 3: +1 hora (último aviso)
 Após tent. 3: +30min → nao_informado + notifica cuidadores ativos
 ```
+
+Após `nao_informado`, verifica alerta de estoque e envia se necessário.
 
 ---
 
@@ -257,126 +333,74 @@ Após tent. 3: +30min → nao_informado + notifica cuidadores ativos
 | Adesão | Claude empático | "quantas vezes esqueci", "minha adesão tá boa"... |
 | Resumo semanal | Claude proativo | Automático toda segunda às 08h |
 
-⚠️ Termos muito genéricos como "meus remédios" sozinho não ativam o agente —
-precisa de contexto de pergunta explícita.
-
----
-
-## Lógica de Estoque em Dias (MH-017)
-
-```javascript
-diasRestantes = floor(estoque_atual / dosesPerDia)
-dosesPerDia   = schedules ativos do medicamento
-threshold     = 5 dias
-```
-
-Alerta dispara junto com o **primeiro lembrete do dia** quando `diasRestantes <= 5`.
-Alerta diário até usuário informar nova quantidade.
-Usuário pode responder "comprei 30 comprimidos de X" → ação `UPDATE_STOCK`.
-
----
-
-## Decisões Arquiteturais — Raciocínio por trás
-
-### Por que subagentes em vez de prompt único?
-Prompt único com toda a complexidade da Nami causa sobrecarga — o modelo
-confunde contextos, mistura cadastro com confirmação de dose, perde etapas.
-Subagentes com prompts focados performam melhor do que um modelo mais caro
-com prompt sobrecarregado. Essa foi a decisão central da v2.
-
-### Por que NÃO abandonar subagentes mesmo com bugs de contexto?
-Tentação recorrente — mas os bugs de contexto (BUG-020, 021) não são falha
-da arquitetura multi-agente. São falhas de design do primeiro turno e de
-filtros SQL quebrados. A correção é cirúrgica, não estrutural.
-
-### Por que modelo híbrido no agente_relatorios?
-Consultas estruturadas (tomei hoje?, estoque) não precisam do Claude —
-query direta é mais rápida, mais barata e mais previsível. Consultas abertas
-(adesão, motivação) precisam de linguagem empática — aí o Claude agrega.
-
-### Por que não LangGraph?
-Considerado na fase de planejamento. Decisão: começar com orquestração manual
-(router.js) por ser mais simples de debugar e suficiente para o estágio atual.
-LangGraph entra quando a complexidade justificar — ainda não chegou lá.
-
-### Por que RAG ainda não foi implementado?
-O bulário ANVISA (especialista_medicacoes) é Fase 3. Antes disso, o fluxo
-básico de cadastro, lembrete e confirmação precisa estar sólido. RAG em cima
-de base instável gera mais problemas do que resolve.
-
 ---
 
 ## Padrões de Bugs Recorrentes
 
-### Filtro via join no Supabase JS SDK (BUG-017, BUG-023)
+### Filtro via join no Supabase JS SDK
 `.eq('tabela_relacionada.campo', valor)` não funciona.
 Sempre usar abordagem em duas etapas com `.in()`.
 
-### Variáveis de ambiente no Railway
-Sempre verificar: SUPABASE_URL sem /rest/v1/, ZAPI_CLIENT_TOKEN em Segurança.
+### Timezone UTC/BRT
+Stored procedures e comparações de data devem usar `AT TIME ZONE 'America/Sao_Paulo'`.
+Lembretes noturnos (21h–23h BRT) cruzam meia-noite UTC — causa duplicação sem correção.
 
 ### Idempotência no webhook Z-API
 Z-API pode entregar o mesmo evento duas vezes. Proteção implementada via
 `processedMessages` Set no index.js com TTL de 30 segundos.
 
-### Detecção de confirmação de dose agressiva demais
-`detectarConfirmacaoDose` deve sempre ser combinada com `temDosePendente`.
-Sem dose real no banco, qualquer "sim" vai para o contexto correto da conversa.
+### detectarConfirmacaoDose deve filtrar negações
+Verificar lista de negações ANTES dos termos positivos. "Não tomei" contém "tomei"
+mas não é confirmação. Prioridade à negação — false negative é recuperável via
+follow-up; false positive corrompe dados de adesão.
+
+### Word-boundary em detectarIntencaoConfiguracao
+Usar `contemPalavraLivre()` em vez de `.includes()`. "voltar" é substring de "Voltaren"
+e causava false positives sem word-boundary.
+
+### Briefings na pasta /briefings
+Todos os briefings de implementação ficam em `briefings/` (não na raiz).
+Comando para Claude Code: `Leia o briefings/NOME.md e implemente...`
 
 ---
 
-## Status dos Bugs (atualizado 12/06/2026)
+## Status dos Bugs (atualizado 18/06/2026)
 
-Todos os 24 bugs identificados até hoje estão corrigidos.
-BUG-025 (duplicação de confirmação de dose) — aguardando validação nos logs.
+Total de 37 bugs identificados e corrigidos (BUG-001 a BUG-037).
+
+**Bugs ainda abertos:**
+- **FIX-004** — agente_principal sem memória entre turnos: quando principal pergunta
+  "qual medicamento?" e usuário responde com o nome, principal não lembra da pergunta
+  e responde "não encontrei esse medicamento". Precisa de estado `awaiting_medicamento`.
+- **BUG-029** — fast-path Wellington: Z-API send retorna formato `019EC...` mas
+  `referenceMessageId` usa formato WhatsApp nativo `3EB...`. Confirmação via Claude
+  ainda funciona; fast-path implementado mas inativo.
+- **BUG-027** — nome de medicamento pré-cadastro perdido no `cad_nome`
+- **BUG-028** — "ta bom" interpretado como pergunta em contexto idle
+- **BUG-030** — `pareceNome()` não filtra respostas como "Sim, quero continuar"
 
 ---
 
 ## Backlog Priorizado
 
 ### Alta prioridade
-- MH-014 — Remover/pausar lembrete via conversa (agente_cadastro)
-- MH-015 — Alterar horário de lembrete via conversa (agente_cadastro)
-- MH-003 — Timestamp real de confirmação vs. horário agendado
-- MH-004 — Transcrição de áudio via Whisper
+- **FIX-004** — awaiting_medicamento state (principal sem memória entre turnos)
+- **MH-029** — alerta de estoque semântico correto para agudo (FIX-002 abordou parcialmente)
+- **MH-030** — encerramento automático de tratamento agudo (último dia + relatório final)
 
 ### Média prioridade
-- MH-016 — Confirmação de encerramento para tratamento temporário
-- MH-020 — Conformidade LGPD: exclusão de dados ao recusar
-- MH-021 — Variação natural do nome nos prompts (evitar "Ótimo, {nome}!" repetido)
-- MH-009 — Dashboard de relatórios para administrador
+- **MH-024** — confirmação retroativa de dose ("tomei mas esqueci de registrar")
+- **MH-027** — reagendamento sob demanda ("me lembre em 5 minutos")
+- **MH-031** — histórico de tratamentos encerrados via conversa
+- **MH-003** — timestamp real de confirmação vs. horário agendado
+- **BUG-029** — identificar campo Z-API com ID nativo (logar response.data)
 
 ### Fase 3+
-- MH-007 — RAG no bulário ANVISA (agente_medicacoes)
-- MH-008 — Leitura de receitas por imagem
-- MH-010 — agente_acompanhamento (NPS)
-- MH-012 — Dosagem com propriedade via bulário
-- Rede de cuidado — interface para adicionar cuidadores, convites, permissões
-
----
-
-## Decisões em Aberto / Tensões Não Resolvidas
-
-**Tensão: confirmação de dose vs. resposta contextual**
-O router precisa decidir se "Sim" é confirmação de dose ou resposta à
-conversa. Solução atual (dose pendente + pattern matching) funciona mas
-é frágil. Em algum momento pode precisar de uma abordagem baseada em
-estado explícito da conversa.
-
-**Tensão: agente_relatorios capturando frases da Nami**
-Quando a Nami menciona horários ou remédios na própria resposta, o usuário
-às vezes repete a frase e o classificador captura. Solução atual: termos
-mais específicos. Solução definitiva pode precisar de análise de contexto
-conversacional.
-
-**Em aberto: MH-014 e MH-015**
-Como o usuário expressa que quer parar ou alterar um lembrete é muito variado.
-"Não preciso mais", "pode parar", "mudei o horário", "tô bem agora"...
-Precisará de classificador robusto, provavelmente via Claude em vez de regex.
-
-**Em aberto: tratamento de tratamentos temporários**
-Quando `tratamento_fim` chega, o scheduler deve perguntar se o usuário quer
-encerrar ou prorrogar — antes de desativar. Ainda não implementado.
+- **MH-004** — transcrição de áudio via Whisper
+- **MH-007** — RAG no bulário ANVISA (agente_medicacoes)
+- **MH-008** — leitura de receitas por imagem
+- **MH-021** — variação natural do nome nos prompts
+- Rede de cuidado — interface para adicionar cuidadores
 
 ---
 
@@ -386,51 +410,29 @@ encerrar ou prorrogar — antes de desativar. Ainda não implementado.
 ```
 1. Identificar problema ou melhoria
 2. Analisar causa raiz com evidências (logs, código) — nunca hipóteses não identificadas
-3. Gerar BRIEFING_[TEMA].md com causa raiz confirmada, correção cirúrgica e critérios de sucesso
-4. Guilherme salva o briefing na raiz do projeto
-5. Guilherme abre Claude Code no terminal: claude
-6. Instrução ao Code: "Leia o CONTEXT.md e o BRIEFING_[TEMA].md. Implemente na ordem indicada."
-7. Code mostra diff antes de salvar — Guilherme aprova
-8. git add . && git commit -m "descrição" && git push
-9. Railway detecta push e faz redeploy automático
-10. Verificar logs do Railway para confirmar deploy limpo
-11. Testar no WhatsApp e trazer logs/prints para análise
+3. Gerar briefing em briefings/BRIEFING_[TEMA].md
+4. Guilherme salva o briefing na pasta briefings/ do projeto
+5. Guilherme abre Claude Code: "Leia o briefings/BRIEFING_[TEMA].md e implemente..."
+6. git add . && git commit -m "descrição" && git push
+7. Railway redeploy automático
+8. Verificar logs e testar no WhatsApp
 ```
+
+### Ritual de início de sessão
+1. Ler CONTEXT.md via `curl -s "https://raw.githubusercontent.com/Gui-eng26/Nami_life/main/CONTEXT.md"`
+2. Verificar relatório mais recente no Google Drive (pasta Desenvolvimento Nami, ID: 17uNtuBHOHw41FBc0zxZjx_-kjTW7bRmN)
+3. Confirmar estado atual com Guilherme antes de começar
+
+### Ritual de encerramento de sessão
+1. Gerar `Nami_Relatorio_vN+1.docx` e fazer upload no Google Drive
+2. Gerar CONTEXT.md atualizado para Guilherme commitar no GitHub
+3. Atualizar itens 1 e 2 do memory
 
 ### Filosofia de debugging — inegociável
 - **Nunca propor solução sem causa raiz confirmada.** Hipóteses devem ser identificadas como hipóteses.
 - **Analisar no contexto completo da Nami** — não o bug como fato isolado.
 - **Evidências primeiro:** logs do Railway, código atual, dados do Supabase — nessa ordem.
-- **Correções cirúrgicas** — mexer apenas no que precisa. Não refatorar por refatorar.
-- **Se a causa raiz não está clara**, dizer isso explicitamente e propor como investigar antes de implementar.
-
-### Filosofia de produto — inegociável
-- A Nami nunca ignora o que o usuário disse. Toda mensagem tem conteúdo próprio.
-- O fluxo serve o usuário, não o contrário. Etapas necessárias devem ser justificadas no contexto do objetivo do usuário.
-- Antes de qualquer decisão técnica, passar pelo filtro: "isso resolve o problema da Mariana?"
-- Qualidade conversacional não é negociável — a Nami deve soar como uma assistente calorosa, não um bot com scripts.
-
-### Dois contextos de trabalho
-- **Este chat (Claude.ai):** arquitetura, decisões estratégicas, análise de bugs, geração de briefings e relatórios
-- **Claude Code (VS Code terminal):** implementação, leitura de arquivos, edição de código, git
-- O handoff entre os dois é feito via BRIEFING_[TEMA].md — o briefing é o contrato entre os dois contextos
-
-### Estrutura de documentação
-- `CONTEXT.md` — documento vivo, atualizado a cada sessão, ponto de partida de todo trabalho
-- `BRIEFING_[TEMA].md` — instrução de implementação para o Claude Code, com causa raiz e critérios de sucesso
-- `Nami_Relatorio_v[N].docx` — relatório de sessão no Google Drive (pasta Desenvolvimento Nami)
-- Relatórios capturam o quê foi feito. CONTEXT.md captura o porquê e o como.
-
-
-
-1. Ler este CONTEXT.md completo
-2. Verificar o relatório mais recente em Google Drive > Desenvolvimento Nami
-3. Checar os logs do Railway para qualquer erro recente
-4. Confirmar qual é o próximo item prioritário do backlog
-
-**Prompt de início recomendado:**
-"Leia o CONTEXT.md. Estamos retomando o projeto Nami. O último relatório
-foi o v[X]. Vamos continuar com [próximo item]."
+- **Correções cirúrgicas** — mexer apenas no que precisa.
 
 ---
 
@@ -444,10 +446,8 @@ node src/index.js
 Para testes com webhook local:
 ```bash
 ngrok http 3000
-# Atualizar URL em Z-API > Webhooks e configurações gerais > Ao receber
+# Atualizar URL em Z-API > Webhooks
 ```
-
-Em produção, webhook aponta permanentemente para Railway.
 
 ---
 
