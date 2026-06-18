@@ -95,7 +95,10 @@ Medicamentos cadastrados: ${medications.length === 0
                 const agora = new Date();
                 const diasDecorridos = Math.floor((agora - inicio) / (1000 * 60 * 60 * 24));
                 const diasRestantes = Math.max(0, m.tratamento_dias - diasDecorridos);
-                tratamentoInfo += `, duração total: ${m.tratamento_dias} dias, dias decorridos desde o início: ${diasDecorridos}, dias restantes: ${diasRestantes}`;
+                const dosesPerDia = (m.schedules || []).filter(s => s.ativo).length || 1;
+                    const dosesTotais = m.tratamento_dias * dosesPerDia;
+                    const dosesRestantesEstimadas = diasRestantes * dosesPerDia;
+                    tratamentoInfo += `, duração total: ${m.tratamento_dias} dias, doses totais do tratamento: ${dosesTotais}, dias decorridos desde o início: ${diasDecorridos}, dias restantes: ${diasRestantes}, doses restantes estimadas: ${dosesRestantesEstimadas}`;
             }
 
             return `[id:${m.id}] ${m.nome} (${m.dosagem}, estoque: ${m.estoque_atual}, horários: ${horarios}, ${tratamentoInfo})`;

@@ -104,6 +104,13 @@ function isAffirmativeSimple(message) {
 // DETECÇÃO DE INTENÇÃO DE CONFIGURAÇÃO
 // ============================================================
 
+// Verifica se uma palavra aparece de forma independente no texto
+// (não como parte de outra palavra — ex: "voltar" não deve bater em "voltaren")
+function contemPalavraLivre(texto, palavra) {
+    if (palavra.includes(' ')) return texto.includes(palavra); // frases: match direto
+    return new RegExp(`(^|\\s)${palavra}(\\s|$|[.,!?])`).test(texto);
+}
+
 function detectarIntencaoConfiguracao(message) {
     if (!message) return false;
     const msg = message.toLowerCase();
@@ -137,8 +144,8 @@ function detectarIntencaoConfiguracao(message) {
         'horário', 'horario', 'hora'
     ];
 
-    const temAcao = palavrasAcao.some(p => msg.includes(p));
-    const temObjeto = palavrasObjeto.some(p => msg.includes(p));
+    const temAcao = palavrasAcao.some(p => contemPalavraLivre(msg, p));
+    const temObjeto = palavrasObjeto.some(p => contemPalavraLivre(msg, p));
     return temAcao && temObjeto;
 }
 

@@ -65,22 +65,28 @@ cad_estoque:
   - outros → "Qual a quantidade em estoque?"
 
 SE etapa = 'cad_estoque' E context.alerta_estoque_baixo existe:
-  Após registrar a quantidade informada, inclua um aviso natural antes
-  de avançar para a confirmação.
-  Use os valores de context.alerta_estoque_baixo: dias_restantes, estoque, doses_por_dia.
+  Após registrar a quantidade informada, inclua um aviso antes de avançar.
+  Use os valores: dias_restantes, estoque, doses_por_dia, tipo_tratamento, tratamento_dias.
 
-  Exemplo (dias_restantes = 0):
-  "Entendi! Só um aviso: com {estoque} comprimido(s) e {doses_por_dia}x ao dia,
-   você já está sem estoque suficiente para hoje mesmo. Quer cadastrar
-   assim mesmo e comprar mais em breve, ou prefere registrar a quantidade
-   depois da compra?"
+  SE context.alerta_estoque_baixo.tipo_tratamento = 'temporario':
+    O tratamento tem duração definida e o estoque não cobre o período completo.
+    Use esta mensagem:
+    "Só um aviso: com {estoque} comprimido(s) e {doses_por_dia}x ao dia, seu estoque
+     cobre apenas {dias_restantes} dias — mas seu tratamento é de {tratamento_dias} dias.
+     Pode ser bom providenciar mais antes de começar o tratamento! 💊"
 
-  Exemplo (dias_restantes <= 5):
-  "Anotado! Só um aviso: com {estoque} comprimido(s) e {doses_por_dia}x ao dia,
-   seu estoque dura apenas {dias_restantes} dias. Não se esqueça de fazer a
-   recompra em breve! Vou te lembrar quando estiver acabando. 💊"
+  SE context.alerta_estoque_baixo.tipo_tratamento = 'continuo' (ou não definido):
+    Exemplo (dias_restantes = 0):
+    "Entendi! Só um aviso: com {estoque} comprimido(s) e {doses_por_dia}x ao dia,
+     você já está sem estoque suficiente para hoje mesmo. Quer cadastrar assim mesmo
+     e comprar mais em breve, ou prefere registrar a quantidade depois da compra?"
 
-  Se dias_restantes > 5: seguir normalmente para confirmação sem alerta.
+    Exemplo (dias_restantes <= 5):
+    "Anotado! Só um aviso: com {estoque} comprimido(s) e {doses_por_dia}x ao dia,
+     seu estoque dura apenas {dias_restantes} dias. Não se esqueça de fazer a
+     recompra em breve! Vou te lembrar quando estiver acabando. 💊"
+
+  Se context.alerta_estoque_baixo não existe: seguir normalmente para confirmação.
 
 cad_confirmacao:
   Exibe o resumo completo UMA ÚNICA VEZ e pergunta se está tudo certo.
@@ -234,12 +240,22 @@ export async function handleCadastro({ user, message, state, context }) {
         const horarios = context?.horarios || [];
         const dosesPerDia = horarios.length || 1;
         const diasRestantes = Math.floor(estoque / dosesPerDia);
+        const tratamentoDias = context?.tratamento_dias || null;
+
+        // Tratamento com duração definida (agudo): alerta só se estoque não cobre o tratamento
+        // Tratamento contínuo: alerta quando <= 5 dias de estoque
+        const deveAlertar = tratamentoDias !== null
+            ? diasRestantes < tratamentoDias
+            : diasRestantes <= 5;
+
         contextParaClaude = {
             ...contextParaClaude,
-            alerta_estoque_baixo: diasRestantes <= 5 ? {
+            alerta_estoque_baixo: deveAlertar ? {
                 dias_restantes: diasRestantes,
                 estoque,
-                doses_por_dia: dosesPerDia
+                doses_por_dia: dosesPerDia,
+                tipo_tratamento: tratamentoDias ? 'temporario' : 'continuo',
+                tratamento_dias: tratamentoDias
             } : null
         };
     }
