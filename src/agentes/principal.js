@@ -88,7 +88,17 @@ Medicamentos cadastrados: ${medications.length === 0
             const horarios = m.schedules && m.schedules.length > 0
                 ? m.schedules.filter(s => s.ativo).map(s => s.horario).join(', ')
                 : 'nenhum horário cadastrado';
-            return `[id:${m.id}] ${m.nome} (${m.dosagem}, estoque: ${m.estoque_atual}, horários: ${horarios})`;
+
+            let tratamentoInfo = `tipo: ${m.tipo_tratamento || 'contínuo'}`;
+            if (m.tratamento_dias) {
+                const inicio = new Date(m.created_at);
+                const agora = new Date();
+                const diasDecorridos = Math.floor((agora - inicio) / (1000 * 60 * 60 * 24));
+                const diasRestantes = Math.max(0, m.tratamento_dias - diasDecorridos);
+                tratamentoInfo += `, duração total: ${m.tratamento_dias} dias, dias decorridos desde o início: ${diasDecorridos}, dias restantes: ${diasRestantes}`;
+            }
+
+            return `[id:${m.id}] ${m.nome} (${m.dosagem}, estoque: ${m.estoque_atual}, horários: ${horarios}, ${tratamentoInfo})`;
         }).join(' | ')
     }
 
