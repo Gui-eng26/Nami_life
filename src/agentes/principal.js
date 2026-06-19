@@ -50,20 +50,36 @@ export async function handlePrincipal({ user, message, image }) {
 
     console.log(`🤖 Chamando Claude para: "${message}"`);
     let claudeResponse = await callClaude({ userMessage, image });
-    console.log(`✅ Claude respondeu — newState: ${claudeResponse.newState}, action: ${claudeResponse.action?.type || 'nenhuma'}`);
+    const acoesTipos = (claudeResponse.actions || []).map(a => a.type).join(', ') || claudeResponse.action?.type || 'nenhuma';
+    console.log(`✅ Claude respondeu — newState: ${claudeResponse.newState}, actions: ${acoesTipos}`);
 
-    if (claudeResponse.action) {
-        const override = await processAction(claudeResponse.action, user);
+    // Compatibilidade: aceita tanto o formato novo (actions: array)
+    // quanto o formato antigo (action: objeto único)
+    let listaAcoes = [];
+    if (Array.isArray(claudeResponse.actions)) {
+        listaAcoes = claudeResponse.actions;
+    } else if (claudeResponse.action) {
+        listaAcoes = [claudeResponse.action];
+    }
+
+    // Processa todas as ações em sequência.
+    // Alertas de estoque de cada confirmação são acumulados e anexados à mensagem.
+    let alertasEstoque = '';
+    for (const acao of listaAcoes) {
+        const override = await processAction(acao, user);
         if (override) {
             if (override.alertaEstoque) {
-                claudeResponse = {
-                    ...claudeResponse,
-                    message: claudeResponse.message + override.alertaEstoque
-                };
+                alertasEstoque += override.alertaEstoque;
             } else {
                 claudeResponse = { ...claudeResponse, ...override };
             }
         }
+    }
+    if (alertasEstoque) {
+        claudeResponse = {
+            ...claudeResponse,
+            message: claudeResponse.message + alertasEstoque
+        };
     }
 
     await updateConversationState(
