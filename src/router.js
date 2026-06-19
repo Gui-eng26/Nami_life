@@ -1,7 +1,7 @@
 import { getConversationState, logAgentInteraction, getRecentDoses,
     getDoseLogByZapiMessageId, confirmDoseByLogId,
     getEstoqueInfoParaAlerta, contarConfirmacoesHoje, calcularAlertaEstoque,
-    saveConversationState } from './database.js';
+    saveConversationState, getHistoricoRecente } from './database.js';
 import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
 import { handleCadastro } from './agentes/cadastro.js';
@@ -167,6 +167,72 @@ function detectarIntencaoCadastro(message) {
     ];
     const msg = message.toLowerCase();
     return termos.some(t => msg.includes(t));
+}
+
+// ============================================================
+// CLASSIFICADOR LLM — contexto conversacional para o else final
+// ============================================================
+
+async function classificarIntencaoComContexto({ userId, message, currentState }) {
+    try {
+        const historico = await getHistoricoRecente(userId, 3);
+
+        // Monta o histórico como texto legível para o LLM
+        const historicoTexto = historico.length > 0
+            ? historico.map(h =>
+                `Usuário: ${h.user_message}\nNami: ${h.agent_response}`
+              ).join('\n\n')
+            : 'Sem histórico recente.';
+
+        const prompt = `Você é o classificador de intenções da Nami, um assistente de saúde via WhatsApp.
+
+Sua única função é identificar para qual agente a mensagem atual do usuário deve ser direcionada, considerando o contexto da conversa.
+
+AGENTES DISPONÍVEIS:
+- cadastro: cadastrar um novo medicamento ou iniciar um novo tratamento
+- relatorios: consultar doses tomadas, adesão, estoque, próximos remédios
+- configuracao: pausar, reativar, encerrar tratamento, alterar horário de lembrete
+- principal: qualquer outra coisa — conversa geral, dúvidas, saudações, situações ambíguas
+
+ESTADO ATUAL DA CONVERSA: ${currentState}
+
+HISTÓRICO RECENTE (últimas interações):
+${historicoTexto}
+
+MENSAGEM ATUAL DO USUÁRIO: "${message}"
+
+Analise o histórico e a mensagem atual. Responda APENAS com uma das quatro opções exatas, sem explicação:
+cadastro
+relatorios
+configuracao
+principal`;
+
+        const { default: Anthropic } = await import('@anthropic-ai/sdk');
+        const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+        const resposta = await anthropic.messages.create({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 10,
+            messages: [{ role: 'user', content: prompt }]
+        });
+
+        const agente = resposta.content[0]?.text?.trim().toLowerCase();
+        const agentesValidos = ['cadastro', 'relatorios', 'configuracao', 'principal'];
+
+        if (agentesValidos.includes(agente)) {
+            console.log(`🧠 [CLASSIFICADOR] Intenção classificada como: ${agente} — mensagem: "${message}"`);
+            return agente;
+        }
+
+        // Resposta inesperada do LLM — fallback seguro
+        console.warn(`⚠️ [CLASSIFICADOR] Resposta inesperada do LLM: "${agente}" — usando principal`);
+        return 'principal';
+
+    } catch (error) {
+        // Erro na chamada LLM — fallback seguro, não interrompe o usuário
+        console.error(`❌ [CLASSIFICADOR] Erro ao classificar intenção: ${error.message} — usando principal`);
+        return 'principal';
+    }
 }
 
 // ============================================================
@@ -342,11 +408,41 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             response = await handlePrincipal({ user, message, image });
         }
 
-    // 6. Demais casos → agente_principal
+    // 6. Demais casos → classificador LLM com contexto conversacional
     } else {
-        agentName = 'principal';
-        console.log(`🤖 Roteando para principal — ${user.phone}`);
-        response = await handlePrincipal({ user, message, image });
+        const agenteSelecionado = await classificarIntencaoComContexto({
+            userId: user.id,
+            message,
+            currentState
+        });
+
+        agentName = agenteSelecionado;
+
+        if (agenteSelecionado === 'cadastro') {
+            console.log(`💊 [CLASSIFICADOR] Roteando para cadastro — ${user.phone}`);
+            response = await handleCadastro({
+                user, message, state,
+                context: { etapa: 'cad_nome' }
+            });
+        } else if (agenteSelecionado === 'relatorios') {
+            console.log(`📊 [CLASSIFICADOR] Roteando para relatorios — ${user.phone}`);
+            response = await handleRelatorios({ user, message });
+            if (!response) {
+                agentName = 'principal';
+                response = await handlePrincipal({ user, message, image });
+            }
+        } else if (agenteSelecionado === 'configuracao') {
+            console.log(`⚙️ [CLASSIFICADOR] Roteando para configuracao — ${user.phone}`);
+            response = await handleConfiguracao({
+                user, message, state,
+                context: { etapa: 'identif_intencao' }
+            });
+        } else {
+            // 'principal' — resposta geral ou intenção não identificada
+            agentName = 'principal';
+            console.log(`🤖 [CLASSIFICADOR] Roteando para principal — ${user.phone}`);
+            response = await handlePrincipal({ user, message, image });
+        }
     }
 
     await logAgentInteraction({

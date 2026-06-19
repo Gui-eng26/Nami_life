@@ -865,3 +865,24 @@ export async function logAgentInteraction({ userId, agent, userMessage, agentRes
 
     if (error) console.error(`Erro ao salvar log de agente: ${error.message}`);
 }
+
+// ============================================================
+// HISTÓRICO RECENTE — para classificador LLM do roteador
+// ============================================================
+
+export async function getHistoricoRecente(userId, limite = 3) {
+    const { data, error } = await supabase
+        .from('agent_logs')
+        .select('user_message, agent_response, agent, created_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(limite);
+
+    if (error) {
+        console.error('Erro ao buscar histórico recente:', error.message);
+        return [];
+    }
+
+    // Retorna em ordem cronológica (mais antigo primeiro) para o prompt fazer sentido
+    return (data || []).reverse();
+}
