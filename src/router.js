@@ -193,7 +193,9 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                 userId: user.id,
                 agent: 'fast_path_reference',
                 userMessage: message,
-                agentResponse: `Dose confirmada: ${nomeRemedio}`
+                agentResponse: `Dose confirmada: ${nomeRemedio}`,
+                estadoConversa: null,
+                contextoConversa: null
             });
 
             // Verificar alerta de estoque pós-confirmação
@@ -351,7 +353,9 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         userId: user.id,
         agent: agentName,
         userMessage: message,
-        agentResponse: response
+        agentResponse: response,
+        estadoConversa: currentState || null,
+        contextoConversa: state?.context || null
     });
 
     return response;

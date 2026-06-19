@@ -851,14 +851,16 @@ export function calcularAlertaEstoque({ diasRestantes, tipo_tratamento, tratamen
 // LOGS DE AGENTES
 // ============================================================
 
-export async function logAgentInteraction({ userId, agent, userMessage, agentResponse }) {
+export async function logAgentInteraction({ userId, agent, userMessage, agentResponse, estadoConversa = null, contextoConversa = null }) {
     const { error } = await supabase
         .from('agent_logs')
         .insert({
             user_id: userId,
             agent,
             user_message: userMessage,
-            agent_response: agentResponse
+            agent_response: agentResponse,
+            estado_conversa: estadoConversa,
+            contexto_conversa: contextoConversa
         });
 
     if (error) console.error(`Erro ao salvar log de agente: ${error.message}`);
