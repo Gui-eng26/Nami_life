@@ -153,6 +153,18 @@ export async function replaceMedication({ medicationId, dosagem, instrucoes, est
     return data;
 }
 
+export async function verificarMedicamentoExistente(userId, nome) {
+    const { data } = await supabase
+        .from('medications')
+        .select('id, nome, dosagem, estoque_atual, ativo, tipo_tratamento, tratamento_dias, schedules(id, horario, ativo)')
+        .eq('user_id', userId)
+        .ilike('nome', nome)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+    return data || null;
+}
+
 export async function getUserMedications(userId) {
     const { data, error } = await supabase
         .from('medications')
@@ -471,6 +483,35 @@ export async function encerrarTratamento(medicationId) {
     if (errSched) throw new Error(`Erro ao desativar schedules: ${errSched.message}`);
 
     console.log(`🔴 Tratamento encerrado — medication: ${medicationId}`);
+}
+
+export async function reativarComAtualizacao({ medicationId, estoque, tipo_tratamento, tratamento_dias, horarios }) {
+    const { error: errMed } = await supabase
+        .from('medications')
+        .update({
+            estoque_atual: estoque,
+            tipo_tratamento,
+            tratamento_dias: tratamento_dias || null,
+            ativo: true
+        })
+        .eq('id', medicationId);
+    if (errMed) throw new Error(`Erro ao atualizar medicamento: ${errMed.message}`);
+
+    const { error: errDel } = await supabase
+        .from('schedules')
+        .update({ ativo: false })
+        .eq('medication_id', medicationId);
+    if (errDel) throw new Error(`Erro ao desativar schedules: ${errDel.message}`);
+
+    for (const horario of horarios) {
+        const horarioStr = String(horario).trim().substring(0, 5);
+        const { error: errSched } = await supabase
+            .from('schedules')
+            .insert({ medication_id: medicationId, horario: `${horarioStr}:00`, ativo: true });
+        if (errSched) throw new Error(`Erro ao criar schedule: ${errSched.message}`);
+    }
+
+    console.log(`▶️ Medicamento reativado com atualização — id: ${medicationId}`);
 }
 
 export async function alterarHorarioSchedule(scheduleId, novoHorario) {

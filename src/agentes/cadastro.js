@@ -4,7 +4,8 @@ import {
     saveConversationState,
     saveMedication,
     saveSchedule,
-    replaceMedication
+    replaceMedication,
+    verificarMedicamentoExistente
 } from '../database.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -360,6 +361,32 @@ export async function handleCadastro({ user, message, state, context }) {
     const etapaAtual = context?.etapa || 'cad_nome';
     console.log(`💊 Cadastro — etapa: ${etapaAtual} — ${user.phone}`);
 
+    // TRABALHO 2: resposta do usuário sobre re-encadastrar medicamento encerrado
+    if (etapaAtual === 'cad_reencadastro_confirmar') {
+        const msg = message.toLowerCase().trim();
+        const confirmou = ['sim', 's', 'ok', 'pode', 'claro', 'quero', 'sim quero', 'vai', 'vamos'].some(t => msg === t || msg.startsWith(t + ' '));
+
+        if (!confirmou) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return `Tudo bem! Se precisar de algo mais, é só me chamar 🌿`;
+        }
+
+        const systemPrompt = buildSystemPrompt('cad_forma', { nome: context.nome }, user.name);
+        const claudeResponse = await callClaude({
+            systemPrompt,
+            message: `Quero cadastrar o ${context.nome} novamente`,
+            context: { nome: context.nome }
+        });
+
+        const proximaEtapa = claudeResponse.proximaEtapa || 'cad_forma';
+        const novoContext = { ...claudeResponse.novoContext, nome: context.nome };
+        await saveConversationState(user.id, {
+            state: 'adding_med',
+            context: { ...novoContext, etapa: proximaEtapa }
+        });
+        return claudeResponse.message;
+    }
+
     // Pré-calcula alerta de estoque baixo antes de chamar Claude,
     // para que o prompt possa mencionar o aviso na mesma mensagem de coleta
     let contextParaClaude = context || {};
@@ -405,6 +432,63 @@ export async function handleCadastro({ user, message, state, context }) {
         if (calculados.length > 0) {
             novoContext.horarios = calculados;
             console.log(`🕐 [BUG-041] Horários calculados: ${calculados.join(', ')} (início ${novoContext.horario_inicio}, intervalo ${novoContext.intervalo_horas}h)`);
+        }
+    }
+
+    // TRABALHO 2: verificação antecipada de medicamento existente
+    if (etapaAtual === 'cad_nome' && novoContext.nome && proximaEtapa === 'cad_forma') {
+        const existente = await verificarMedicamentoExistente(user.id, novoContext.nome);
+
+        if (existente) {
+            const schedules = existente.schedules || [];
+            const schedulesAtivos = schedules.filter(s => s.ativo);
+            const todosInativos = schedules.length > 0 && schedulesAtivos.length === 0;
+
+            if (!existente.ativo) {
+                await saveConversationState(user.id, {
+                    state: 'adding_med',
+                    context: {
+                        etapa: 'cad_reencadastro_confirmar',
+                        nome: existente.nome,
+                        medicationId: existente.id
+                    }
+                });
+                return `O *${existente.nome}* foi encerrado anteriormente.\n\nQuer cadastrar um novo tratamento com ele agora?`;
+            }
+
+            if (todosInativos) {
+                const horariosFormatados = schedules
+                    .map(s => `• ${s.horario.substring(0, 5)}`)
+                    .join('\n');
+                const tipoLabel = existente.tipo_tratamento === 'temporario'
+                    ? `${existente.tratamento_dias} dias`
+                    : 'uso contínuo';
+
+                await saveConversationState(user.id, {
+                    state: 'configurando',
+                    context: {
+                        etapa: 'reativ_confirmar',
+                        medicationId: existente.id,
+                        medicationNome: existente.nome,
+                        estoqueAtual: existente.estoque_atual,
+                        tipo_tratamento: existente.tipo_tratamento,
+                        tratamento_dias: existente.tratamento_dias,
+                        schedulesExistentes: schedules,
+                        schedulesAtivos: schedulesAtivos
+                    }
+                });
+                return `O *${existente.nome}* está com os lembretes pausados 💊\n\nÚltimos dados cadastrados:\n${horariosFormatados}\nEstoque: ${existente.estoque_atual} unidades\nTratamento: ${tipoLabel}\n\nQuer reativar os lembretes?`;
+            }
+
+            const horariosFormatados = schedulesAtivos
+                .map(s => `• ${s.horario.substring(0, 5)}`)
+                .join('\n');
+            const tipoLabel = existente.tipo_tratamento === 'temporario'
+                ? `${existente.tratamento_dias} dias`
+                : 'uso contínuo';
+
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return `O *${existente.nome}* já está cadastrado e ativo 💊\n\nDosagem: ${existente.dosagem}\nHorários:\n${horariosFormatados}\nEstoque: ${existente.estoque_atual} unidades\nTratamento: ${tipoLabel}\n\nSe quiser atualizar alguma informação, é só me dizer!`;
         }
     }
 

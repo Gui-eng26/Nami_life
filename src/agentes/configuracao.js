@@ -6,7 +6,8 @@ import {
     pausarMedicamento,
     reativarMedicamento,
     encerrarTratamento,
-    alterarHorarioSchedule
+    alterarHorarioSchedule,
+    reativarComAtualizacao
 } from '../database.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -321,6 +322,126 @@ export async function handleConfiguracao({ user, message, state, context }) {
                 + '\n\n_(Responda *SIM* para confirmar ou *NÃO* para cancelar)_';
         }
         return await executarAcao(user, firstName, context);
+    }
+
+    // ── ETAPA reativ_confirmar: usuário confirma se quer reativar ────────────
+    if (etapa === 'reativ_confirmar') {
+        if (isCancelamento(message) || /\b(não|nao|n)\b/i.test(message.toLowerCase())) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return `Tudo bem, ${firstName}! Se precisar de algo, é só me chamar 🌿`;
+        }
+
+        await saveConversationState(user.id, {
+            state: 'configurando',
+            context: { ...context, etapa: 'reativ_tipo_tratamento' }
+        });
+        return `Ótimo! Vamos atualizar as informações antes de reativar.\n\nO *${context.medicationNome}* é de uso contínuo (sem previsão de parada) ou tem prazo determinado, como um antibiótico ou anti-inflamatório?`;
+    }
+
+    // ── ETAPA reativ_tipo_tratamento: coleta tipo e prazo ───────────────────
+    if (etapa === 'reativ_tipo_tratamento') {
+        const msg = message.toLowerCase();
+        let tipo_tratamento = null;
+        let tratamento_dias = null;
+
+        if (/contínuo|continuo|sempre|sem prazo|permanente|crônico|cronico/.test(msg)) {
+            tipo_tratamento = 'continuo';
+        } else if (/temporar|prazo|dias|semana|antibiótico|antibiotico|anti-inflamatório|antiinflamatorio/.test(msg)) {
+            tipo_tratamento = 'temporario';
+            const diasMatch = msg.match(/(\d+)\s*dias?/);
+            tratamento_dias = diasMatch ? parseInt(diasMatch[1]) : null;
+        }
+
+        if (!tipo_tratamento) {
+            return `Não entendi, ${firstName}. É uso *contínuo* (sem previsão de parada) ou *temporário* (tem um prazo determinado)?`;
+        }
+
+        if (tipo_tratamento === 'temporario' && !tratamento_dias) {
+            await saveConversationState(user.id, {
+                state: 'configurando',
+                context: { ...context, etapa: 'reativ_tipo_tratamento', tipo_tratamento }
+            });
+            return `Quantos dias dura esse tratamento?`;
+        }
+
+        await saveConversationState(user.id, {
+            state: 'configurando',
+            context: { ...context, etapa: 'reativ_estoque', tipo_tratamento, tratamento_dias }
+        });
+        return `Certo! Seu estoque anterior era de *${context.estoqueAtual} unidades*. Continua assim ou quer atualizar?`;
+    }
+
+    // ── ETAPA reativ_estoque: confirma ou atualiza estoque ──────────────────
+    if (etapa === 'reativ_estoque') {
+        const msg = message.toLowerCase().trim();
+        const confirmouEstoque = ['sim', 's', 'ok', 'continua', 'mesmo', 'igual', 'está certo', 'tá bom', 'pode'].some(t =>
+            msg === t || msg.startsWith(t + ' ')
+        );
+
+        let novoEstoque = context.estoqueAtual;
+
+        if (!confirmouEstoque) {
+            const numMatch = message.match(/\d+/);
+            if (numMatch) {
+                novoEstoque = parseInt(numMatch[0]);
+            } else {
+                return `Não entendi, ${firstName}. Qual a quantidade atual em estoque? (ex: *20*)`;
+            }
+        }
+
+        const schedulesAnteriores = context.schedulesExistentes || [];
+        const horariosAnteriores = schedulesAnteriores
+            .map(s => `• ${s.horario.substring(0, 5)}`)
+            .join('\n');
+
+        await saveConversationState(user.id, {
+            state: 'configurando',
+            context: { ...context, etapa: 'reativ_horarios', novoEstoque }
+        });
+        return `Ótimo! Os horários anteriores eram:\n${horariosAnteriores || '(nenhum cadastrado)'}\n\nContinua igual ou quer definir novos horários?`;
+    }
+
+    // ── ETAPA reativ_horarios: confirma ou coleta novos horários ────────────
+    if (etapa === 'reativ_horarios') {
+        const msg = message.toLowerCase().trim();
+        const confirmouHorarios = ['sim', 's', 'ok', 'continua', 'mesmo', 'igual', 'está certo', 'tá bom', 'pode'].some(t =>
+            msg === t || msg.startsWith(t + ' ')
+        );
+
+        let horariosFinais;
+
+        if (confirmouHorarios) {
+            const schedulesAnteriores = context.schedulesExistentes || [];
+            horariosFinais = schedulesAnteriores.map(s => s.horario.substring(0, 5));
+        } else {
+            const matches = [...message.matchAll(/(\d{1,2})[:h](\d{2})?/g)].map(m => {
+                const h = m[1].padStart(2, '0');
+                const min = (m[2] || '00').padStart(2, '0');
+                return `${h}:${min}`;
+            });
+
+            if (matches.length === 0) {
+                return `Não entendi os horários, ${firstName}. Me diga os horários das doses — por exemplo: *08:00 e 20:00*`;
+            }
+
+            horariosFinais = matches;
+        }
+
+        await reativarComAtualizacao({
+            medicationId: context.medicationId,
+            estoque: context.novoEstoque,
+            tipo_tratamento: context.tipo_tratamento,
+            tratamento_dias: context.tratamento_dias || null,
+            horarios: horariosFinais
+        });
+
+        const tipoLabel = context.tipo_tratamento === 'temporario'
+            ? `${context.tratamento_dias} dias`
+            : 'uso contínuo';
+        const horariosLabel = horariosFinais.join(', ');
+
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        return `✅ Pronto, ${firstName}! *${context.medicationNome}* reativado com sucesso 💊\n\nHorários: ${horariosLabel}\nEstoque: ${context.novoEstoque} unidades\nTratamento: ${tipoLabel}\n\nVou voltar a te lembrar nos horários certos!`;
     }
 
     // ── ETAPA pos_alteracao: usuário quer alterar outro horário? ─────────────
