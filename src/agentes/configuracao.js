@@ -71,12 +71,18 @@ function encontrarMedicamento(texto, medications) {
         || null;
 }
 
-function extrairHorario(message) {
-    const match = message.match(/(\d{1,2})[:h](\d{2})?/);
-    if (!match) return null;
-    const h = match[1].padStart(2, '0');
-    const m = (match[2] || '00').padStart(2, '0');
-    return `${h}:${m}`;
+function extrairHorarioOrigem(message) {
+    const matches = [...message.matchAll(/(\d{1,2})[:h](\d{2})?/g)];
+    if (!matches.length) return null;
+    const m = matches[0];
+    return `${m[1].padStart(2, '0')}:${(m[2] || '00').padStart(2, '0')}`;
+}
+
+function extrairHorarioDestino(message) {
+    const matches = [...message.matchAll(/(\d{1,2})[:h](\d{2})?/g)];
+    if (!matches.length) return null;
+    const m = matches[matches.length - 1];
+    return `${m[1].padStart(2, '0')}:${(m[2] || '00').padStart(2, '0')}`;
 }
 
 function isConfirmacao(message) {
@@ -123,29 +129,54 @@ function buildConfirmacaoMessage(firstName, ctx) {
 // ============================================================
 
 async function executarAcao(user, firstName, ctx) {
-    const { acao, medicationId, medicationNome, scheduleId, novoHorario, schedulesAtivos } = ctx;
+    const { acao, medicationId, medicationNome, scheduleId, novoHorario, horarioAtual, schedulesAtivos } = ctx;
     const horarios = formatarHorarios(schedulesAtivos);
-
-    await saveConversationState(user.id, { state: 'idle', context: {} });
 
     switch (acao) {
         case 'pausar':
+            await saveConversationState(user.id, { state: 'idle', context: {} });
             await pausarMedicamento(medicationId);
             return `✅ Pronto, ${firstName}! Lembretes do *${medicationNome}*${horarios ? ` (${horarios})` : ''} pausados.\n\nQuando quiser retomar, é só me dizer *"reativar ${medicationNome}"* 🌿`;
 
         case 'reativar':
+            await saveConversationState(user.id, { state: 'idle', context: {} });
             await reativarMedicamento(medicationId);
             return `✅ Pronto! Lembretes do *${medicationNome}* reativados. Vou voltar a te lembrar nos horários cadastrados 💊`;
 
         case 'encerrar':
+            await saveConversationState(user.id, { state: 'idle', context: {} });
             await encerrarTratamento(medicationId);
             return `✅ Tratamento com *${medicationNome}* encerrado. Os lembretes foram desativados 🌿\n\nSe precisar cadastrar novamente no futuro, é só me chamar!`;
 
-        case 'alterar_horario':
+        case 'alterar_horario': {
             await alterarHorarioSchedule(scheduleId, novoHorario);
+
+            const remainingSchedules = (schedulesAtivos || []).filter(s => s.id !== scheduleId);
+
+            if (remainingSchedules.length > 0) {
+                const lista = remainingSchedules.map(s => `• ${s.horario.substring(0, 5)}`).join('\n');
+                const plural = remainingSchedules.length > 1 ? 's' : '';
+
+                await saveConversationState(user.id, {
+                    state: 'configurando',
+                    context: {
+                        etapa: 'pos_alteracao',
+                        acao: 'alterar_horario',
+                        medicationId,
+                        medicationNome,
+                        schedulesAtivos: remainingSchedules
+                    }
+                });
+
+                return `✅ Pronto! Lembrete das *${horarioAtual ? horarioAtual.substring(0, 5) : '?'}* do *${medicationNome}* atualizado para *${novoHorario}* ⏰\n\nVocê ainda tem lembrete${plural} cadastrado${plural} para esse medicamento:\n${lista}\n\nQuer alterar algum?`;
+            }
+
+            await saveConversationState(user.id, { state: 'idle', context: {} });
             return `✅ Pronto! Seu lembrete do *${medicationNome}* foi atualizado para *${novoHorario}* ⏰`;
+        }
 
         default:
+            await saveConversationState(user.id, { state: 'idle', context: {} });
             return `Não consegui executar a ação. Pode tentar novamente?`;
     }
 }
@@ -235,7 +266,7 @@ export async function handleConfiguracao({ user, message, state, context }) {
 
     // ── ETAPA 4: Usuário especifica qual horário alterar ─────────────────────
     if (etapa === 'identif_schedule') {
-        const horarioMencionado = extrairHorario(message);
+        const horarioMencionado = extrairHorarioOrigem(message);
         const schedulesAtivos = context.schedulesAtivos || [];
         const schedule = schedulesAtivos.find(s =>
             horarioMencionado && s.horario.startsWith(horarioMencionado)
@@ -243,7 +274,7 @@ export async function handleConfiguracao({ user, message, state, context }) {
 
         if (!schedule) {
             const lista = schedulesAtivos.map(s => `• ${s.horario.substring(0,5)}`).join('\n');
-            return `Não encontrei esse horário. Horários disponíveis:\n\n${lista}\n\nQual você quer alterar?`;
+            return `Não reconheci esse horário. Os lembretes cadastrados são:\n\n${lista}\n\nMe responda com um desses exatamente — por exemplo: *${schedulesAtivos[0]?.horario?.substring(0,5)}*`;
         }
 
         if (!context.novoHorario) {
@@ -251,7 +282,7 @@ export async function handleConfiguracao({ user, message, state, context }) {
                 state: 'configurando',
                 context: { ...context, etapa: 'obter_horario', scheduleId: schedule.id, horarioAtual: schedule.horario }
             });
-            return `Para qual horário você quer mudar o lembrete das *${schedule.horario.substring(0,5)}*? (ex: *14:30*)`;
+            return `Certo! Vou alterar o lembrete das *${schedule.horario.substring(0,5)}* do *${context.medicationNome}*.\n\nPara qual horário? Me responda só com o novo horário — por exemplo: *08:00*`;
         }
 
         const newCtx = { ...context, etapa: 'confirm_acao', scheduleId: schedule.id, horarioAtual: schedule.horario };
@@ -261,9 +292,9 @@ export async function handleConfiguracao({ user, message, state, context }) {
 
     // ── ETAPA 5: Obter o novo horário ────────────────────────────────────────
     if (etapa === 'obter_horario') {
-        const novoHorario = extrairHorario(message);
+        const novoHorario = extrairHorarioDestino(message);
         if (!novoHorario) {
-            return `Não entendi o horário, ${firstName}. Informe no formato *HH:MM* (ex: *14:30*)`;
+            return `Não reconheci esse horário, ${firstName}. Me diga só o novo horário no formato *HH:MM* — por exemplo: *08:00*`;
         }
         const newCtx = { ...context, etapa: 'confirm_acao', novoHorario };
         await saveConversationState(user.id, { state: 'configurando', context: newCtx });
@@ -272,6 +303,15 @@ export async function handleConfiguracao({ user, message, state, context }) {
 
     // ── ETAPA 6: Confirmar e executar ────────────────────────────────────────
     if (etapa === 'confirm_acao') {
+        const negacaoPresente = /\b(não|nao)\b/i.test(message.toLowerCase());
+        const horarioCorrecao = extrairHorarioDestino(message);
+
+        if (negacaoPresente && horarioCorrecao) {
+            const newCtx = { ...context, etapa: 'confirm_acao', novoHorario: horarioCorrecao };
+            await saveConversationState(user.id, { state: 'configurando', context: newCtx });
+            return buildConfirmacaoMessage(firstName, newCtx);
+        }
+
         if (isCancelamento(message)) {
             await saveConversationState(user.id, { state: 'idle', context: {} });
             return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
@@ -281,6 +321,37 @@ export async function handleConfiguracao({ user, message, state, context }) {
                 + '\n\n_(Responda *SIM* para confirmar ou *NÃO* para cancelar)_';
         }
         return await executarAcao(user, firstName, context);
+    }
+
+    // ── ETAPA pos_alteracao: usuário quer alterar outro horário? ─────────────
+    if (etapa === 'pos_alteracao') {
+        if (isCancelamento(message) || /\b(não|nao|n|chega|pronto|ok|tudo bem)\b/i.test(message.toLowerCase())) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return `Tudo certo, ${firstName}! Se precisar de algo, é só me chamar 🌿`;
+        }
+
+        const schedulesRestantes = context.schedulesAtivos || [];
+
+        if (schedulesRestantes.length === 1) {
+            const schedule = schedulesRestantes[0];
+            await saveConversationState(user.id, {
+                state: 'configurando',
+                context: {
+                    ...context,
+                    etapa: 'obter_horario',
+                    scheduleId: schedule.id,
+                    horarioAtual: schedule.horario
+                }
+            });
+            return `Certo! Vou alterar o lembrete das *${schedule.horario.substring(0, 5)}* do *${context.medicationNome}*.\n\nPara qual horário? Me responda só com o novo horário — por exemplo: *08:00*`;
+        }
+
+        const lista = schedulesRestantes.map(s => `• ${s.horario.substring(0, 5)}`).join('\n');
+        await saveConversationState(user.id, {
+            state: 'configurando',
+            context: { ...context, etapa: 'identif_schedule' }
+        });
+        return `Qual desses você quer alterar?\n\n${lista}\n\nMe responda com o horário — por exemplo: *${schedulesRestantes[0]?.horario?.substring(0, 5)}*`;
     }
 
     // Fallback
@@ -310,7 +381,7 @@ async function continuarComAcao({ user, firstName, acao, med, medicationsAtivos,
     if (acao === 'alterar_horario') {
         // Múltiplos schedules sem horário específico mencionado
         if (schedulesAtivos.length > 1) {
-            const horarioMencionado = extrairHorario(message);
+            const horarioMencionado = extrairHorarioOrigem(message);
             const scheduleEspecifico = horarioMencionado
                 ? schedulesAtivos.find(s => s.horario.startsWith(horarioMencionado))
                 : null;
@@ -321,7 +392,7 @@ async function continuarComAcao({ user, firstName, acao, med, medicationsAtivos,
                     state: 'configurando',
                     context: { etapa: 'identif_schedule', acao, medicationId: med.id, medicationNome: med.nome, schedulesAtivos, novoHorario }
                 });
-                return `O *${med.nome}* tem lembretes em:\n\n${lista}\n\nQual horário você quer alterar?`;
+                return `O *${med.nome}* tem lembretes em dois horários:\n\n${lista}\n\nQual desses você quer alterar? Me responda com o horário — por exemplo: *${schedulesAtivos[0]?.horario?.substring(0,5)}*`;
             }
 
             if (!novoHorario) {
@@ -329,7 +400,7 @@ async function continuarComAcao({ user, firstName, acao, med, medicationsAtivos,
                     state: 'configurando',
                     context: { etapa: 'obter_horario', acao, medicationId: med.id, medicationNome: med.nome, schedulesAtivos, scheduleId: scheduleEspecifico.id, horarioAtual: scheduleEspecifico.horario }
                 });
-                return `Para qual horário você quer mudar o lembrete das *${scheduleEspecifico.horario.substring(0,5)}*? (ex: *14:30*)`;
+                return `Certo! Vou alterar o lembrete das *${scheduleEspecifico.horario.substring(0,5)}* do *${med.nome}*.\n\nPara qual horário? Me responda só com o novo horário — por exemplo: *08:00*`;
             }
 
             const ctx = { etapa: 'confirm_acao', acao, medicationId: med.id, medicationNome: med.nome, schedulesAtivos, scheduleId: scheduleEspecifico.id, horarioAtual: scheduleEspecifico.horario, novoHorario };
@@ -343,7 +414,7 @@ async function continuarComAcao({ user, firstName, acao, med, medicationsAtivos,
                 state: 'configurando',
                 context: { etapa: 'obter_horario', acao, medicationId: med.id, medicationNome: med.nome, schedulesAtivos, scheduleId: schedulesAtivos[0]?.id, horarioAtual: schedulesAtivos[0]?.horario }
             });
-            return `Para qual horário você quer mudar o lembrete das *${schedulesAtivos[0]?.horario?.substring(0,5)}* do *${med.nome}*? (ex: *14:30*)`;
+            return `Certo! Vou alterar o lembrete das *${schedulesAtivos[0]?.horario?.substring(0,5)}* do *${med.nome}*.\n\nPara qual horário? Me responda só com o novo horário — por exemplo: *08:00*`;
         }
 
         const ctx = { etapa: 'confirm_acao', acao, medicationId: med.id, medicationNome: med.nome, schedulesAtivos, scheduleId: schedulesAtivos[0]?.id, horarioAtual: schedulesAtivos[0]?.horario, novoHorario };
