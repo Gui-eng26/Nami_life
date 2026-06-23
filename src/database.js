@@ -494,17 +494,79 @@ export async function encerrarTratamento(medicationId) {
     console.log(`🔴 Tratamento encerrado — medication: ${medicationId}`);
 }
 
-export async function reativarComAtualizacao({ medicationId, estoque, tipo_tratamento, tratamento_dias, horarios }) {
-    const { error: errMed } = await supabase
-        .from('medications')
-        .update({
-            estoque_atual: estoque,
-            tipo_tratamento,
-            tratamento_dias: tratamento_dias || null,
-            ativo: true
+export async function removerSchedule(scheduleId, medicationId, horario) {
+    const horaStr = String(horario).substring(0, 5);
+
+    const { data: logsPendentes } = await supabase
+        .from('dose_logs')
+        .select('id, scheduled_at')
+        .eq('medication_id', medicationId)
+        .eq('status', 'pendente');
+
+    const idsParaCancelar = (logsPendentes || [])
+        .filter(log => {
+            const horaLog = new Date(log.scheduled_at)
+                .toLocaleTimeString('pt-BR', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    timeZone: 'America/Sao_Paulo'
+                });
+            return horaLog === horaStr;
         })
-        .eq('id', medicationId);
-    if (errMed) throw new Error(`Erro ao atualizar medicamento: ${errMed.message}`);
+        .map(log => log.id);
+
+    if (idsParaCancelar.length > 0) {
+        const { error: errLogs } = await supabase
+            .from('dose_logs')
+            .update({ status: 'pausado' })
+            .in('id', idsParaCancelar);
+        if (errLogs) throw new Error(`Erro ao cancelar dose_logs: ${errLogs.message}`);
+    }
+
+    const { error } = await supabase
+        .from('schedules')
+        .delete()
+        .eq('id', scheduleId);
+    if (error) throw new Error(`Erro ao remover schedule: ${error.message}`);
+
+    console.log(`🗑️ Schedule removido — id: ${scheduleId}, horario: ${horaStr}, dose_logs cancelados: ${idsParaCancelar.length}`);
+}
+
+export async function adicionarSchedule(medicationId, horario) {
+    const horarioFormatado = horario.length === 5 ? `${horario}:00` : horario;
+    const { data: existente } = await supabase
+        .from('schedules')
+        .select('id')
+        .eq('medication_id', medicationId)
+        .eq('horario', horarioFormatado)
+        .eq('ativo', true)
+        .maybeSingle();
+
+    if (existente) {
+        throw new Error(`HORARIO_DUPLICADO: já existe lembrete ativo às ${horario}`);
+    }
+
+    const { error } = await supabase
+        .from('schedules')
+        .insert({ medication_id: medicationId, horario: horarioFormatado, ativo: true });
+    if (error) throw new Error(`Erro ao adicionar schedule: ${error.message}`);
+
+    console.log(`➕ Schedule adicionado — medication: ${medicationId}, horario: ${horarioFormatado}`);
+}
+
+export async function reativarComAtualizacao({ medicationId, estoque, tipo_tratamento, tratamento_dias, horarios, apenasHorarios = false }) {
+    if (!apenasHorarios) {
+        const { error: errMed } = await supabase
+            .from('medications')
+            .update({
+                estoque_atual: estoque,
+                tipo_tratamento,
+                tratamento_dias: tratamento_dias || null,
+                ativo: true
+            })
+            .eq('id', medicationId);
+        if (errMed) throw new Error(`Erro ao atualizar medicamento: ${errMed.message}`);
+    }
 
     const { error: errDel } = await supabase
         .from('schedules')
@@ -520,7 +582,7 @@ export async function reativarComAtualizacao({ medicationId, estoque, tipo_trata
         if (errSched) throw new Error(`Erro ao criar schedule: ${errSched.message}`);
     }
 
-    console.log(`▶️ Medicamento reativado com atualização — id: ${medicationId}`);
+    console.log(`▶️ Schedules redefinidos — medication: ${medicationId}, horarios: ${horarios.join(', ')}`);
 }
 
 export async function alterarHorarioSchedule(scheduleId, novoHorario) {

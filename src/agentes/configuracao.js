@@ -7,7 +7,9 @@ import {
     reativarMedicamento,
     encerrarTratamento,
     alterarHorarioSchedule,
-    reativarComAtualizacao
+    reativarComAtualizacao,
+    removerSchedule,
+    adicionarSchedule
 } from '../database.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -26,19 +28,25 @@ Medicamentos cadastrados: ${listaMeds}
 
 Responda APENAS com JSON válido, sem markdown, sem explicações:
 {
-  "acao": "pausar" | "reativar" | "encerrar" | "alterar_horario" | "ambiguo",
+  "acao": "pausar" | "reativar" | "encerrar" | "alterar_horario" | "remover_horario" | "adicionar_horario" | "redefinir_horarios" | "ambiguo",
   "medicamentoMencionado": "nome mencionado ou null",
   "novoHorario": "HH:MM ou null"
 }
 
 Definições:
-- pausar: parar lembretes temporariamente (pode retomar depois). Ex: "cancela o lembrete", "para de me lembrar", "não preciso mais do aviso"
-- reativar: ativar lembretes que estavam pausados. Ex: "volta os lembretes", "ativa de novo"
-- encerrar: terminar tratamento definitivamente ou remover medicamento. Ex: "não vou mais tomar", "remove esse remédio", "acabei o tratamento"
-- alterar_horario: mudar o horário de um lembrete. Ex: "muda pra 9h", "trocar horário para 22:00"
+- pausar: parar lembretes temporariamente. Ex: "cancela o lembrete", "para de me lembrar"
+- reativar: ativar lembretes pausados. Ex: "volta os lembretes", "ativa de novo"
+- encerrar: terminar tratamento definitivamente. Ex: "não vou mais tomar", "remove esse remédio"
+- alterar_horario: mudar UM horário específico para outro. Ex: "muda das 8 para 9", "trocar o das 20h para 22h"
+- remover_horario: apagar um horário específico sem substituir. Ex: "tirar o lembrete das 8h", "apagar o das 20", "não preciso mais do aviso das 8", "remover esse horário"
+- adicionar_horario: acrescentar um horário novo sem mexer nos existentes. Ex: "quero tomar às 20 também", "adicionar lembrete às 14h", "incluir um às 20h"
+- redefinir_horarios: substituir TODOS os horários existentes por horários novos, ou aumentar/diminuir a frequência de doses. Ex: "mudar todos os horários", "agora vou tomar 3x ao dia", "mudar os dois horários", "alterar todos"
 - ambiguo: não dá pra distinguir entre pausar e encerrar com certeza
 
-Regra: quando há dúvida entre pausar (temporário) e encerrar (definitivo), use "ambiguo".`;
+ATENÇÃO:
+- "remover horário" é diferente de "encerrar tratamento" — remover é sobre um horário específico, encerrar é sobre o medicamento inteiro
+- "adicionar horário" mantém os horários existentes — "redefinir" substitui todos
+- quando há dúvida entre pausar e encerrar, use "ambiguo"`;
 
     try {
         const response = await anthropic.messages.create({
@@ -86,6 +94,63 @@ function extrairHorarioDestino(message) {
     return `${m[1].padStart(2, '0')}:${(m[2] || '00').padStart(2, '0')}`;
 }
 
+function normalizarHorario(message, schedulesDisponiveis) {
+    const msg = message.toLowerCase().trim();
+
+    // 1. Regex numérico (HH:MM ou HHhMM)
+    const matchesNumericos = [...message.matchAll(/(\d{1,2})[:h](\d{2})?/g)];
+    if (matchesNumericos.length > 0) {
+        const m = matchesNumericos[0];
+        const horarioExtraido = `${m[1].padStart(2, '0')}:${(m[2] || '00').padStart(2, '0')}`;
+        const scheduleExato = schedulesDisponiveis.find(s => s.horario.startsWith(horarioExtraido));
+        if (scheduleExato) return horarioExtraido;
+        const horaSo = m[1].padStart(2, '0');
+        const schedulePorHora = schedulesDisponiveis.find(s => s.horario.startsWith(horaSo + ':'));
+        if (schedulePorHora) return schedulePorHora.horario.substring(0, 5);
+    }
+
+    // 2. Número isolado ("8", "20")
+    const matchNumeroIsolado = msg.match(/^(\d{1,2})$/);
+    if (matchNumeroIsolado) {
+        const hora = matchNumeroIsolado[1].padStart(2, '0');
+        const schedule = schedulesDisponiveis.find(s => s.horario.startsWith(hora + ':'));
+        if (schedule) return schedule.horario.substring(0, 5);
+    }
+
+    // 3. Períodos do dia com número
+    const periodos = [
+        { pattern: /(\d{1,2})\s*(da\s*manhã|de\s*manhã|am)/i, periodo: 'manha' },
+        { pattern: /(\d{1,2})\s*(da\s*tarde|da\s*noite|pm|de\s*noite)/i, periodo: 'tarde_noite' },
+        { pattern: /(\d{1,2})\s*h/i, periodo: null }
+    ];
+
+    for (const { pattern, periodo } of periodos) {
+        const match = msg.match(pattern);
+        if (match) {
+            let hora = parseInt(match[1]);
+            if (periodo === 'tarde_noite' && hora < 12) hora += 12;
+            const horaStr = String(hora).padStart(2, '0');
+            const schedule = schedulesDisponiveis.find(s => s.horario.startsWith(horaStr + ':'));
+            if (schedule) return schedule.horario.substring(0, 5);
+        }
+    }
+
+    // 4. Expressões sem número
+    const expressoes = {
+        'meio.?dia': '12',
+        'meia.?noite': '00',
+        'meio da manhã': '06'
+    };
+    for (const [expr, hora] of Object.entries(expressoes)) {
+        if (new RegExp(expr, 'i').test(msg)) {
+            const schedule = schedulesDisponiveis.find(s => s.horario.startsWith(hora + ':'));
+            if (schedule) return schedule.horario.substring(0, 5);
+        }
+    }
+
+    return null;
+}
+
 function isConfirmacao(message) {
     const msg = message.toLowerCase().trim();
     const termos = ['sim', 's', 'ok', 'pode', 'claro', 'confirmar', 'confirmo', 'vai', 'vamos', 'isso'];
@@ -108,7 +173,7 @@ function formatarHorarios(schedules) {
 // ============================================================
 
 function buildConfirmacaoMessage(firstName, ctx) {
-    const { acao, medicationNome, schedulesAtivos, novoHorario, horarioAtual } = ctx;
+    const { acao, medicationNome, schedulesAtivos, novoHorario, horarioAtual, novosHorarios } = ctx;
     const horarios = formatarHorarios(schedulesAtivos);
 
     switch (acao) {
@@ -120,6 +185,14 @@ function buildConfirmacaoMessage(firstName, ctx) {
             return `Só confirmar: vou *encerrar o tratamento* com *${medicationNome}* e desativar todos os lembretes permanentemente.\n\nConfirmar?`;
         case 'alterar_horario':
             return `Só confirmar: vou mudar o lembrete${horarioAtual ? ` das *${horarioAtual.substring(0,5)}*` : ''} do *${medicationNome}* para *${novoHorario}*.\n\nConfirmar?`;
+        case 'remover_horario':
+            return `Só confirmar, ${firstName}: vou *remover* o lembrete das *${horarioAtual ? horarioAtual.substring(0,5) : '?'}* do *${medicationNome}* permanentemente.\n\nConfirmar?`;
+        case 'adicionar_horario':
+            return `Só confirmar, ${firstName}: vou *adicionar* um lembrete às *${novoHorario}* para o *${medicationNome}*.\n\nConfirmar?`;
+        case 'redefinir_horarios': {
+            const listaHorarios = (novosHorarios || []).join(', ');
+            return `Só confirmar, ${firstName}: vou *substituir todos os horários* do *${medicationNome}*.\n\nNovos horários: *${listaHorarios}*\n\nConfirmar?`;
+        }
         default:
             return 'Confirmar a alteração?';
     }
@@ -130,7 +203,7 @@ function buildConfirmacaoMessage(firstName, ctx) {
 // ============================================================
 
 async function executarAcao(user, firstName, ctx) {
-    const { acao, medicationId, medicationNome, scheduleId, novoHorario, horarioAtual, schedulesAtivos } = ctx;
+    const { acao, medicationId, medicationNome, scheduleId, novoHorario, horarioAtual, schedulesAtivos, novosHorarios } = ctx;
     const horarios = formatarHorarios(schedulesAtivos);
 
     switch (acao) {
@@ -174,6 +247,46 @@ async function executarAcao(user, firstName, ctx) {
 
             await saveConversationState(user.id, { state: 'idle', context: {} });
             return `✅ Pronto! Seu lembrete do *${medicationNome}* foi atualizado para *${novoHorario}* ⏰`;
+        }
+
+        case 'remover_horario': {
+            await removerSchedule(scheduleId, medicationId, horarioAtual);
+            const remainingSchedules = (schedulesAtivos || []).filter(s => s.id !== scheduleId);
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return `✅ Pronto, ${firstName}! Lembrete das *${horarioAtual ? horarioAtual.substring(0,5) : '?'}* do *${medicationNome}* removido.\n\n${remainingSchedules.length > 0
+                ? `Você ainda tem lembrete${remainingSchedules.length > 1 ? 's' : ''} às ${remainingSchedules.map(s => s.horario.substring(0,5)).join(' e ')} para esse medicamento.`
+                : ''}`;
+        }
+
+        case 'adicionar_horario': {
+            try {
+                await adicionarSchedule(medicationId, novoHorario);
+                await saveConversationState(user.id, { state: 'idle', context: {} });
+                const todosHorarios = [...(schedulesAtivos || []).map(s => s.horario.substring(0,5)), novoHorario]
+                    .sort()
+                    .join(', ');
+                return `✅ Pronto, ${firstName}! Adicionei um lembrete às *${novoHorario}* para o *${medicationNome}* 💊\n\nAgora você tem lembretes às: ${todosHorarios}`;
+            } catch (e) {
+                if (e.message.startsWith('HORARIO_DUPLICADO')) {
+                    await saveConversationState(user.id, { state: 'idle', context: {} });
+                    return `O *${medicationNome}* já tem um lembrete às *${novoHorario}*. Nada foi alterado 🌿`;
+                }
+                throw e;
+            }
+        }
+
+        case 'redefinir_horarios': {
+            await reativarComAtualizacao({
+                medicationId,
+                estoque: null,
+                tipo_tratamento: null,
+                tratamento_dias: null,
+                horarios: novosHorarios,
+                apenasHorarios: true
+            });
+            const horariosLabel = (novosHorarios || []).sort().join(', ');
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return `✅ Pronto, ${firstName}! Horários do *${medicationNome}* atualizados 💊\n\nNovos lembretes: ${horariosLabel}`;
         }
 
         default:
@@ -267,11 +380,30 @@ export async function handleConfiguracao({ user, message, state, context }) {
 
     // ── ETAPA 4: Usuário especifica qual horário alterar ─────────────────────
     if (etapa === 'identif_schedule') {
-        const horarioMencionado = extrairHorarioOrigem(message);
         const schedulesAtivos = context.schedulesAtivos || [];
-        const schedule = schedulesAtivos.find(s =>
-            horarioMencionado && s.horario.startsWith(horarioMencionado)
-        );
+        const msg = message.toLowerCase();
+        const querTodos = /\b(todos|os dois|ambos|os três|tudo|todas)\b/.test(msg);
+
+        if (querTodos) {
+            const schedulesOrdenados = [...schedulesAtivos].sort((a, b) => a.horario.localeCompare(b.horario));
+            const primeiro = schedulesOrdenados[0];
+            await saveConversationState(user.id, {
+                state: 'configurando',
+                context: {
+                    ...context,
+                    etapa: 'obter_horario',
+                    scheduleId: primeiro.id,
+                    horarioAtual: primeiro.horario,
+                    schedulesAtivos: schedulesOrdenados
+                }
+            });
+            return `Certo! Vou alterar todos os horários do *${context.medicationNome}* um a um.\n\nComeçando pelo primeiro: lembrete das *${primeiro.horario.substring(0,5)}*.\n\nPara qual horário? Me responda só com o novo horário — por exemplo: *08:00*`;
+        }
+
+        const horarioMencionado = normalizarHorario(message, schedulesAtivos);
+        const schedule = horarioMencionado
+            ? schedulesAtivos.find(s => s.horario.startsWith(horarioMencionado))
+            : null;
 
         if (!schedule) {
             const lista = schedulesAtivos.map(s => `• ${s.horario.substring(0,5)}`).join('\n');
@@ -289,6 +421,42 @@ export async function handleConfiguracao({ user, message, state, context }) {
         const newCtx = { ...context, etapa: 'confirm_acao', scheduleId: schedule.id, horarioAtual: schedule.horario };
         await saveConversationState(user.id, { state: 'configurando', context: newCtx });
         return buildConfirmacaoMessage(firstName, newCtx);
+    }
+
+    // ── ETAPA 4b: Usuário escolhe qual horário remover ───────────────────────
+    if (etapa === 'identif_schedule_remocao') {
+        const schedulesAtivos = context.schedulesAtivos || [];
+        const horarioMencionado = normalizarHorario(message, schedulesAtivos);
+        const schedule = horarioMencionado
+            ? schedulesAtivos.find(s => s.horario.startsWith(horarioMencionado))
+            : null;
+
+        if (!schedule) {
+            const lista = schedulesAtivos.map(s => `• ${s.horario.substring(0,5)}`).join('\n');
+            return `Não reconheci esse horário. Os lembretes cadastrados são:\n\n${lista}\n\nMe responda com um desses — por exemplo: *${schedulesAtivos[0]?.horario?.substring(0,5)}*`;
+        }
+
+        const ctx = { ...context, etapa: 'confirm_acao', scheduleId: schedule.id, horarioAtual: schedule.horario };
+        await saveConversationState(user.id, { state: 'configurando', context: ctx });
+        return buildConfirmacaoMessage(firstName, ctx);
+    }
+
+    // ── ETAPA 4c: Coleta novos horários para redefinição ─────────────────────
+    if (etapa === 'obter_novos_horarios') {
+        const matches = [...message.matchAll(/(\d{1,2})[:h](\d{2})?/g)].map(m => {
+            const h = m[1].padStart(2, '0');
+            const min = (m[2] || '00').padStart(2, '0');
+            return `${h}:${min}`;
+        });
+
+        if (matches.length === 0) {
+            return `Não reconheci os horários, ${firstName}. Me diga os novos horários das doses — por exemplo: *06:00, 14:00 e 22:00*`;
+        }
+
+        const horariosUnicos = [...new Set(matches)];
+        const ctx = { ...context, etapa: 'confirm_acao', novosHorarios: horariosUnicos };
+        await saveConversationState(user.id, { state: 'configurando', context: ctx });
+        return buildConfirmacaoMessage(firstName, ctx);
     }
 
     // ── ETAPA 5: Obter o novo horário ────────────────────────────────────────
@@ -498,22 +666,96 @@ async function continuarComAcao({ user, firstName, acao, med, medicationsAtivos,
 
     schedulesAtivos = schedulesAtivos || (med.schedules || []).filter(s => s.ativo);
 
+    // remover_horario
+    if (acao === 'remover_horario') {
+        if (schedulesAtivos.length <= 1) {
+            await saveConversationState(user.id, {
+                state: 'configurando',
+                context: { etapa: 'identif_acao', medicationId: med.id, medicationNome: med.nome, schedulesAtivos }
+            });
+            return `O *${med.nome}* tem apenas um horário de lembrete cadastrado (${schedulesAtivos[0]?.horario?.substring(0,5) || '?'}). Não é possível remover o único horário.\n\nSe quiser parar os lembretes, posso *pausar* temporariamente ou *encerrar* o tratamento. O que prefere?`;
+        }
+
+        const horarioMencionado = normalizarHorario(message, schedulesAtivos);
+        const scheduleAlvo = horarioMencionado
+            ? schedulesAtivos.find(s => s.horario.startsWith(horarioMencionado))
+            : null;
+
+        if (!scheduleAlvo) {
+            const lista = schedulesAtivos.map(s => `• ${s.horario.substring(0,5)}`).join('\n');
+            await saveConversationState(user.id, {
+                state: 'configurando',
+                context: { etapa: 'identif_schedule_remocao', acao, medicationId: med.id, medicationNome: med.nome, schedulesAtivos }
+            });
+            return `O *${med.nome}* tem lembretes nos seguintes horários:\n\n${lista}\n\nQual você quer remover? Me responda com o horário — por exemplo: *${schedulesAtivos[0]?.horario?.substring(0,5)}*`;
+        }
+
+        const ctx = {
+            etapa: 'confirm_acao',
+            acao: 'remover_horario',
+            medicationId: med.id,
+            medicationNome: med.nome,
+            schedulesAtivos,
+            scheduleId: scheduleAlvo.id,
+            horarioAtual: scheduleAlvo.horario
+        };
+        await saveConversationState(user.id, { state: 'configurando', context: ctx });
+        return buildConfirmacaoMessage(firstName, ctx);
+    }
+
+    // adicionar_horario
+    if (acao === 'adicionar_horario') {
+        if (novoHorario) {
+            const ctx = {
+                etapa: 'confirm_acao',
+                acao: 'adicionar_horario',
+                medicationId: med.id,
+                medicationNome: med.nome,
+                schedulesAtivos,
+                novoHorario
+            };
+            await saveConversationState(user.id, { state: 'configurando', context: ctx });
+            return buildConfirmacaoMessage(firstName, ctx);
+        }
+
+        await saveConversationState(user.id, {
+            state: 'configurando',
+            context: { etapa: 'obter_horario', acao, medicationId: med.id, medicationNome: med.nome, schedulesAtivos }
+        });
+        const horariosAtuais = schedulesAtivos.map(s => s.horario.substring(0,5)).join(' e ');
+        return `Você tem lembretes do *${med.nome}* às ${horariosAtuais}.\n\nQual horário quer adicionar? Me diga só o horário — por exemplo: *14:00*`;
+    }
+
+    // redefinir_horarios
+    if (acao === 'redefinir_horarios') {
+        await saveConversationState(user.id, {
+            state: 'configurando',
+            context: { etapa: 'obter_novos_horarios', acao, medicationId: med.id, medicationNome: med.nome, schedulesAtivos }
+        });
+        const horariosAtuais = schedulesAtivos.map(s => `• ${s.horario.substring(0,5)}`).join('\n');
+        return `Vou substituir todos os horários do *${med.nome}*.\n\nHorários atuais:\n${horariosAtuais}\n\nMe diga os novos horários — por exemplo: *06:00, 14:00 e 22:00*`;
+    }
+
     // alterar_horario: verificar se precisamos do schedule específico e/ou novo horário
     if (acao === 'alterar_horario') {
         // Múltiplos schedules sem horário específico mencionado
         if (schedulesAtivos.length > 1) {
-            const horarioMencionado = extrairHorarioOrigem(message);
+            const horarioMencionado = normalizarHorario(message, schedulesAtivos);
             const scheduleEspecifico = horarioMencionado
                 ? schedulesAtivos.find(s => s.horario.startsWith(horarioMencionado))
                 : null;
 
             if (!scheduleEspecifico) {
                 const lista = schedulesAtivos.map(s => `• ${s.horario.substring(0,5)}`).join('\n');
+                const qtd = schedulesAtivos.length;
+                const descricaoQtd = qtd === 1 ? 'um horário' :
+                                     qtd === 2 ? 'dois horários' :
+                                     `${qtd} horários`;
                 await saveConversationState(user.id, {
                     state: 'configurando',
                     context: { etapa: 'identif_schedule', acao, medicationId: med.id, medicationNome: med.nome, schedulesAtivos, novoHorario }
                 });
-                return `O *${med.nome}* tem lembretes em dois horários:\n\n${lista}\n\nQual desses você quer alterar? Me responda com o horário — por exemplo: *${schedulesAtivos[0]?.horario?.substring(0,5)}*`;
+                return `O *${med.nome}* tem lembretes em ${descricaoQtd}:\n\n${lista}\n\nQual desses você quer alterar? Me responda com o horário — por exemplo: *${schedulesAtivos[0]?.horario?.substring(0,5)}*`;
             }
 
             if (!novoHorario) {
