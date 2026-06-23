@@ -34,19 +34,39 @@ Responda APENAS com JSON válido, sem markdown, sem explicações:
 }
 
 Definições:
-- pausar: parar lembretes temporariamente. Ex: "cancela o lembrete", "para de me lembrar"
-- reativar: ativar lembretes pausados. Ex: "volta os lembretes", "ativa de novo"
-- encerrar: terminar tratamento definitivamente. Ex: "não vou mais tomar", "remove esse remédio"
-- alterar_horario: mudar UM horário específico para outro. Ex: "muda das 8 para 9", "trocar o das 20h para 22h"
-- remover_horario: apagar um horário específico sem substituir. Ex: "tirar o lembrete das 8h", "apagar o das 20", "não preciso mais do aviso das 8", "remover esse horário"
-- adicionar_horario: acrescentar um horário novo sem mexer nos existentes. Ex: "quero tomar às 20 também", "adicionar lembrete às 14h", "incluir um às 20h"
-- redefinir_horarios: substituir TODOS os horários existentes por horários novos, ou aumentar/diminuir a frequência de doses. Ex: "mudar todos os horários", "agora vou tomar 3x ao dia", "mudar os dois horários", "alterar todos"
-- ambiguo: não dá pra distinguir entre pausar e encerrar com certeza
+- pausar: parar lembretes temporariamente.
+  Ex: "cancela o lembrete", "para de me lembrar", "quero pausar", "suspender os avisos"
 
-ATENÇÃO:
-- "remover horário" é diferente de "encerrar tratamento" — remover é sobre um horário específico, encerrar é sobre o medicamento inteiro
-- "adicionar horário" mantém os horários existentes — "redefinir" substitui todos
-- quando há dúvida entre pausar e encerrar, use "ambiguo"`;
+- reativar: ativar lembretes pausados.
+  Ex: "volta os lembretes", "ativa de novo", "reativar", "quero retomar"
+
+- encerrar: terminar tratamento definitivamente.
+  Ex: "não vou mais tomar", "remove esse remédio", "encerrar tratamento"
+
+- alterar_horario: mudar UM horário específico para outro — com ou sem horário explícito na mensagem.
+  Ex com horário: "muda das 8 para 9", "trocar o das 20h para 22h", "alterar das 8 para 10"
+  Ex sem horário: "quero alterar horário", "mudar horário", "trocar horário", "quero alterar o horário do dipirona"
+
+- remover_horario: apagar um horário específico sem substituir — com ou sem horário explícito.
+  Ex com horário: "tirar o das 8h", "apagar o das 20", "excluir o lembrete das 15h"
+  Ex sem horário: "quero remover um horário", "excluir um lembrete", "tirar um dos horários"
+
+- adicionar_horario: acrescentar horário novo sem mexer nos existentes — com ou sem horário explícito.
+  Ex com horário: "quero tomar às 20 também", "adicionar lembrete às 14h"
+  Ex sem horário: "quero adicionar um horário", "incluir mais um lembrete"
+
+- redefinir_horarios: substituir TODOS os horários ou mudar a frequência de doses.
+  Ex com horário: "agora vou tomar 3x ao dia", "mudar para 6h, 14h e 22h"
+  Ex sem horário: "quero mudar todos os horários", "redefinir os lembretes", "alterar todos os horários"
+
+- ambiguo: APENAS quando não dá pra distinguir entre PAUSAR (temporário) e ENCERRAR (definitivo).
+  Ex: "quero parar", "cancelar", "não preciso mais" — sem deixar claro se é temporário ou definitivo.
+  IMPORTANTE: NÃO usar ambiguo para intenções de horário que não tenham detalhes explícitos.
+  "Quero alterar horário" é alterar_horario, não ambiguo.
+  "Tirar um horário" é remover_horario, não ambiguo.
+
+Quando há dúvida entre pausar e encerrar → ambiguo.
+Quando há intenção clara de horário sem detalhes → classificar pelo tipo de operação (alterar/remover/adicionar/redefinir).`;
 
     try {
         const response = await anthropic.messages.create({
@@ -69,13 +89,20 @@ ATENÇÃO:
 // HELPERS DETERMINÍSTICOS
 // ============================================================
 
+function normalizar(str) {
+    return str
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '');
+}
+
 function encontrarMedicamento(texto, medications) {
     if (!texto) return null;
-    const t = texto.toLowerCase();
-    return medications.find(m => m.nome.toLowerCase() === t)
+    const t = normalizar(texto);
+    return medications.find(m => normalizar(m.nome) === t)
         || medications.find(m =>
-            t.includes(m.nome.toLowerCase()) ||
-            m.nome.toLowerCase().includes(t)
+            t.includes(normalizar(m.nome)) ||
+            normalizar(m.nome).includes(t)
         )
         || null;
 }
@@ -304,6 +331,9 @@ export async function handleConfiguracao({ user, message, state, context }) {
     const firstName = user.name?.split(' ')[0] || 'você';
     const medications = await getUserMedications(user.id);
     const medicationsAtivos = medications.filter(m => m.ativo !== false);
+    const temScheduleAtivo = m => (m.schedules || []).some(s => s.ativo);
+    const medicamentosComSchedule = medications.filter(m => m.ativo && temScheduleAtivo(m));
+    const medicamentosPausados = medications.filter(m => m.ativo && !temScheduleAtivo(m));
 
     console.log(`⚙️ Configuração — etapa: ${etapa} — ${user.phone}`);
 
@@ -323,7 +353,7 @@ export async function handleConfiguracao({ user, message, state, context }) {
             await saveConversationState(user.id, {
                 state: 'configurando',
                 context: {
-                    etapa: 'identif_acao',
+                    etapa: 'identif_intencao',
                     medicationId: med?.id || null,
                     medicationNome: nomeExibir,
                     schedulesAtivos: med ? (med.schedules || []).filter(s => s.ativo) : []
@@ -332,50 +362,28 @@ export async function handleConfiguracao({ user, message, state, context }) {
             return `Entendido, ${firstName}! Sobre o *${nomeExibir}*, você quer:\n\n• *Pausar* os lembretes (temporário — pode retomar depois)\n• *Encerrar* o tratamento definitivamente\n\nO que prefere?`;
         }
 
-        // Intenção clara → identificar medicamento
-        const med = medicamentoMencionado ? encontrarMedicamento(medicamentoMencionado, medicationsAtivos) : null;
-        return await continuarComAcao({ user, firstName, acao, med, medicationsAtivos, novoHorario, message });
-    }
-
-    // ── ETAPA 2: Usuário esclarece pausar vs encerrar ────────────────────────
-    if (etapa === 'identif_acao') {
-        const msg = message.toLowerCase();
-        let acao = null;
-        if (/pausar|pausa|temporár|temporar|depois|retomar/.test(msg)) acao = 'pausar';
-        else if (/encerrar|definitiv|remover|apagar|excluir|não vou mais|nao vou mais/.test(msg)) acao = 'encerrar';
-        else if (isConfirmacao(msg) && msg.includes('paus')) acao = 'pausar';
-        else if (isConfirmacao(msg) && msg.includes('encerr')) acao = 'encerrar';
-
-        if (!acao) {
-            return `Não entendi, ${firstName}. Você quer *pausar* (temporário) ou *encerrar* definitivamente?`;
-        }
-
-        // Se já tem medicamento no contexto, ir para confirmação
-        if (context.medicationId) {
-            const schedulesAtivos = context.schedulesAtivos || [];
-            const newCtx = { etapa: 'confirm_acao', acao, medicationId: context.medicationId, medicationNome: context.medicationNome, schedulesAtivos };
-            await saveConversationState(user.id, { state: 'configurando', context: newCtx });
-            return buildConfirmacaoMessage(firstName, newCtx);
-        }
-
-        // Sem medicamento identificado → perguntar qual
-        const lista = medicationsAtivos.map(m => `• ${m.nome}`).join('\n');
-        await saveConversationState(user.id, { state: 'configurando', context: { etapa: 'identif_medicamento', acao } });
-        return `Qual medicamento você quer ${acao === 'pausar' ? 'pausar' : 'encerrar'}?\n\n${lista}`;
+        // Medicamento já identificado no contexto (vem de um ambiguo anterior ou de outro fluxo)
+        const medDoContexto = context.medicationId
+            ? medicationsAtivos.find(m => m.id === context.medicationId)
+            : null;
+        const med = medDoContexto
+            || (medicamentoMencionado ? encontrarMedicamento(medicamentoMencionado, medicationsAtivos) : null);
+        return await continuarComAcao({ user, firstName, acao, med, medicationsAtivos, medicamentosComSchedule, medicamentosPausados, novoHorario, message });
     }
 
     // ── ETAPA 3: Usuário especifica qual medicamento ──────────────────────────
     if (etapa === 'identif_medicamento') {
         const med = encontrarMedicamento(message, medicationsAtivos);
+        const listaParaMostrar = context.acao === 'reativar' ? medicamentosPausados : medicamentosComSchedule;
 
         if (!med) {
-            const lista = medicationsAtivos.map(m => `• ${m.nome}`).join('\n');
+            const lista = listaParaMostrar.map(m => `• ${m.nome}`).join('\n');
             return `Não encontrei esse medicamento, ${firstName}. Seus medicamentos:\n\n${lista}\n\nQual deles?`;
         }
 
         const schedulesAtivos = (med.schedules || []).filter(s => s.ativo);
         const { acao, novoHorario } = context;
-        return await continuarComAcao({ user, firstName, acao, med, medicationsAtivos, novoHorario, message, schedulesAtivos });
+        return await continuarComAcao({ user, firstName, acao, med, medicationsAtivos, medicamentosComSchedule, medicamentosPausados, novoHorario, message, schedulesAtivos });
     }
 
     // ── ETAPA 4: Usuário especifica qual horário alterar ─────────────────────
@@ -649,18 +657,29 @@ export async function handleConfiguracao({ user, message, state, context }) {
 }
 
 // ── HELPER: continua após intenção clara + medicamento opcional ──────────────
-async function continuarComAcao({ user, firstName, acao, med, medicationsAtivos, novoHorario, message, schedulesAtivos }) {
+async function continuarComAcao({ user, firstName, acao, med, medicationsAtivos, medicamentosComSchedule, medicamentosPausados, novoHorario, message, schedulesAtivos }) {
+    const acaoTexto = {
+        'alterar_horario':    'alterar o horário de',
+        'remover_horario':    'remover um horário de',
+        'adicionar_horario':  'adicionar um horário para',
+        'redefinir_horarios': 'redefinir os horários de',
+        'pausar':             'pausar',
+        'reativar':           'reativar',
+        'encerrar':           'encerrar o tratamento de'
+    };
+
     // Sem medicamento identificado
     if (!med) {
-        if (medicationsAtivos.length === 1) {
-            med = medicationsAtivos[0];
+        const listaParaMostrar = acao === 'reativar' ? medicamentosPausados : medicamentosComSchedule;
+        if (listaParaMostrar.length === 1) {
+            med = listaParaMostrar[0];
         } else {
-            const lista = medicationsAtivos.map(m => `• ${m.nome}`).join('\n');
+            const lista = listaParaMostrar.map(m => `• ${m.nome}`).join('\n');
             await saveConversationState(user.id, {
                 state: 'configurando',
                 context: { etapa: 'identif_medicamento', acao, novoHorario }
             });
-            return `Qual medicamento você quer ${acao === 'alterar_horario' ? 'alterar o horário' : acao}?\n\n${lista}`;
+            return `Qual medicamento você quer ${acaoTexto[acao] || 'configurar'}?\n\n${lista}`;
         }
     }
 
@@ -671,7 +690,7 @@ async function continuarComAcao({ user, firstName, acao, med, medicationsAtivos,
         if (schedulesAtivos.length <= 1) {
             await saveConversationState(user.id, {
                 state: 'configurando',
-                context: { etapa: 'identif_acao', medicationId: med.id, medicationNome: med.nome, schedulesAtivos }
+                context: { etapa: 'identif_intencao', medicationId: med.id, medicationNome: med.nome, schedulesAtivos }
             });
             return `O *${med.nome}* tem apenas um horário de lembrete cadastrado (${schedulesAtivos[0]?.horario?.substring(0,5) || '?'}). Não é possível remover o único horário.\n\nSe quiser parar os lembretes, posso *pausar* temporariamente ou *encerrar* o tratamento. O que prefere?`;
         }
