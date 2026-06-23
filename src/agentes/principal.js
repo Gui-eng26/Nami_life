@@ -12,7 +12,8 @@ import {
     getEstoqueInfoParaAlerta,
     contarConfirmacoesHoje,
     calcularAlertaEstoque,
-    registrarNaoTomado
+    registrarNaoTomado,
+    calcularProximaDose
 } from '../database.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -101,9 +102,15 @@ Dados parciais em andamento: ${JSON.stringify(state.context)}
 Medicamentos cadastrados: ${medications.length === 0
         ? 'nenhum ainda'
         : medications.map(m => {
-            const horarios = m.schedules && m.schedules.length > 0
-                ? m.schedules.filter(s => s.ativo).map(s => s.horario).join(', ')
+            const schedulesAtivos = m.schedules ? m.schedules.filter(s => s.ativo) : [];
+            const horarios = schedulesAtivos.length > 0
+                ? schedulesAtivos.map(s => s.horario).join(', ')
                 : 'nenhum horário cadastrado';
+
+            const proximaDose = calcularProximaDose(schedulesAtivos);
+            const proximaDoseStr = proximaDose
+                ? `próxima dose: ${proximaDose.horario} (${proximaDose.quando})`
+                : 'sem próxima dose calculada';
 
             let tratamentoInfo = `tipo: ${m.tipo_tratamento || 'contínuo'}`;
             if (m.tratamento_dias) {
@@ -111,13 +118,13 @@ Medicamentos cadastrados: ${medications.length === 0
                 const agora = new Date();
                 const diasDecorridos = Math.floor((agora - inicio) / (1000 * 60 * 60 * 24));
                 const diasRestantes = Math.max(0, m.tratamento_dias - diasDecorridos);
-                const dosesPerDia = (m.schedules || []).filter(s => s.ativo).length || 1;
-                    const dosesTotais = m.tratamento_dias * dosesPerDia;
-                    const dosesRestantesEstimadas = diasRestantes * dosesPerDia;
-                    tratamentoInfo += `, duração total: ${m.tratamento_dias} dias, doses totais do tratamento: ${dosesTotais}, dias decorridos desde o início: ${diasDecorridos}, dias restantes: ${diasRestantes}, doses restantes estimadas: ${dosesRestantesEstimadas}`;
+                const dosesPerDia = schedulesAtivos.length || 1;
+                const dosesTotais = m.tratamento_dias * dosesPerDia;
+                const dosesRestantesEstimadas = diasRestantes * dosesPerDia;
+                tratamentoInfo += `, duração total: ${m.tratamento_dias} dias, doses totais do tratamento: ${dosesTotais}, dias decorridos desde o início: ${diasDecorridos}, dias restantes: ${diasRestantes}, doses restantes estimadas: ${dosesRestantesEstimadas}`;
             }
 
-            return `[id:${m.id}] ${m.nome} (${m.dosagem}, estoque: ${m.estoque_atual}, horários: ${horarios}, ${tratamentoInfo})`;
+            return `[id:${m.id}] ${m.nome} (${m.dosagem}, estoque: ${m.estoque_atual}, horários: ${horarios}, ${proximaDoseStr}, ${tratamentoInfo})`;
         }).join(' | ')
     }
 

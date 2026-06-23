@@ -960,6 +960,34 @@ export function calcularAlertaEstoque({ diasRestantes, tipo_tratamento, tratamen
 }
 
 // ============================================================
+// PRÓXIMA DOSE — cálculo determinístico
+// ============================================================
+
+// Retorna o próximo horário de dose a partir de agora (timezone São Paulo).
+// Se todos os horários já passaram hoje, retorna o primeiro de amanhã.
+export function calcularProximaDose(schedulesAtivos, agora = new Date()) {
+    if (!schedulesAtivos || schedulesAtivos.length === 0) return null;
+
+    const horaAtualStr = agora.toLocaleTimeString('pt-BR', {
+        hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo', hour12: false
+    });
+    const [hAtual, mAtual] = horaAtualStr.split(':').map(Number);
+    const minutosAgora = hAtual * 60 + mAtual;
+
+    const horariosMinutos = schedulesAtivos
+        .map(s => {
+            const [h, m] = s.horario.substring(0, 5).split(':').map(Number);
+            return { horario: s.horario.substring(0, 5), minutos: h * 60 + m };
+        })
+        .sort((a, b) => a.minutos - b.minutos);
+
+    const proximoHoje = horariosMinutos.find(h => h.minutos > minutosAgora);
+    if (proximoHoje) return { horario: proximoHoje.horario, quando: 'hoje' };
+
+    return { horario: horariosMinutos[0].horario, quando: 'amanhã' };
+}
+
+// ============================================================
 // LOGS DE AGENTES
 // ============================================================
 

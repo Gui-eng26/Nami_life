@@ -121,6 +121,55 @@ function extrairHorarioDestino(message) {
     return `${m[1].padStart(2, '0')}:${(m[2] || '00').padStart(2, '0')}`;
 }
 
+// Converte linguagem natural em HH:MM sem depender de lista de schedules.
+// Usado em obter_horario (adicionar novo horário) onde o horário não existe ainda.
+function interpretarHorarioLivre(message) {
+    const msg = message.toLowerCase().trim();
+
+    // 1. Formato numérico explícito (HH:MM ou HHhMM) — pega o último (destino)
+    const matchesNumericos = [...message.matchAll(/(\d{1,2})[:h](\d{2})?/g)];
+    if (matchesNumericos.length > 0) {
+        const m = matchesNumericos[matchesNumericos.length - 1];
+        let hora = parseInt(m[1]);
+        const min = m[2] || '00';
+        if (/(da\s*tarde|da\s*noite|de\s*noite|pm)/i.test(msg) && hora < 12) hora += 12;
+        if (hora >= 0 && hora <= 23) {
+            return `${String(hora).padStart(2, '0')}:${min.padStart(2, '0')}`;
+        }
+    }
+
+    // 2. Número isolado com período (ex: "3 da tarde", "8 da noite", "9 da manhã")
+    const matchPeriodo = msg.match(/(\d{1,2})\s*(da\s*manh[aã]|de\s*manh[aã]|da\s*tarde|da\s*noite|de\s*noite|am|pm)/i);
+    if (matchPeriodo) {
+        let hora = parseInt(matchPeriodo[1]);
+        const periodo = matchPeriodo[2].toLowerCase();
+        const ehTardeNoite = /tarde|noite|pm/.test(periodo);
+        if (ehTardeNoite && hora < 12) hora += 12;
+        if (/manh[aã]|am/.test(periodo) && hora === 12) hora = 0;
+        if (hora >= 0 && hora <= 23) return `${String(hora).padStart(2, '0')}:00`;
+    }
+
+    // 3. Número com "h" isolado (ex: "14h", "8h")
+    const matchHora = msg.match(/(\d{1,2})\s*h(?:oras?)?$/i);
+    if (matchHora) {
+        const hora = parseInt(matchHora[1]);
+        if (hora >= 0 && hora <= 23) return `${String(hora).padStart(2, '0')}:00`;
+    }
+
+    // 4. Número puro isolado (ex: "15", "8") — assume 24h
+    const matchIsolado = msg.match(/^(\d{1,2})$/);
+    if (matchIsolado) {
+        const hora = parseInt(matchIsolado[1]);
+        if (hora >= 0 && hora <= 23) return `${String(hora).padStart(2, '0')}:00`;
+    }
+
+    // 5. Expressões nomeadas
+    if (/meio.?dia/i.test(msg)) return '12:00';
+    if (/meia.?noite/i.test(msg)) return '00:00';
+
+    return null;
+}
+
 function normalizarHorario(message, schedulesDisponiveis) {
     const msg = message.toLowerCase().trim();
 
@@ -469,9 +518,9 @@ export async function handleConfiguracao({ user, message, state, context }) {
 
     // ── ETAPA 5: Obter o novo horário ────────────────────────────────────────
     if (etapa === 'obter_horario') {
-        const novoHorario = extrairHorarioDestino(message);
+        const novoHorario = interpretarHorarioLivre(message);
         if (!novoHorario) {
-            return `Não reconheci esse horário, ${firstName}. Me diga só o novo horário no formato *HH:MM* — por exemplo: *08:00*`;
+            return `Não reconheci esse horário, ${firstName}. Me diga o horário — pode ser assim: *15:00*, *3 da tarde* ou *15h* 😊`;
         }
         const newCtx = { ...context, etapa: 'confirm_acao', novoHorario };
         await saveConversationState(user.id, { state: 'configurando', context: newCtx });
@@ -481,7 +530,7 @@ export async function handleConfiguracao({ user, message, state, context }) {
     // ── ETAPA 6: Confirmar e executar ────────────────────────────────────────
     if (etapa === 'confirm_acao') {
         const negacaoPresente = /\b(não|nao)\b/i.test(message.toLowerCase());
-        const horarioCorrecao = extrairHorarioDestino(message);
+        const horarioCorrecao = interpretarHorarioLivre(message);
 
         if (negacaoPresente && horarioCorrecao) {
             const newCtx = { ...context, etapa: 'confirm_acao', novoHorario: horarioCorrecao };

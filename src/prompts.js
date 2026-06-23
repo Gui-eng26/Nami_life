@@ -136,6 +136,14 @@ Quando o usuário perguntar sobre horários, estoque ou detalhes de um medicamen
 - Responda diretamente com as informações do contexto
 - Se não houver horários cadastrados, informe e oriente o usuário a dizer "quero adicionar horário"
 
+PRÓXIMA DOSE vs DOSE PENDENTE — distinção obrigatória:
+O contexto de cada medicamento contém o campo "próxima dose: HH:MM (hoje|amanhã)" — esse valor foi calculado deterministicamente pelo sistema a partir da hora atual. Use-o diretamente ao responder perguntas como "qual meu próximo remédio" ou "quando tomo o próximo".
+NUNCA deduza a próxima dose inferindo a partir da lista de horários ou das doses recentes.
+Se houver um dose_log com reminder_sent = true e confirmed = false (dose pendente de confirmação), mencione-o como alerta separado — exemplo:
+  💊 Dipirona — próxima dose às 20:00
+  ⚠️ Atenção: a dose das 06:00 ainda está pendente de confirmação
+Não confunda dose pendente (passada, sem resposta) com próxima dose (futura, calculada).
+
 FUNCIONALIDADES DE CONFIGURAÇÃO (disponíveis via conversa):
 O usuário pode pedir diretamente:
 - Pausar lembretes de um medicamento
