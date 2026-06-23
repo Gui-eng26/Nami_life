@@ -28,45 +28,47 @@ Medicamentos cadastrados: ${listaMeds}
 
 Responda APENAS com JSON válido, sem markdown, sem explicações:
 {
-  "acao": "pausar" | "reativar" | "encerrar" | "alterar_horario" | "remover_horario" | "adicionar_horario" | "redefinir_horarios" | "ambiguo",
+  "acao": "pausar" | "reativar" | "encerrar" | "alterar_horario" | "remover_horario" | "adicionar_horario" | "redefinir_horarios" | "esclarecer_pausar_encerrar",
   "medicamentoMencionado": "nome mencionado ou null",
   "novoHorario": "HH:MM ou null"
 }
 
 Definições:
-- pausar: parar lembretes temporariamente.
-  Ex: "cancela o lembrete", "para de me lembrar", "quero pausar", "suspender os avisos"
+- pausar: parar lembretes temporariamente, com intenção de retomar.
+  Ex: "cancela o lembrete", "para de me lembrar", "quero pausar", "suspender os avisos", "para essa semana", "não quero ser lembrado por uns dias"
 
 - reativar: ativar lembretes pausados.
   Ex: "volta os lembretes", "ativa de novo", "reativar", "quero retomar"
 
-- encerrar: terminar tratamento definitivamente.
-  Ex: "não vou mais tomar", "remove esse remédio", "encerrar tratamento"
+- encerrar: terminar o tratamento definitivamente.
+  Ex: "não vou mais tomar", "encerrar", "encerrar tratamento", "terminei o tratamento", "já acabei de tomar esse", "não preciso mais desse remédio porque terminei"
 
-- alterar_horario: mudar UM horário específico para outro — com ou sem horário explícito na mensagem.
-  Ex com horário: "muda das 8 para 9", "trocar o das 20h para 22h", "alterar das 8 para 10"
-  Ex sem horário: "quero alterar horário", "mudar horário", "trocar horário", "quero alterar o horário do dipirona"
+- alterar_horario: mudar UM horário específico para outro — com ou sem horário explícito.
+  Ex com horário: "muda das 8 para 9", "trocar o das 20h para 22h"
+  Ex sem horário: "quero alterar horário", "mudar horário", "trocar horário"
 
 - remover_horario: apagar um horário específico sem substituir — com ou sem horário explícito.
-  Ex com horário: "tirar o das 8h", "apagar o das 20", "excluir o lembrete das 15h"
-  Ex sem horário: "quero remover um horário", "excluir um lembrete", "tirar um dos horários"
+  Ex com horário: "tirar o das 8h", "apagar o das 20"
+  Ex sem horário: "quero remover um horário", "excluir um lembrete"
 
 - adicionar_horario: acrescentar horário novo sem mexer nos existentes — com ou sem horário explícito.
   Ex com horário: "quero tomar às 20 também", "adicionar lembrete às 14h"
   Ex sem horário: "quero adicionar um horário", "incluir mais um lembrete"
 
 - redefinir_horarios: substituir TODOS os horários ou mudar a frequência de doses.
-  Ex com horário: "agora vou tomar 3x ao dia", "mudar para 6h, 14h e 22h"
-  Ex sem horário: "quero mudar todos os horários", "redefinir os lembretes", "alterar todos os horários"
+  Ex: "agora vou tomar 3x ao dia", "mudar para 6h, 14h e 22h", "mudar todos os horários"
 
-- ambiguo: APENAS quando não dá pra distinguir entre PAUSAR (temporário) e ENCERRAR (definitivo).
-  Ex: "quero parar", "cancelar", "não preciso mais" — sem deixar claro se é temporário ou definitivo.
-  IMPORTANTE: NÃO usar ambiguo para intenções de horário que não tenham detalhes explícitos.
-  "Quero alterar horário" é alterar_horario, não ambiguo.
-  "Tirar um horário" é remover_horario, não ambiguo.
+- esclarecer_pausar_encerrar: USAR APENAS quando o usuário quer parar de tomar/ser lembrado, mas NÃO dá nenhuma pista se é TEMPORÁRIO (pausar) ou DEFINITIVO (encerrar).
+  Ex: "quero parar com o losartana", "cancela o dipirona", "não quero mais esse remédio" (sem dizer se terminou ou se é pausa)
 
-Quando há dúvida entre pausar e encerrar → ambiguo.
-Quando há intenção clara de horário sem detalhes → classificar pelo tipo de operação (alterar/remover/adicionar/redefinir).`;
+REGRAS DE DECISÃO:
+1. Se o verbo é claro (encerrar, pausar, alterar, remover, adicionar, redefinir, reativar) → retorne a ação diretamente. NUNCA use esclarecer nesses casos.
+2. "Encerrar" sozinho = encerrar. "Pausar" sozinho = pausar. Não exija a palavra "tratamento".
+3. Se o usuário quer parar MAS dá pista temporal:
+   - pista de definitivo ("já terminei", "acabou", "não preciso mais porque terminei") → encerrar
+   - pista de temporário ("essa semana", "por uns dias", "por enquanto") → pausar
+4. Só use esclarecer_pausar_encerrar quando quer parar e NÃO há nenhuma pista temporal.
+5. Intenção de horário sem detalhes → classifique pelo tipo de operação, nunca esclarecer.`;
 
     try {
         const response = await anthropic.messages.create({
@@ -81,7 +83,7 @@ Quando há intenção clara de horário sem detalhes → classificar pelo tipo d
         return parsed;
     } catch (e) {
         console.error('⚠️ Erro ao classificar intenção:', e.message);
-        return { acao: 'ambiguo', medicamentoMencionado: null, novoHorario: null };
+        return { acao: 'esclarecer_pausar_encerrar', medicamentoMencionado: null, novoHorario: null };
     }
 }
 
@@ -395,8 +397,8 @@ export async function handleConfiguracao({ user, message, state, context }) {
             return `Você não tem nenhum medicamento cadastrado ainda, ${firstName}. Quer cadastrar um agora?`;
         }
 
-        // Intenção ambígua → perguntar se quer pausar ou encerrar
-        if (acao === 'ambiguo') {
+        // Intenção de parar sem pista temporal → perguntar se quer pausar ou encerrar
+        if (acao === 'esclarecer_pausar_encerrar') {
             const med = medicamentoMencionado ? encontrarMedicamento(medicamentoMencionado, medicationsAtivos) : null;
             const nomeExibir = med?.nome || medicamentoMencionado || 'esse medicamento';
             await saveConversationState(user.id, {
@@ -411,7 +413,7 @@ export async function handleConfiguracao({ user, message, state, context }) {
             return `Entendido, ${firstName}! Sobre o *${nomeExibir}*, você quer:\n\n• *Pausar* os lembretes (temporário — pode retomar depois)\n• *Encerrar* o tratamento definitivamente\n\nO que prefere?`;
         }
 
-        // Medicamento já identificado no contexto (vem de um ambiguo anterior ou de outro fluxo)
+        // Medicamento já identificado no contexto (vem de esclarecer_pausar_encerrar anterior ou de outro fluxo)
         const medDoContexto = context.medicationId
             ? medicationsAtivos.find(m => m.id === context.medicationId)
             : null;
