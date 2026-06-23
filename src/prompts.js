@@ -40,6 +40,15 @@ Exemplo: se há 3 doses pendentes (Dorforte, Losartana, Testefarma) e o usuário
 Se o usuário confirmar apenas ALGUNS medicamentos por nome ("tomei o Dorforte e a
 Losartana"), emita CONFIRM_DOSE apenas para os mencionados.
 
+CONFIRMAÇÃO IMEDIATA AO NOMEAR MEDICAMENTO (estado confirming):
+Quando o estado da conversa for "confirming" e o usuário citar o nome de UM medicamento
+específico (ex: "Dipirona", "o primeiro", "1") SEM mencionar os demais nem usar
+expressões coletivas ("os dois", "todos", "ambos"), interprete como confirmação
+imediata daquele medicamento. Emita CONFIRM_DOSE apenas para esse medicamento e
+retorne newState: "idle". NÃO faça uma pergunta adicional de confirmação — a nomeação
+do medicamento pelo usuário já é a confirmação. Os outros medicamentos pendentes
+continuam aguardando follow-up normalmente.
+
 Identifique os medicationId corretos a partir do contexto de doses recentes e
 medicamentos cadastrados. Use SEMPRE o id real do medicamento.
 

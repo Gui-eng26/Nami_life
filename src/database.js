@@ -452,12 +452,21 @@ export async function registrarNaoTomado(medicationId) {
 // ============================================================
 
 export async function pausarMedicamento(medicationId) {
-    const { error } = await supabase
+    const { error: errSched } = await supabase
         .from('schedules')
         .update({ ativo: false })
         .eq('medication_id', medicationId);
-    if (error) throw new Error(`Erro ao pausar: ${error.message}`);
-    console.log(`⏸️ Schedules pausados — medication: ${medicationId}`);
+    if (errSched) throw new Error(`Erro ao pausar schedules: ${errSched.message}`);
+
+    // Cancela dose_logs pendentes — evita follow-ups após pausa
+    const { error: errLogs } = await supabase
+        .from('dose_logs')
+        .update({ status: 'pausado' })
+        .eq('medication_id', medicationId)
+        .eq('status', 'pendente');
+    if (errLogs) throw new Error(`Erro ao cancelar dose_logs pendentes: ${errLogs.message}`);
+
+    console.log(`⏸️ Medicamento pausado — schedules desativados + dose_logs pendentes marcados como pausado — medication: ${medicationId}`);
 }
 
 export async function reativarMedicamento(medicationId) {

@@ -58,7 +58,12 @@ function isDuplicateMessage(messageId) {
 
 async function temDosePendente(userId) {
     const doses = await getRecentDoses(userId, 1);
-    return doses.some(d => d.reminder_sent === true && d.confirmed === false);
+    return doses.some(d =>
+        d.reminder_sent === true &&
+        d.confirmed === false &&
+        d.status !== 'pausado' &&
+        d.status !== 'nao_tomado'
+    );
 }
 
 // ============================================================
