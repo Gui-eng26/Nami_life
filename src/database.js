@@ -1026,3 +1026,21 @@ export async function getHistoricoRecente(userId, limite = 3) {
     // Retorna em ordem cronológica (mais antigo primeiro) para o prompt fazer sentido
     return (data || []).reverse();
 }
+
+// Formata o histórico conversacional para inclusão em prompts LLM
+export function formatarHistoricoConversa(historicoConversa) {
+    if (!historicoConversa || historicoConversa.length === 0) {
+        return 'Sem conversa anterior recente.';
+    }
+    return historicoConversa
+        .map(h => `Usuário: ${h.user_message}\nNami: ${h.agent_response}`)
+        .join('\n\n');
+}
+
+export async function registrarIntencaoNaoSuportada(userId, mensagem) {
+    const { error } = await supabase
+        .from('intencoes_nao_suportadas')
+        .insert({ user_id: userId, mensagem, created_at: new Date().toISOString() });
+    if (error) console.error(`⚠️ Erro ao registrar intenção não suportada: ${error.message}`);
+    else console.log(`📋 Intenção não suportada registrada: "${mensagem}"`);
+}

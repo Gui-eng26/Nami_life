@@ -9,7 +9,9 @@ import {
     alterarHorarioSchedule,
     reativarComAtualizacao,
     removerSchedule,
-    adicionarSchedule
+    adicionarSchedule,
+    formatarHistoricoConversa,
+    registrarIntencaoNaoSuportada
 } from '../database.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -18,17 +20,21 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 // CLASSIFICAÇÃO VIA CLAUDE — única chamada LLM do agente
 // ============================================================
 
-async function classificarIntencao(message, medicamentosDisponiveis) {
+async function classificarIntencao(message, medicamentosDisponiveis, historicoConversa = []) {
     const listaMeds = medicamentosDisponiveis.map(m => m.nome).join(', ') || 'nenhum';
+    const historicoTexto = formatarHistoricoConversa(historicoConversa);
 
     const systemPrompt = `Você é um classificador de intenções para um assistente de saúde.
 O usuário quer fazer algo com seus lembretes ou tratamentos.
 
 Medicamentos cadastrados: ${listaMeds}
 
+CONVERSA RECENTE:
+${historicoTexto}
+
 Responda APENAS com JSON válido, sem markdown, sem explicações:
 {
-  "acao": "pausar" | "reativar" | "encerrar" | "alterar_horario" | "remover_horario" | "adicionar_horario" | "redefinir_horarios" | "esclarecer_pausar_encerrar",
+  "acao": "pausar" | "reativar" | "encerrar" | "alterar_horario" | "remover_horario" | "adicionar_horario" | "redefinir_horarios" | "esclarecer_pausar_encerrar" | "nao_suportado",
   "medicamentoMencionado": "nome mencionado ou null",
   "novoHorario": "HH:MM ou null"
 }
@@ -61,6 +67,9 @@ Definições:
 - esclarecer_pausar_encerrar: USAR APENAS quando o usuário quer parar de tomar/ser lembrado, mas NÃO dá nenhuma pista se é TEMPORÁRIO (pausar) ou DEFINITIVO (encerrar).
   Ex: "quero parar com o losartana", "cancela o dipirona", "não quero mais esse remédio" (sem dizer se terminou ou se é pausa)
 
+- nao_suportado: pedidos que a configuração não faz — alterar tempo/duração de tratamento, alterar dosagem, alterar nome do medicamento.
+  Ex: "mudar o tempo de tratamento", "alterar a dosagem", "trocar o nome do remédio", "mudar de 7 dias para 10 dias"
+
 REGRAS DE DECISÃO:
 1. Se o verbo é claro (encerrar, pausar, alterar, remover, adicionar, redefinir, reativar) → retorne a ação diretamente. NUNCA use esclarecer nesses casos.
 2. "Encerrar" sozinho = encerrar. "Pausar" sozinho = pausar. Não exija a palavra "tratamento".
@@ -68,7 +77,8 @@ REGRAS DE DECISÃO:
    - pista de definitivo ("já terminei", "acabou", "não preciso mais porque terminei") → encerrar
    - pista de temporário ("essa semana", "por uns dias", "por enquanto") → pausar
 4. Só use esclarecer_pausar_encerrar quando quer parar e NÃO há nenhuma pista temporal.
-5. Intenção de horário sem detalhes → classifique pelo tipo de operação, nunca esclarecer.`;
+5. Intenção de horário sem detalhes → classifique pelo tipo de operação, nunca esclarecer.
+6. Se o pedido é sobre algo que a configuração não suporta (dosagem, tempo de tratamento, nome do medicamento) → nao_suportado.`;
 
     try {
         const response = await anthropic.messages.create({
@@ -377,7 +387,7 @@ async function executarAcao(user, firstName, ctx) {
 // HANDLER PRINCIPAL
 // ============================================================
 
-export async function handleConfiguracao({ user, message, state, context }) {
+export async function handleConfiguracao({ user, message, state, context, historicoConversa = [] }) {
     const etapa = context?.etapa || 'identif_intencao';
     const firstName = user.name?.split(' ')[0] || 'você';
     const medications = await getUserMedications(user.id);
@@ -390,11 +400,18 @@ export async function handleConfiguracao({ user, message, state, context }) {
 
     // ── ETAPA 1: Classificar intenção via Claude ─────────────────────────────
     if (etapa === 'identif_intencao') {
-        const { acao, medicamentoMencionado, novoHorario } = await classificarIntencao(message, medicationsAtivos);
+        const { acao, medicamentoMencionado, novoHorario } = await classificarIntencao(message, medicationsAtivos, historicoConversa);
 
         if (medicationsAtivos.length === 0) {
             await saveConversationState(user.id, { state: 'idle', context: {} });
             return `Você não tem nenhum medicamento cadastrado ainda, ${firstName}. Quer cadastrar um agora?`;
+        }
+
+        // Rede de segurança — intenção não suportada que escorregou para configuração
+        if (acao === 'nao_suportado') {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            await registrarIntencaoNaoSuportada(user.id, message);
+            return `Essa funcionalidade ainda não está disponível, ${firstName} — está no nosso radar de melhorias 🌱\n\nMas posso te ajudar com: cadastrar um remédio, alterar horários de lembrete, pausar ou encerrar um tratamento, ou ver seus relatórios. O que você precisa?`;
         }
 
         // Intenção de parar sem pista temporal → perguntar se quer pausar ou encerrar

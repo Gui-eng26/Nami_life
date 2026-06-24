@@ -1,7 +1,7 @@
 import { getConversationState, logAgentInteraction, getRecentDoses,
     getDoseLogByZapiMessageId, confirmDoseByLogId,
     getEstoqueInfoParaAlerta, contarConfirmacoesHoje, calcularAlertaEstoque,
-    saveConversationState, getHistoricoRecente } from './database.js';
+    saveConversationState, getHistoricoRecente, registrarIntencaoNaoSuportada } from './database.js';
 import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
 import { handleCadastro } from './agentes/cadastro.js';
@@ -178,39 +178,46 @@ function detectarIntencaoCadastro(message) {
 // CLASSIFICADOR LLM — contexto conversacional para o else final
 // ============================================================
 
-async function classificarIntencaoComContexto({ userId, message, currentState }) {
+async function classificarIntencaoComContexto({ message, currentState, historicoConversa }) {
     try {
-        const historico = await getHistoricoRecente(userId, 3);
-
         // Monta o histórico como texto legível para o LLM
-        const historicoTexto = historico.length > 0
-            ? historico.map(h =>
+        const historicoTexto = historicoConversa.length > 0
+            ? historicoConversa.map(h =>
                 `Usuário: ${h.user_message}\nNami: ${h.agent_response}`
               ).join('\n\n')
             : 'Sem histórico recente.';
 
         const prompt = `Você é o classificador de intenções da Nami, um assistente de saúde via WhatsApp.
 
-Sua única função é identificar para qual agente a mensagem atual do usuário deve ser direcionada, considerando o contexto da conversa.
+Identifique para qual agente a mensagem deve ir, considerando o contexto da conversa.
 
-AGENTES DISPONÍVEIS:
-- cadastro: cadastrar um novo medicamento ou iniciar um novo tratamento
-- relatorios: consultar doses tomadas, adesão, estoque, próximos remédios
-- configuracao: pausar, reativar, encerrar tratamento, alterar horário de lembrete
-- principal: qualquer outra coisa — conversa geral, dúvidas, saudações, situações ambíguas
+AGENTES E SUAS CAPACIDADES:
+- cadastro: cadastrar novo medicamento, iniciar novo tratamento
+- relatorios: consultar doses tomadas, adesão, estoque, próximos remédios, horários cadastrados
+- configuracao: pausar, reativar, encerrar tratamento; alterar/remover/adicionar/redefinir horário de lembrete
+- principal: conversa geral, dúvidas, saudações, reações ("ok", "obrigado"), fechamentos
 
-ESTADO ATUAL DA CONVERSA: ${currentState}
+FUNCIONALIDADES QUE A NAMI AINDA NÃO TEM (classifique como "nao_suportado"):
+- alterar tempo/duração de tratamento
+- alterar dosagem de um medicamento
+- alterar nome de um medicamento
+- registrar sintomas, pressão, glicemia ou outros dados de saúde
+- falar com médico, agendar consulta
+- exportar histórico em arquivo
 
-HISTÓRICO RECENTE (últimas interações):
+ESTADO ATUAL: ${currentState}
+
+HISTÓRICO RECENTE:
 ${historicoTexto}
 
-MENSAGEM ATUAL DO USUÁRIO: "${message}"
+MENSAGEM ATUAL: "${message}"
 
-Analise o histórico e a mensagem atual. Responda APENAS com uma das quatro opções exatas, sem explicação:
+Responda APENAS com uma destas opções exatas:
 cadastro
 relatorios
 configuracao
-principal`;
+principal
+nao_suportado`;
 
         const { default: Anthropic } = await import('@anthropic-ai/sdk');
         const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -222,7 +229,7 @@ principal`;
         });
 
         const agente = resposta.content[0]?.text?.trim().toLowerCase();
-        const agentesValidos = ['cadastro', 'relatorios', 'configuracao', 'principal'];
+        const agentesValidos = ['cadastro', 'relatorios', 'configuracao', 'principal', 'nao_suportado'];
 
         if (agentesValidos.includes(agente)) {
             console.log(`🧠 [CLASSIFICADOR] Intenção classificada como: ${agente} — mensagem: "${message}"`);
@@ -294,6 +301,9 @@ export async function routeMessage({ user, message, image, messageId, referenceM
     const state = await getConversationState(user.id);
     const currentState = state?.state || 'idle';
 
+    // Histórico conversacional — buscado UMA vez, propagado a todos os agentes LLM
+    const historicoConversa = await getHistoricoRecente(user.id, 3);
+
     let response;
     let agentName;
 
@@ -304,6 +314,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         response = await handleRecepcionista({
             user,
             message,
+            historicoConversa,
             context: {
                 ...state?.context,
                 mensagem_inicial: state?.context?.mensagem_inicial || message
@@ -319,12 +330,13 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                 user,
                 message,
                 state,
+                historicoConversa,
                 context: { etapa: 'cad_nome' }
             });
         } else {
             agentName = 'principal';
             console.log(`🤖 Roteando para principal (pós-onboarding) — ${user.phone}`);
-            response = await handlePrincipal({ user, message, image });
+            response = await handlePrincipal({ user, message, image, historicoConversa });
 
             // Preserva post_onboarding por mais 1 troca para capturar o "sim" seguinte.
             // Após 1 troca (exchanges >= 1), deixa o principal gerenciar o estado normalmente.
@@ -343,7 +355,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         agentName = 'configuracao';
         console.log(`⚙️ Roteando para configuração (estado configurando) — ${user.phone}`);
         response = await handleConfiguracao({
-            user, message, state,
+            user, message, state, historicoConversa,
             context: state?.context || {}
         });
 
@@ -352,7 +364,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         agentName = 'configuracao';
         console.log(`⚙️ Roteando para configuração (intenção detectada) — ${user.phone}`);
         response = await handleConfiguracao({
-            user, message, state,
+            user, message, state, historicoConversa,
             context: { etapa: 'identif_intencao' }
         });
 
@@ -364,6 +376,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             user,
             message,
             state,
+            historicoConversa,
             context: state?.context || {}
         });
 
@@ -376,6 +389,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             user,
             message,
             state,
+            historicoConversa,
             context: { etapa: 'cad_nome' }  // reinicia do zero de forma estruturada
         });
 
@@ -387,6 +401,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             user,
             message,
             state,
+            historicoConversa,
             context: { etapa: 'cad_nome' }
         });
 
@@ -396,13 +411,13 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         && await temDosePendente(user.id)) {
         agentName = 'principal';
         console.log(`💊 Confirmação de dose detectada, roteando para principal — ${user.phone}`);
-        response = await handlePrincipal({ user, message, image });
+        response = await handlePrincipal({ user, message, image, historicoConversa });
 
     // 5. Usuário idle com intenção de relatório → agente_relatorios
     } else if (currentState === 'idle' && classificarIntencaoRelatorio(message)) {
         agentName = 'relatorios';
         console.log(`📊 Roteando para relatorios — ${user.phone}`);
-        const resultado = await handleRelatorios({ user, message });
+        const resultado = await handleRelatorios({ user, message, historicoConversa });
 
         if (resultado) {
             response = resultado;
@@ -410,15 +425,15 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             // Classificador não reconheceu na execução — cai no principal
             agentName = 'principal';
             console.log(`🤖 Relatorios não reconheceu, caindo no principal — ${user.phone}`);
-            response = await handlePrincipal({ user, message, image });
+            response = await handlePrincipal({ user, message, image, historicoConversa });
         }
 
     // 6. Demais casos → classificador LLM com contexto conversacional
     } else {
         const agenteSelecionado = await classificarIntencaoComContexto({
-            userId: user.id,
             message,
-            currentState
+            currentState,
+            historicoConversa
         });
 
         agentName = agenteSelecionado;
@@ -426,27 +441,32 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         if (agenteSelecionado === 'cadastro') {
             console.log(`💊 [CLASSIFICADOR] Roteando para cadastro — ${user.phone}`);
             response = await handleCadastro({
-                user, message, state,
+                user, message, state, historicoConversa,
                 context: { etapa: 'cad_nome' }
             });
         } else if (agenteSelecionado === 'relatorios') {
             console.log(`📊 [CLASSIFICADOR] Roteando para relatorios — ${user.phone}`);
-            response = await handleRelatorios({ user, message });
+            response = await handleRelatorios({ user, message, historicoConversa });
             if (!response) {
                 agentName = 'principal';
-                response = await handlePrincipal({ user, message, image });
+                response = await handlePrincipal({ user, message, image, historicoConversa });
             }
         } else if (agenteSelecionado === 'configuracao') {
             console.log(`⚙️ [CLASSIFICADOR] Roteando para configuracao — ${user.phone}`);
             response = await handleConfiguracao({
-                user, message, state,
+                user, message, state, historicoConversa,
                 context: { etapa: 'identif_intencao' }
             });
+        } else if (agenteSelecionado === 'nao_suportado') {
+            agentName = 'principal';
+            console.log(`🚧 [CLASSIFICADOR] Intenção não suportada — ${user.phone}`);
+            await registrarIntencaoNaoSuportada(user.id, message);
+            response = await handlePrincipal({ user, message, image, historicoConversa, intencaoNaoSuportada: true });
         } else {
             // 'principal' — resposta geral ou intenção não identificada
             agentName = 'principal';
             console.log(`🤖 [CLASSIFICADOR] Roteando para principal — ${user.phone}`);
-            response = await handlePrincipal({ user, message, image });
+            response = await handlePrincipal({ user, message, image, historicoConversa });
         }
     }
 

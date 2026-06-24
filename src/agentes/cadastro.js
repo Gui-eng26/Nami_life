@@ -5,7 +5,8 @@ import {
     saveMedication,
     saveSchedule,
     replaceMedication,
-    verificarMedicamentoExistente
+    verificarMedicamentoExistente,
+    formatarHistoricoConversa
 } from '../database.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -46,7 +47,7 @@ function dosesPerDiaParaIntervalo(dosesPerDia) {
 // SYSTEM PROMPT
 // ============================================================
 
-function buildSystemPrompt(etapa, context, userName) {
+function buildSystemPrompt(etapa, context, userName, historicoConversa = []) {
     return `Você é a Nami, assistente de saúde. Você está no fluxo de cadastro de um novo medicamento.
 
 Sua única função agora é coletar as informações necessárias para cadastrar o medicamento corretamente, uma pergunta por vez.
@@ -54,6 +55,9 @@ Sua única função agora é coletar as informações necessárias para cadastra
 Etapa atual: ${etapa}
 Contexto coletado até agora: ${JSON.stringify(context)}
 Nome do usuário: ${userName || 'usuário'}
+
+CONVERSA RECENTE:
+${formatarHistoricoConversa(historicoConversa)}
 
 REGRAS:
 - Colete UMA informação por mensagem
@@ -357,7 +361,7 @@ async function processarAcao(action, user) {
 // HANDLER PRINCIPAL
 // ============================================================
 
-export async function handleCadastro({ user, message, state, context }) {
+export async function handleCadastro({ user, message, state, context, historicoConversa = [] }) {
     const etapaAtual = context?.etapa || 'cad_nome';
     console.log(`💊 Cadastro — etapa: ${etapaAtual} — ${user.phone}`);
 
@@ -371,7 +375,7 @@ export async function handleCadastro({ user, message, state, context }) {
             return `Tudo bem! Se precisar de algo mais, é só me chamar 🌿`;
         }
 
-        const systemPrompt = buildSystemPrompt('cad_forma', { nome: context.nome }, user.name);
+        const systemPrompt = buildSystemPrompt('cad_forma', { nome: context.nome }, user.name, historicoConversa);
         const claudeResponse = await callClaude({
             systemPrompt,
             message: `Quero cadastrar o ${context.nome} novamente`,
@@ -415,7 +419,7 @@ export async function handleCadastro({ user, message, state, context }) {
         };
     }
 
-    const systemPrompt = buildSystemPrompt(etapaAtual, contextParaClaude, user.name);
+    const systemPrompt = buildSystemPrompt(etapaAtual, contextParaClaude, user.name, historicoConversa);
     const claudeResponse = await callClaude({ systemPrompt, message, context: contextParaClaude });
 
     const proximaEtapa = claudeResponse.proximaEtapa || 'cad_nome';

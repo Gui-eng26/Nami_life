@@ -217,7 +217,7 @@ Sem explicações, sem prefixos, sem aspas.`;
 // HANDLER PRINCIPAL
 // ============================================================
 
-export async function handleRecepcionista({ user, message, context }) {
+export async function handleRecepcionista({ user, message, context, historicoConversa = [] }) {
     const etapa = context?.etapa;
     let nextEtapa;
     let updatedContext = { ...context };

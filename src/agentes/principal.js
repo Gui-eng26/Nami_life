@@ -13,7 +13,8 @@ import {
     contarConfirmacoesHoje,
     calcularAlertaEstoque,
     registrarNaoTomado,
-    calcularProximaDose
+    calcularProximaDose,
+    formatarHistoricoConversa
 } from '../database.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -40,14 +41,14 @@ function buildAlertaEstoqueMessage(info) {
     );
 }
 
-export async function handlePrincipal({ user, message, image }) {
+export async function handlePrincipal({ user, message, image, historicoConversa = [], intencaoNaoSuportada = false }) {
     const state = await getConversationState(user.id);
     console.log(`📊 Estado atual de ${user.phone}: ${state.state}`);
 
     const medications = await getUserMedications(user.id);
     const recentDoses = await getRecentDoses(user.id, 3);
 
-    const userMessage = buildUserMessage({ text: message, image, user, state, medications, recentDoses });
+    const userMessage = buildUserMessage({ text: message, image, user, state, medications, recentDoses, historicoConversa, intencaoNaoSuportada });
 
     console.log(`🤖 Chamando Claude para: "${message}"`);
     let claudeResponse = await callClaude({ userMessage, image });
@@ -92,7 +93,7 @@ export async function handlePrincipal({ user, message, image }) {
     return claudeResponse.message;
 }
 
-function buildUserMessage({ text, image, user, state, medications, recentDoses }) {
+function buildUserMessage({ text, image, user, state, medications, recentDoses, historicoConversa = [], intencaoNaoSuportada = false }) {
     const context = `
 === CONTEXTO DO USUÁRIO ===
 Nome: ${user.name || 'ainda não informado'}
@@ -132,8 +133,18 @@ Doses recentes: ${recentDoses.length === 0
         ? 'nenhuma ainda'
         : JSON.stringify(recentDoses.slice(0, 5))
     }
-=== FIM DO CONTEXTO ===
 
+CONVERSA RECENTE:
+${formatarHistoricoConversa(historicoConversa)}
+=== FIM DO CONTEXTO ===
+${intencaoNaoSuportada ? `
+=== ATENÇÃO: INTENÇÃO NÃO SUPORTADA ===
+O usuário pediu algo que a Nami AINDA NÃO faz. Responda com honestidade e gentileza:
+- Explique que essa funcionalidade ainda está em desenvolvimento
+- NÃO invente que consegue fazer
+- NÃO derive para pausar/encerrar/cadastrar
+- Pergunte se pode ajudar com outra coisa (cadastrar, consultar, alterar horários, pausar/reativar)
+` : ''}
 Mensagem do usuário: ${text || '[usuário enviou uma imagem]'}
     `.trim();
     return context;

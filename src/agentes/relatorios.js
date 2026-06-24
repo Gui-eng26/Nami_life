@@ -6,7 +6,8 @@ import {
     getEstoque,
     getProximosMedicamentos,
     getAdesaoPeriodo,
-    getAdesaoPorMedicamento
+    getAdesaoPorMedicamento,
+    formatarHistoricoConversa
 } from '../database.js';
 import { sendTextMessage } from '../whatsapp.js';
 
@@ -84,7 +85,7 @@ export function classificarIntencaoRelatorio(message) {
 // HANDLER PRINCIPAL
 // ============================================================
 
-export async function handleRelatorios({ user, message }) {
+export async function handleRelatorios({ user, message, historicoConversa = [] }) {
     const intencao = classificarIntencaoRelatorio(message);
 
     switch (intencao) {
@@ -97,7 +98,7 @@ export async function handleRelatorios({ user, message }) {
         case 'proximo_remedio':
             return await relatorioProximoRemedio(user);
         case 'adesao':
-            return await relatorioAdesao(user);
+            return await relatorioAdesao(user, historicoConversa);
         default:
             return null; // não reconheceu — router cai no agente_principal
     }
@@ -223,7 +224,7 @@ async function relatorioProximoRemedio(user) {
 // R-005: ADESÃO (Claude com contexto)
 // ============================================================
 
-async function relatorioAdesao(user) {
+async function relatorioAdesao(user, historicoConversa = []) {
     const firstName = user.name?.split(' ')[0] || 'você';
     const dados = await getAdesaoPeriodo(user.id, 7);
 
@@ -234,6 +235,9 @@ async function relatorioAdesao(user) {
     const prompt = `Você é a Nami, assistente de saúde calorosa e empática.
 
 Responda sobre a adesão ao tratamento do usuário com base nos dados abaixo.
+
+CONVERSA RECENTE:
+${formatarHistoricoConversa(historicoConversa)}
 
 Nome: ${firstName}
 Período: últimos 7 dias
