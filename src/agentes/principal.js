@@ -134,8 +134,6 @@ Doses recentes: ${recentDoses.length === 0
         : JSON.stringify(recentDoses.slice(0, 5))
     }
 
-CONVERSA RECENTE:
-${formatarHistoricoConversa(historicoConversa)}
 === FIM DO CONTEXTO ===
 ${intencaoNaoSuportada ? `
 === ATENÇÃO: INTENÇÃO NÃO SUPORTADA ===
