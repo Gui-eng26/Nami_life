@@ -410,6 +410,8 @@ export async function confirmDoseByLogId(doseLogId) {
     if (estoque !== null && estoque > 0) {
         await updateMedicationStock(log.medication_id, estoque - 1);
     }
+
+    return log.medication_id;
 }
 
 export async function markAsNaoInformado(doseLogId) {

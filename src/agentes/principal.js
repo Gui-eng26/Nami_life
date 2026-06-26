@@ -5,6 +5,7 @@ import {
     getConversationState,
     updateConversationState,
     confirmDose,
+    confirmDoseByLogId,
     updateUserName,
     getRecentDoses,
     getUserMedications,
@@ -94,6 +95,25 @@ export async function handlePrincipal({ user, message, image, historicoConversa 
 }
 
 function buildUserMessage({ text, image, user, state, medications, recentDoses, historicoConversa = [], intencaoNaoSuportada = false }) {
+    const dosesPendentes = recentDoses.filter(d =>
+        d.reminder_sent === true &&
+        d.confirmed === false &&
+        d.status !== 'nao_informado' &&
+        d.status !== 'pausado' &&
+        d.status !== 'nao_tomado' &&
+        d.status !== 'sem_estoque'
+    );
+
+    const blocoPendentes = dosesPendentes.length === 0
+        ? 'Nenhuma dose aguardando confirmação no momento.'
+        : dosesPendentes.map(d => {
+            const nome = d.medications?.nome || 'medicamento';
+            const hora = new Date(d.scheduled_at).toLocaleTimeString('pt-BR', {
+                hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo'
+            });
+            return `⚠️ ${nome} — dose das ${hora} [ref: ${d.id}]`;
+        }).join('\n');
+
     const context = `
 === CONTEXTO DO USUÁRIO ===
 Nome: ${user.name || 'ainda não informado'}
@@ -129,7 +149,16 @@ Medicamentos cadastrados: ${medications.length === 0
         }).join(' | ')
     }
 
-Doses recentes: ${recentDoses.length === 0
+=== DOSES AGUARDANDO CONFIRMAÇÃO ===
+${blocoPendentes}
+
+Como usar este bloco:
+- Se o usuário responder confirmando que tomou (qualquer forma: "sim", "tomei", "já tomei", "isso", "tomei sim", etc.), emita CONFIRM_DOSE para a(s) dose(s) correspondente(s), usando o valor [ref: ...] no campo doseLogId.
+- Se houver várias doses pendentes e o usuário confirmar coletivamente ("tomei todos", "tomei os dois"), emita um CONFIRM_DOSE para cada [ref] da lista.
+- Se o usuário mencionar um medicamento ou horário específico, confirme apenas a dose correspondente.
+- Se o usuário falar de OUTRA coisa (estoque, horário, dúvida, "comprei mais X"), ajude normalmente com o assunto dele. NÃO force confirmação. As doses continuam pendentes e serão cobradas depois.
+
+Doses recentes (contexto histórico): ${recentDoses.length === 0
         ? 'nenhuma ainda'
         : JSON.stringify(recentDoses.slice(0, 5))
     }
@@ -195,14 +224,23 @@ async function processAction(action, user) {
             await updateUserName(user.id, action.name);
             return null;
 
-        case 'CONFIRM_DOSE':
-            await confirmDose(action.medicationId);
+        case 'CONFIRM_DOSE': {
+            let medId;
+            if (action.doseLogId) {
+                medId = await confirmDoseByLogId(action.doseLogId);
+            } else if (action.medicationId) {
+                await confirmDose(action.medicationId);
+                medId = action.medicationId;
+            } else {
+                console.warn('⚠️ CONFIRM_DOSE sem doseLogId nem medicationId');
+                return null;
+            }
 
             // Verificar se deve emitir alerta de estoque pós-confirmação
             try {
-                const estoqueInfo = await getEstoqueInfoParaAlerta(action.medicationId);
+                const estoqueInfo = await getEstoqueInfoParaAlerta(medId);
                 if (estoqueInfo) {
-                    const confirmacoesDoDia = await contarConfirmacoesHoje(action.medicationId);
+                    const confirmacoesDoDia = await contarConfirmacoesHoje(medId);
                     const deveAlertar = calcularAlertaEstoque({
                         diasRestantes: estoqueInfo.diasRestantes,
                         tipo_tratamento: estoqueInfo.tipo_tratamento,
@@ -217,6 +255,7 @@ async function processAction(action, user) {
                 console.error('⚠️ Erro ao verificar alerta de estoque pós-confirmação:', e.message);
             }
             return null;
+        }
 
         case 'REGISTER_NAO_TOMADO':
             if (action.medicationId) {
