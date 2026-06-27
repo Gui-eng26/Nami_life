@@ -163,6 +163,11 @@ Doses recentes (contexto histórico): ${recentDoses.length === 0
         : JSON.stringify(recentDoses.slice(0, 5))
     }
 
+=== CONVERSA RECENTE (apenas para entender referências como "ele", "esse", "ok") ===
+${formatarHistoricoConversa(historicoConversa)}
+
+IMPORTANTE: O bloco "DOSES AGUARDANDO CONFIRMAÇÃO" acima tem PRECEDÊNCIA. Se há dose pendente e o usuário responde algo afirmativo ("sim", "tomei", etc.), isso é confirmação de dose — NUNCA trate como fechamento social, mesmo que a conversa recente sugira fim de papo. Use a CONVERSA RECENTE apenas para: (1) resolver pronomes ("dele", "esse") referindo-se ao último medicamento/assunto mencionado; (2) reconhecer fechamentos curtos ("ok", "obrigado", "entendi") como encerramento acolhedor SOMENTE quando NÃO há dose pendente.
+
 === FIM DO CONTEXTO ===
 ${intencaoNaoSuportada ? `
 === ATENÇÃO: INTENÇÃO NÃO SUPORTADA ===
