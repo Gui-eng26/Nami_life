@@ -1,4 +1,4 @@
-# 🌿 NAMI — Contexto do Projeto (v9 — 19/06/2026)
+# 🌿 NAMI — Contexto do Projeto (v10 — 28/06/2026)
 
 ---
 
@@ -146,6 +146,16 @@ As colunas estado_conversa e contexto_conversa capturam o estado e contexto da
 conversa no momento exato de cada interação. Essenciais para diagnóstico de bugs
 de fluxo — sem elas, o estado já teria sido sobrescrito quando o bug é investigado.
 Foram decisivas para diagnosticar o BUG-041. O fast-path registra null nesses campos.
+
+**intencoes_nao_suportadas** (v10 — não-suportado em 3 camadas)
+```sql
+id, user_id (FK), mensagem (text), created_at, revisado (boolean default false)
+```
+Registra pedidos que a Nami ainda não atende (ex: alterar dosagem, alterar tempo de
+tratamento, registrar sintomas), para análise de demanda. O classificarIntencaoComContexto
+do roteador tem categoria `nao_suportado`; o principal recebe flag `intencaoNaoSuportada`
+e responde com honestidade; agentes especializados têm rede de segurança. Coluna `revisado`
+para o dev marcar o que já avaliou.
 
 **message_logs** — existe mas está VAZIA / não usada. O histórico real de conversas
 vive em agent_logs. message_logs pode ser descontinuada ou reaproveitada no futuro.
@@ -349,6 +359,50 @@ Cálculo: `dosesPerDia = context.doses_por_dia || horarios.length || 1`.
 
 ## Confirmação de Dose — Regras Críticas
 
+### 🔑 SOLUÇÃO HÍBRIDA DE CONFIRMAÇÃO (v10 — 28/06/2026) — núcleo da sessão
+
+**Contexto:** o Briefing de continuidade conversacional (v10) injetou `historicoConversa`
+no contexto do `principal` e introduziu uma REGRESSÃO CRÍTICA: o "Sim" em resposta a um
+lembrete parou de confirmar doses em estado idle (~64% de falha; 0% antes).
+
+**Causa raiz (confirmada por isolamento + comparação de versões):** `getHistoricoRecente`
+lê de `agent_logs`, que NÃO contém os lembretes do scheduler (disparados pelo cron, fora
+do roteador). O `principal` recebia o "Sim" com um histórico SEM a pergunta "Já tomou?" —
+o "Sim" ficava órfão e era lido como social. "Tomei" sempre funcionou (autossuficiente
+semanticamente); "Sim" é puramente contextual.
+
+**Solução (híbrida, faseada em 2 deploys, ambos validados em produção):**
+
+**Deploy A — âncora estruturada + doseLogId:**
+- `buildUserMessage` monta um bloco destacado `=== DOSES AGUARDANDO CONFIRMAÇÃO ===` com
+  cada dose pendente listada por nome, horário e `[ref: dose_log.id]`, substituindo o
+  dump cru de JSON. Filtra: reminder_sent=true, confirmed=false, e exclui nao_informado/
+  pausado/nao_tomado/sem_estoque. Instrução inline: se confirmar → CONFIRM_DOSE; se falar
+  de outra coisa (estoque, horário) → ajude normalmente, NÃO force, dose segue pendente.
+- "Doses recentes" mantido como contexto histórico separado, sem destaque.
+- CONFIRM_DOSE migrado de `medicationId` para `doseLogId` (campo primário), com fallback
+  retrocompatível para `medicationId`. Usa `confirmDoseByLogId` (que agora retorna o
+  `medication_id` para o alerta de estoque, sem query extra). Resolve o cenário de mesmo
+  medicamento em horários diferentes — onde `confirmDose(medicationId)` confirmaria a dose
+  errada (sempre a mais recente).
+
+**Deploy B — reintrodução do histórico com precedência:**
+- `historicoConversa` voltou ao `buildUserMessage` do `principal`, posicionado após
+  "Doses recentes" e com instrução de PRECEDÊNCIA explícita: o bloco de doses pendentes
+  tem prioridade; "sim"/"tomei" com dose pendente é SEMPRE confirmação, nunca fechamento
+  social. O histórico serve só para resolver pronomes ("dele") e fechamentos ("ok") quando
+  NÃO há dose pendente.
+
+**Validação em produção (ambos deploys):** confirmação 16/16 (0% falha), múltiplos
+usuários; cenário 2 (Voltaren 11:58+17:58 confirmados individualmente via doseLogId);
+"comprei 20 cps" durante dose pendente → UPDATE_STOCK sem forçar confirmação;
+"ok"/"obrigado"/"dele" restaurados.
+
+**Por que NÃO um estado rígido `aguardando_confirmacao_dose`:** travaria o fluxo se o
+usuário respondesse outra coisa ("comprei mais 20 cps") durante uma dose pendente. O bloco
+estruturado informa sem aprisionar.
+
+
 ### Confirmação de múltiplas doses (BUG-040 — v9)
 O contrato de ação do agente_principal passou de singular (`action`) para lista
 (`actions` array). Quando o usuário confirma várias doses de uma vez ("tomei todos",
@@ -373,6 +427,11 @@ Porém, com evidência definitiva (v9): o ID salvo no envio é o `zaapId` da Z-A
 coincidem. A correção via webhook de status exigiria configuração externa e
 introduziria condição de corrida. **Decisão:** limitação conhecida aceitável. O
 fallback do Claude via temDosePendente captura a confirmação por texto normalmente.
+
+**Nota v10:** a migração de CONFIRM_DOSE para `doseLogId` NÃO depende do fast-path nem do
+`referenceMessageId`. O `doseLogId` vem do bloco estruturado de doses pendentes (montado a
+partir do banco via getRecentDoses), não do reply do WhatsApp. O fast-path permanece como
+limitação conhecida, intocado.
 
 ---
 
@@ -583,4 +642,54 @@ ngrok http 3000
 }
 ```
 
-```
+---
+
+## Princípios de Engenharia (formalizados v10)
+
+1. **Sistêmico vs. remendo** — toda análise de problema/causa-raiz/solução pergunta:
+   estou resolvendo de forma sistêmica ou apenas remendando? Preferir eliminar a classe
+   inteira do problema, não só o caso que apareceu.
+2. **Baixo acoplamento, alta coesão** — arquitetura deve permitir manutenção e expansão
+   futura com facilidade.
+3. **Legibilidade** — outro desenvolvedor deve entender o código e conseguir mantê-lo.
+   Objetivo: programa leve, eficiente e escalável, não denso ou mal escrito.
+4. **Cálculos de saúde determinísticos** — aritmética de horários, status de dose,
+   contagem de estoque sempre em código, nunca por inferência do LLM.
+5. **Inventário do roteador sempre atual** — sempre que uma capacidade de agente for
+   adicionada/removida, o inventário do `classificarIntencaoComContexto` (router.js) DEVE
+   ser atualizado na mesma alteração. Inventário desatualizado causa misclassificação.
+6. **Propagação de histórico sistêmica** — buscar histórico uma vez no roteador e propagar
+   uniformemente a todos os agentes LLM via `formatarHistoricoConversa`; lembrete fica fora
+   (determinístico puro).
+
+### Decisão arquitetural revisável: roteador + principal separados
+Mantidos separados (não unificados) na v10. O roteador determinístico é barato, rápido e
+previsível para intenções claras (confirmação de dose, pausar) sem custo de LLM, e a
+previsibilidade tem valor clínico em adesão. Gatilho para reavaliar a unificação (principal
+como orquestrador único): quando as interações exigirem raciocínio conversacional rico que
+o roteador não comporte (Fase 3+: áudio, RAG, rede de cuidado).
+
+---
+
+## ⚠️ Investigação Pendente — Ciclo de Vida da Dose (registrado v10)
+
+Investigação dedicada para sessão futura. Integridade de dado de saúde — três casos com
+raiz comum na sincronia entre status da dose, estoque e retroatividade:
+
+1. **Reversão de confirmação + estoque dessincronizado:** "Sim" confirmou dois medicamentos
+   juntos, estoque zerou e disparou alerta de "último comprimido"; correção posterior
+   reverteu a dose e recreditou o estoque. PERGUNTAS DE DESIGN: confirmação deve ser
+   reversível? Sob quais condições? Recreditar estoque? Deve deixar rastro auditável (não
+   sobrescrever silenciosamente — é dado clínico)?
+2. **Confirmação retroativa registra dose errada:** "tomei o ômega 3 de ontem" parece
+   confirmar a dose de hoje. MH-024 não interpreta "de ontem" para localizar a dose correta.
+3. **Dose expirada para nao_informado não é confirmável:** após 3 follow-ups, a dose vira
+   nao_informado e o "Sim" tardio se perde. Caso RECORRENTE (Gil, Julia e outro usuário).
+   O sistema só considera 'pendente' o status pendente ativo.
+
+Bug menor relacionado: dose_logs salva `nao_informado` quando o usuário diz "não tomei"
+(deveria ser `nao_tomado`).
+
+**Ajuste menor (backlog):** mensagens fragmentadas do mesmo contexto ("Não" / "Só isso" /
+"Tks" em sequência) recebem respostas independentes. Abordagem futura: agrupamento/debounce
+temporal, ou reconhecer fechamentos consecutivos.
