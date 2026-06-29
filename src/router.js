@@ -195,7 +195,7 @@ AGENTES E SUAS CAPACIDADES:
 - cadastro: cadastrar novo medicamento, iniciar novo tratamento
 - relatorios: consultar doses tomadas, adesão, estoque, próximos remédios, horários cadastrados
 - configuracao: pausar, reativar, encerrar tratamento; alterar/remover/adicionar/redefinir horário de lembrete
-- principal: conversa geral, dúvidas, saudações, reações ("ok", "obrigado"), fechamentos
+- principal: conversa geral, dúvidas, saudações, reações ("ok", "obrigado"), fechamentos, confirmação de doses, confirmação retroativa de doses (últimos 2 dias), reversão de confirmação por engano
 
 FUNCIONALIDADES QUE A NAMI AINDA NÃO TEM (classifique como "nao_suportado"):
 - alterar tempo/duração de tratamento

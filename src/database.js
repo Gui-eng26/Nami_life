@@ -423,7 +423,42 @@ export async function markAsNaoInformado(doseLogId) {
     if (error) throw new Error(`Erro ao marcar nao_informado: ${error.message}`);
 }
 
-export async function registrarNaoTomado(medicationId) {
+export async function registrarNaoTomado(medicationId, doseLogId = null) {
+    // Caso retroativo: dose específica por ID
+    if (doseLogId) {
+        const { data: log, error: fetchError } = await supabase
+            .from('dose_logs')
+            .select('id, status')
+            .eq('id', doseLogId)
+            .single();
+
+        if (fetchError || !log) {
+            console.log(`⚠️ Dose log não encontrado para registrarNaoTomado — id: ${doseLogId}`);
+            return null;
+        }
+
+        const eraRetroativo = log.status !== 'pendente';
+        const agora = new Date().toISOString();
+
+        const { error } = await supabase
+            .from('dose_logs')
+            .update({
+                status: 'nao_tomado',
+                ...(eraRetroativo && {
+                    revertido: true,
+                    revertido_at: agora,
+                    revertido_de: log.status,
+                    revertido_motivo: 'usuário confirmou que não tomou'
+                })
+            })
+            .eq('id', doseLogId);
+
+        if (error) throw new Error(`Erro ao registrar nao_tomado retroativo: ${error.message}`);
+        console.log(`🚫 Dose registrada como nao_tomado — log id: ${doseLogId}${eraRetroativo ? ' (retroativo)' : ''}`);
+        return doseLogId;
+    }
+
+    // Caso normal: busca dose pendente mais recente por medicationId
     const { data: log, error: fetchError } = await supabase
         .from('dose_logs')
         .select('id')
@@ -447,6 +482,147 @@ export async function registrarNaoTomado(medicationId) {
     if (updateError) throw new Error(`Erro ao registrar não tomado: ${updateError.message}`);
     console.log(`🚫 Dose registrada como nao_tomado — log id: ${log.id}`);
     return log.id;
+}
+
+export async function getDosesRetroativas(userId, dias = 2) {
+    const since = new Date();
+    since.setDate(since.getDate() - dias);
+
+    const { data: meds } = await supabase
+        .from('medications')
+        .select('id, nome')
+        .eq('user_id', userId)
+        .eq('ativo', true);
+
+    if (!meds || meds.length === 0) return [];
+
+    const medicationIds = meds.map(m => m.id);
+    const medNomeMap = Object.fromEntries(meds.map(m => [m.id, m.nome]));
+
+    const { data, error } = await supabase
+        .from('dose_logs')
+        .select('*')
+        .in('medication_id', medicationIds)
+        .eq('status', 'nao_informado')
+        .gte('scheduled_at', since.toISOString())
+        .order('scheduled_at', { ascending: false });
+
+    if (error) {
+        console.error('Erro ao buscar doses retroativas:', error.message);
+        return [];
+    }
+
+    return (data || []).map(d => ({
+        ...d,
+        medications: { nome: medNomeMap[d.medication_id], user_id: userId }
+    }));
+}
+
+export async function getDosesConfirmadasHoje(userId) {
+    const hoje = new Date();
+    hoje.setHours(0, 0, 0, 0);
+
+    const { data: meds } = await supabase
+        .from('medications')
+        .select('id, nome')
+        .eq('user_id', userId)
+        .eq('ativo', true);
+
+    if (!meds || meds.length === 0) return [];
+
+    const medicationIds = meds.map(m => m.id);
+    const medNomeMap = Object.fromEntries(meds.map(m => [m.id, m.nome]));
+
+    const { data, error } = await supabase
+        .from('dose_logs')
+        .select('*')
+        .in('medication_id', medicationIds)
+        .eq('status', 'confirmado')
+        .gte('taken_at', hoje.toISOString())
+        .order('taken_at', { ascending: false });
+
+    if (error) {
+        console.error('Erro ao buscar doses confirmadas hoje:', error.message);
+        return [];
+    }
+
+    return (data || []).map(d => ({
+        ...d,
+        medications: { nome: medNomeMap[d.medication_id], user_id: userId }
+    }));
+}
+
+export async function confirmarDoseRetroativa(doseLogId, motivo) {
+    const { data: log, error: fetchError } = await supabase
+        .from('dose_logs')
+        .select('*, medications(id, nome, estoque_atual)')
+        .eq('id', doseLogId)
+        .single();
+
+    if (fetchError || !log) throw new Error(`Dose log não encontrado: ${doseLogId}`);
+    if (log.status !== 'nao_informado') throw new Error(`Dose não está em nao_informado: ${log.status}`);
+
+    const agora = new Date().toISOString();
+
+    const { error: updateError } = await supabase
+        .from('dose_logs')
+        .update({
+            status: 'confirmado',
+            confirmed: true,
+            taken_at: agora,
+            revertido: true,
+            revertido_at: agora,
+            revertido_de: 'nao_informado',
+            revertido_motivo: motivo || 'confirmação retroativa pelo usuário'
+        })
+        .eq('id', doseLogId);
+
+    if (updateError) throw new Error(`Erro ao confirmar dose retroativa: ${updateError.message}`);
+    console.log(`⏪ Dose confirmada retroativamente — log id: ${doseLogId}`);
+
+    const estoque = log.medications?.estoque_atual;
+    if (estoque !== null && estoque > 0) {
+        await updateMedicationStock(log.medication_id, estoque - 1);
+    }
+
+    return log.medication_id;
+}
+
+export async function reverterConfirmacao(doseLogId, motivo) {
+    const { data: log, error: fetchError } = await supabase
+        .from('dose_logs')
+        .select('*, medications(id, nome, estoque_atual)')
+        .eq('id', doseLogId)
+        .single();
+
+    if (fetchError || !log) throw new Error(`Dose log não encontrado: ${doseLogId}`);
+    if (log.status !== 'confirmado') throw new Error(`Dose não está confirmada: ${log.status}`);
+
+    const novoStatus = (log.tentativas < 3) ? 'pendente' : 'nao_tomado';
+    const agora = new Date().toISOString();
+
+    const { error: updateError } = await supabase
+        .from('dose_logs')
+        .update({
+            status: novoStatus,
+            confirmed: false,
+            taken_at: null,
+            revertido: true,
+            revertido_at: agora,
+            revertido_de: 'confirmado',
+            revertido_motivo: motivo || 'reversão solicitada pelo usuário'
+        })
+        .eq('id', doseLogId);
+
+    if (updateError) throw new Error(`Erro ao reverter confirmação: ${updateError.message}`);
+    console.log(`↩️ Confirmação revertida — log id: ${doseLogId}, novo status: ${novoStatus}`);
+
+    const estoque = log.medications?.estoque_atual;
+    if (estoque !== null) {
+        await updateMedicationStock(log.medication_id, estoque + 1);
+    }
+
+    return { medicationId: log.medication_id, novoStatus };
 }
 
 // ============================================================

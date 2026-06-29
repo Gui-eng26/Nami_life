@@ -15,7 +15,11 @@ import {
     calcularAlertaEstoque,
     registrarNaoTomado,
     calcularProximaDose,
-    formatarHistoricoConversa
+    formatarHistoricoConversa,
+    getDosesRetroativas,
+    getDosesConfirmadasHoje,
+    confirmarDoseRetroativa,
+    reverterConfirmacao
 } from '../database.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -49,7 +53,12 @@ export async function handlePrincipal({ user, message, image, historicoConversa 
     const medications = await getUserMedications(user.id);
     const recentDoses = await getRecentDoses(user.id, 3);
 
-    const userMessage = buildUserMessage({ text: message, image, user, state, medications, recentDoses, historicoConversa, intencaoNaoSuportada });
+    const [dosesRetroativas, dosesConfirmadasHoje] = await Promise.all([
+        getDosesRetroativas(user.id, 2),
+        getDosesConfirmadasHoje(user.id)
+    ]);
+
+    const userMessage = buildUserMessage({ text: message, image, user, state, medications, recentDoses, dosesRetroativas, dosesConfirmadasHoje, historicoConversa, intencaoNaoSuportada });
 
     console.log(`🤖 Chamando Claude para: "${message}"`);
     let claudeResponse = await callClaude({ userMessage, image });
@@ -94,7 +103,7 @@ export async function handlePrincipal({ user, message, image, historicoConversa 
     return claudeResponse.message;
 }
 
-function buildUserMessage({ text, image, user, state, medications, recentDoses, historicoConversa = [], intencaoNaoSuportada = false }) {
+function buildUserMessage({ text, image, user, state, medications, recentDoses, dosesRetroativas = [], dosesConfirmadasHoje = [], historicoConversa = [], intencaoNaoSuportada = false }) {
     const dosesPendentes = recentDoses.filter(d =>
         d.reminder_sent === true &&
         d.confirmed === false &&
@@ -112,6 +121,28 @@ function buildUserMessage({ text, image, user, state, medications, recentDoses, 
                 hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo'
             });
             return `⚠️ ${nome} — dose das ${hora} [ref: ${d.id}]`;
+        }).join('\n');
+
+    const blocoRetroativo = dosesRetroativas.length === 0 ? null :
+        dosesRetroativas.map(d => {
+            const nome = d.medications?.nome || 'medicamento';
+            const scheduledDate = new Date(d.scheduled_at);
+            const dataStr = scheduledDate.toLocaleDateString('pt-BR', {
+                day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo'
+            });
+            const hora = scheduledDate.toLocaleTimeString('pt-BR', {
+                hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo'
+            });
+            return `⏰ ${nome} — dose de ${dataStr} às ${hora} [ref-retro: ${d.id}]`;
+        }).join('\n');
+
+    const blocoConfirmadasHoje = dosesConfirmadasHoje.length === 0 ? null :
+        dosesConfirmadasHoje.map(d => {
+            const nome = d.medications?.nome || 'medicamento';
+            const hora = new Date(d.taken_at).toLocaleTimeString('pt-BR', {
+                hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo'
+            });
+            return `✅ ${nome} — confirmada às ${hora} [ref-conf: ${d.id}]`;
         }).join('\n');
 
     const context = `
@@ -157,7 +188,24 @@ Como usar este bloco:
 - Se houver várias doses pendentes e o usuário confirmar coletivamente ("tomei todos", "tomei os dois"), emita um CONFIRM_DOSE para cada [ref] da lista.
 - Se o usuário mencionar um medicamento ou horário específico, confirme apenas a dose correspondente.
 - Se o usuário falar de OUTRA coisa (estoque, horário, dúvida, "comprei mais X"), ajude normalmente com o assunto dele. NÃO force confirmação. As doses continuam pendentes e serão cobradas depois.
+${blocoRetroativo ? `
+=== DOSES SEM CONFIRMAÇÃO — ÚLTIMOS 2 DIAS ===
+${blocoRetroativo}
 
+Como usar este bloco:
+- Se o usuário mencionar ter tomado uma dose do passado (ex: "tomei o ômega 3 de ontem", "tomei os remédios de anteontem"), apresente a dose específica ao usuário e PEÇA CONFIRMAÇÃO EXPLÍCITA antes de registrar. Aguarde "sim" / "isso" / "tomei".
+- Após confirmação explícita → CONFIRM_RETROATIVA com o [ref-retro: ...] correspondente.
+- Se o usuário disser que não tomou → REGISTER_NAO_TOMADO com o [ref-retro: ...].
+- Se a referência for além de 2 dias → informe o limite e ofereça UPDATE_STOCK.
+- NUNCA use [ref-retro: ...] em CONFIRM_DOSE. Contextos completamente separados.
+` : ''}${blocoConfirmadasHoje ? `
+=== DOSES CONFIRMADAS HOJE ===
+${blocoConfirmadasHoje}
+
+Como usar este bloco:
+- Se o usuário disser que NÃO tomou um medicamento listado aqui (ex: "na verdade não tomei o X", "errei, não foi esse", "confirmei sem querer"), emita REVERSE_CONFIRMATION com o [ref-conf: ...] correspondente. A declaração já é suficiente, não peça confirmação.
+- NUNCA use [ref-conf: ...] em CONFIRM_DOSE ou CONFIRM_RETROATIVA.
+` : ''}
 Doses recentes (contexto histórico): ${recentDoses.length === 0
         ? 'nenhuma ainda'
         : JSON.stringify(recentDoses.slice(0, 5))
@@ -262,10 +310,67 @@ async function processAction(action, user) {
             return null;
         }
 
+        case 'CONFIRM_RETROATIVA': {
+            if (!action.doseLogId) {
+                console.warn('⚠️ CONFIRM_RETROATIVA sem doseLogId — ignorando');
+                return null;
+            }
+            let medIdRetro;
+            try {
+                medIdRetro = await confirmarDoseRetroativa(
+                    action.doseLogId,
+                    'usuário confirmou retroativamente via chat'
+                );
+            } catch (e) {
+                console.error('⚠️ Erro em CONFIRM_RETROATIVA:', e.message);
+                return null;
+            }
+            try {
+                const estoqueInfo = await getEstoqueInfoParaAlerta(medIdRetro);
+                if (estoqueInfo) {
+                    const confirmacoesDoDia = await contarConfirmacoesHoje(medIdRetro);
+                    const deveAlertar = calcularAlertaEstoque({
+                        diasRestantes: estoqueInfo.diasRestantes,
+                        tipo_tratamento: estoqueInfo.tipo_tratamento,
+                        tratamento_dias: estoqueInfo.tratamento_dias,
+                        confirmacoesDoDia
+                    });
+                    if (deveAlertar) {
+                        return { alertaEstoque: buildAlertaEstoqueMessage(estoqueInfo) };
+                    }
+                }
+            } catch (e) {
+                console.error('⚠️ Erro ao verificar alerta pós-CONFIRM_RETROATIVA:', e.message);
+            }
+            return null;
+        }
+
+        case 'REVERSE_CONFIRMATION': {
+            if (!action.doseLogId) {
+                console.warn('⚠️ REVERSE_CONFIRMATION sem doseLogId — ignorando');
+                return null;
+            }
+            try {
+                const { novoStatus } = await reverterConfirmacao(
+                    action.doseLogId,
+                    'usuário informou que confirmação foi por engano'
+                );
+                console.log(`↩️ Confirmação revertida via chat — novo status: ${novoStatus}`);
+            } catch (e) {
+                console.error('⚠️ Erro em REVERSE_CONFIRMATION:', e.message);
+            }
+            return null;
+        }
+
         case 'REGISTER_NAO_TOMADO':
-            if (action.medicationId) {
+            if (action.doseLogId) {
+                await registrarNaoTomado(null, action.doseLogId);
+                console.log(`🚫 Dose retroativa registrada como não tomada — doseLogId: ${action.doseLogId}`);
+            } else if (action.medicationId) {
                 await registrarNaoTomado(action.medicationId);
-                console.log(`🚫 Dose registrada como não tomada via REGISTER_NAO_TOMADO — ${action.medicationId}`);
+                console.log(`🚫 Dose registrada como não tomada — medicationId: ${action.medicationId}`);
+            } else {
+                console.warn('⚠️ REGISTER_NAO_TOMADO sem doseLogId nem medicationId — ignorando');
             }
             return null;
 
