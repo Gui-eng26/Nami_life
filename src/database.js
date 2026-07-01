@@ -217,7 +217,11 @@ export async function getMedicamentoDosesPerDia(medicationId) {
 // REGISTRO DE DOSES
 // ============================================================
 
-export async function createDoseLog({ medicationId, scheduledAt, reminderSent, reminderSentAt, zapiMessageId = null, status = 'pendente' }) {
+export async function createDoseLog({
+    medicationId, scheduledAt, reminderSent, reminderSentAt,
+    zapiMessageId = null, status = 'pendente',
+    horarioAgendado = null
+}) {
     const now = new Date().toISOString();
     const { data, error } = await supabase
         .from('dose_logs')
@@ -229,13 +233,14 @@ export async function createDoseLog({ medicationId, scheduledAt, reminderSent, r
             tentativas: 1,
             ultima_tentativa_at: now,
             status: status,
-            zapi_message_id: zapiMessageId
+            zapi_message_id: zapiMessageId,
+            horario_agendado: horarioAgendado
         })
         .select()
         .single();
 
     if (error) throw new Error(`Erro ao criar log de dose: ${error.message}`);
-    console.log(`📝 DoseLog criado — tentativas: ${data.tentativas}, status: ${data.status}${zapiMessageId ? `, msgId: ${zapiMessageId}` : ''}`);
+    console.log(`📝 DoseLog criado — tentativas: ${data.tentativas}, status: ${data.status}${horarioAgendado ? `, horario: ${horarioAgendado}` : ''}`);
     return data;
 }
 
