@@ -1189,6 +1189,25 @@ export async function logAgentInteraction({ userId, agent, userMessage, agentRes
     if (error) console.error(`Erro ao salvar log de agente: ${error.message}`);
 }
 
+// Verifica se o usuário já respondeu qualquer coisa desde um timestamp de referência.
+// Usada pelo fast-path de resposta tardia ao esgotamento (BUG-035) para confirmar que a
+// mensagem atual é a 1ª interação do usuário desde o esgotamento da dose.
+export async function usuarioRespondeuDesde(userId, timestampReferencia) {
+    const { data, error } = await supabase
+        .from('agent_logs')
+        .select('id')
+        .eq('user_id', userId)
+        .not('user_message', 'is', null)
+        .gt('created_at', timestampReferencia)
+        .limit(1);
+
+    if (error) {
+        console.error('Erro ao verificar resposta prévia do usuário:', error.message);
+        return true; // fail-safe: assume que já respondeu → não dispara o fast-path automático
+    }
+    return (data || []).length > 0;
+}
+
 // ============================================================
 // HISTÓRICO RECENTE — para classificador LLM do roteador
 // ============================================================

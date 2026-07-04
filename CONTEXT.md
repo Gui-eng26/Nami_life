@@ -321,6 +321,12 @@ da Nami, que existe justamente para substituir esse hack). Montar templates padr
 
 **Resolvido na v12:**
 - **Incidente de duplicação de lembretes/follow-ups** — processo local esquecido (ver seção dedicada).
+- **BUG-035** — fast-path determinístico de "resposta tardia ao esgotamento": "Sim" enviado como
+  1ª mensagem do usuário dentro de 24h desde a dose virar `nao_informado` agora confirma direto
+  (sem LLM decidir), sem depender de `referenceMessageId` (BUG-029 continua quebrado, tratamento
+  separado). Fora da janela/condições, cai no fluxo retroativo com apresentação já existente
+  (v11), inalterado. Implementação: `router.js` (nova função `tentarConfirmarRespostaTardia`,
+  novo item 4b na cadeia de roteamento) + `database.js` (`usuarioRespondeuDesde`).
 
 **Limitação conhecida aceitável:**
 - **BUG-029** — fast-path "responder": zaapId (019E...) ≠ referenceMessageId (3EB0...). Fallback via texto funciona.
@@ -345,7 +351,7 @@ identificador permanente).
 - **MH-xxx** (Melhoria) = capacidade nova que nunca existiu, ou ajuste de algo que já funciona
   mas pode ser melhor/mais completo.
 - Numeração sequencial contínua a partir do maior número já usado em cada série — nunca reusar.
-- Próximo BUG livre: **BUG-035**. Próximo MH livre: **MH-042**.
+- Próximo BUG livre: **BUG-036**. Próximo MH livre: **MH-042**.
 
 ---
 

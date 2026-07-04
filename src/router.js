@@ -1,7 +1,8 @@
 import { getConversationState, logAgentInteraction, getRecentDoses,
     getDoseLogByZapiMessageId, confirmDoseByLogId,
     getEstoqueInfoParaAlerta, contarConfirmacoesHoje, calcularAlertaEstoque,
-    saveConversationState, getHistoricoRecente, registrarIntencaoNaoSuportada } from './database.js';
+    saveConversationState, getHistoricoRecente, registrarIntencaoNaoSuportada,
+    getDosesRetroativas, confirmarDoseRetroativa, usuarioRespondeuDesde } from './database.js';
 import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
 import { handleCadastro } from './agentes/cadastro.js';
@@ -64,6 +65,70 @@ async function temDosePendente(userId) {
         d.status !== 'pausado' &&
         d.status !== 'nao_tomado'
     );
+}
+
+// ============================================================
+// FAST-PATH: RESPOSTA TARDIA AO ESGOTAMENTO (BUG-035)
+// Distinto do fast-path por referenceMessageId (BUG-029, ainda quebrado) —
+// este não usa referenceMessageId em nenhum momento.
+// ============================================================
+
+// Tenta confirmar diretamente (sem LLM) uma dose nao_informado quando o "Sim" do
+// usuário é, comprovadamente, a 1ª resposta dele desde o esgotamento e ocorre
+// dentro da janela de 24h. Fora dessas condições, retorna null e o roteamento
+// segue o caminho normal (bloco retroativo com apresentação, já existente).
+async function tentarConfirmarRespostaTardia(user, message) {
+    const dosesRetroativas = await getDosesRetroativas(user.id, 2); // já ordena scheduled_at desc
+    if (dosesRetroativas.length === 0) return null;
+
+    const maisRecente = dosesRetroativas[0];
+
+    const dentroDe24h = (Date.now() - new Date(maisRecente.scheduled_at).getTime()) <= 24 * 60 * 60 * 1000;
+    if (!dentroDe24h) return null;
+
+    const referencia = maisRecente.ultima_tentativa_at || maisRecente.scheduled_at;
+    const jaRespondeu = await usuarioRespondeuDesde(user.id, referencia);
+    if (jaRespondeu) return null;
+
+    // Monta o grupo (MH-032): doses nao_informado com o mesmo horario_agendado e mesmo
+    // dia da mais recente. Sem horario_agendado (registro legado) → confirma só a própria dose.
+    const grupo = maisRecente.horario_agendado
+        ? dosesRetroativas.filter(d => d.horario_agendado === maisRecente.horario_agendado
+            && new Date(d.scheduled_at).toDateString() === new Date(maisRecente.scheduled_at).toDateString())
+        : [maisRecente];
+
+    for (const dose of grupo) {
+        await confirmarDoseRetroativa(dose.id, 'resposta tardia ao esgotamento (BUG-035)');
+    }
+
+    // Alerta de estoque — mesma lógica do fast-path por referenceMessageId, aplicada por
+    // medicamento do grupo (podem ser medicamentos diferentes agrupados pelo mesmo horário).
+    let alertaSufixo = '';
+    const medicationIds = [...new Set(grupo.map(d => d.medication_id))];
+    for (const medId of medicationIds) {
+        try {
+            const estoqueInfo = await getEstoqueInfoParaAlerta(medId);
+            if (estoqueInfo) {
+                const confirmacoesDoDia = await contarConfirmacoesHoje(medId);
+                const deveAlertar = calcularAlertaEstoque({
+                    diasRestantes: estoqueInfo.diasRestantes,
+                    tipo_tratamento: estoqueInfo.tipo_tratamento,
+                    tratamento_dias: estoqueInfo.tratamento_dias,
+                    confirmacoesDoDia
+                });
+                if (deveAlertar) alertaSufixo += buildAlertaEstoqueMessage(estoqueInfo);
+            }
+        } catch (e) {
+            console.error('⚠️ Erro ao verificar alerta estoque (fast-path resposta tardia):', e.message);
+        }
+    }
+
+    const nomes = grupo.map(d => d.medications?.nome || 'seu remédio').join(' e ');
+    const firstName = user.name ? user.name.split(' ')[0] : 'você';
+
+    console.log(`✅ [FAST-PATH] Resposta tardia ao esgotamento confirmada (BUG-035) — ${user.phone} — ${nomes}`);
+
+    return `✅ Anotei! Dose do *${nomes}* confirmada, ${firstName}. Continue assim! 💪💊${alertaSufixo}`;
 }
 
 // ============================================================
@@ -412,6 +477,22 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         agentName = 'principal';
         console.log(`💊 Confirmação de dose detectada, roteando para principal — ${user.phone}`);
         response = await handlePrincipal({ user, message, image, historicoConversa });
+
+    // 4b. Resposta tardia ao esgotamento (BUG-035) — fast-path determinístico,
+    // distinto do fast-path por referenceMessageId (BUG-029, ainda quebrado)
+    } else if (currentState === 'idle'
+        && detectarConfirmacaoDose(message)
+        && !(await temDosePendente(user.id))) {
+
+        const resultado = await tentarConfirmarRespostaTardia(user, message);
+        if (resultado) {
+            agentName = 'fast_path_resposta_tardia';
+            response = resultado;
+        } else {
+            // Nenhuma condição bateu — segue fluxo normal (cai no principal/retroativo/classificador)
+            agentName = 'principal';
+            response = await handlePrincipal({ user, message, image, historicoConversa });
+        }
 
     // 5. Usuário idle com intenção de relatório → agente_relatorios
     } else if (currentState === 'idle' && classificarIntencaoRelatorio(message)) {
