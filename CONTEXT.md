@@ -1,4 +1,4 @@
-# 🌿 NAMI — Contexto do Projeto (v12 — Validações + Incidente de Duplicação resolvido — 02/07/2026)
+# 🌿 NAMI — Contexto do Projeto (v13 — BUG-035 implementado, aguardando validação — 03/07/2026)
 
 ---
 
@@ -112,6 +112,14 @@ com o `.env de produção`. Um processo local esquecido rodando em paralelo ao R
 o incidente de duplicação de lembretes (ver seção dedicada). Recomendação: criar um
 `.env.local` apontando para um banco de teste, isolando desenvolvimento de produção.
 
+⚠️ **APRENDIZADO OPERACIONAL (v13):** o `origin` git local pode estar configurado para o nome
+antigo do repositório (`Gui-eng26/nami-backend.git`), funcionando apenas por redirect automático
+do GitHub para o nome atual (`Gui-eng26/Nami_life.git`). Confirmado em dois relatórios distintos
+do Claude Code nesta sessão. Corrigir com:
+```
+git remote set-url origin https://github.com/Gui-eng26/Nami_life.git
+```
+
 ---
 
 ## Banco de Dados — Supabase (PostgreSQL)
@@ -174,6 +182,26 @@ um medicamento já existente, mostra os dados atuais sem reiniciar o fluxo compl
 Ver seção dedicada abaixo. Validação anterior foi contaminada pelo processo local fantasma
 (incidente de duplicação) — retomar com ambiente limpo. Requer usuário com 2+ medicamentos
 no mesmo horário exato. 10 cenários no `briefings/BRIEFING_MH032.md`.
+
+### 🔄 BUG-035 — Fast-path de "resposta tardia ao esgotamento" (implementado, EM VALIDAÇÃO)
+Implementado e pushado em 03/07/2026 (commit `328fdbc`). Causa raiz: dose que vira `nao_informado`
+após esgotar follow-ups não tinha caminho de confirmação para um "sim" que chega logo depois —
+`dosesPendentes` (principal.js) exclui `nao_informado` de propósito, e o bloco retroativo (v11)
+exige apresentação prévia da dose, que nunca ocorre quando o "sim" é a 1ª mensagem do usuário
+desde o esgotamento. Solução: novo fast-path 100% determinístico (`tentarConfirmarRespostaTardia`
+em router.js, item 4b da cadeia de roteamento) que confirma direto via `confirmarDoseRetroativa`
+quando: (1) dose `nao_informado` mais recente está dentro de 24h, (2) é comprovadamente a 1ª
+resposta do usuário desde o esgotamento (`usuarioRespondeuDesde`, fail-safe seguro em erro), (3)
+sem ambiguidade de medicamento (agrupa por `horario_agendado` do MH-032, sem misturar horários
+diferentes). Fora dessas condições, cai no fluxo retroativo com apresentação já existente (v11),
+inalterado. Não usa `referenceMessageId` — independente do BUG-029, que continua quebrado.
+**Ainda sem validação em produção** — implementado sem acesso a Supabase/WhatsApp reais no momento
+do push. 7 cenários de teste no `briefings/BRIEFING_BUG035.md` (seção 5), incluindo caso de
+grupo MH-032, fora da janela de 24h, resposta intermediária do usuário, ambiguidade entre
+medicamentos de horários diferentes, negação, e fail-safe de erro. Hipótese de filtro adicional
+de ambiguidade (limite de palavras + marcadores de ressalva) foi levantada e conscientemente
+**não implementada** por falta de evidência empírica — registrada no briefing (seção 9) para
+revisão futura, caso o padrão apareça de fato em produção.
 
 ---
 
@@ -317,16 +345,15 @@ da Nami, que existe justamente para substituir esse hack). Montar templates padr
 
 ---
 
-## Status dos Bugs (atualizado 02/07/2026)
+## Status dos Bugs (atualizado 03/07/2026)
 
 **Resolvido na v12:**
 - **Incidente de duplicação de lembretes/follow-ups** — processo local esquecido (ver seção dedicada).
-- **BUG-035** — fast-path determinístico de "resposta tardia ao esgotamento": "Sim" enviado como
-  1ª mensagem do usuário dentro de 24h desde a dose virar `nao_informado` agora confirma direto
-  (sem LLM decidir), sem depender de `referenceMessageId` (BUG-029 continua quebrado, tratamento
-  separado). Fora da janela/condições, cai no fluxo retroativo com apresentação já existente
-  (v11), inalterado. Implementação: `router.js` (nova função `tentarConfirmarRespostaTardia`,
-  novo item 4b na cadeia de roteamento) + `database.js` (`usuarioRespondeuDesde`).
+
+**Em validação (v13):**
+- **BUG-035** — fast-path determinístico de "resposta tardia ao esgotamento" — implementado e
+  pushado (commit `328fdbc`), aguardando os 7 cenários de `briefings/BRIEFING_BUG035.md` em
+  ambiente limpo (WhatsApp real + Supabase). Ver seção dedicada acima.
 
 **Limitação conhecida aceitável:**
 - **BUG-029** — fast-path "responder": zaapId (019E...) ≠ referenceMessageId (3EB0...). Fallback via texto funciona.
@@ -355,9 +382,12 @@ identificador permanente).
 
 ---
 
-## Backlog Priorizado (atualizado 02/07/2026, fim v12)
+## Backlog Priorizado (atualizado 03/07/2026, fim v13)
 
-**Em validação:** MH-032 (lembretes agrupados) — validar 10 cenários em ambiente limpo.
+**Em validação:**
+- MH-032 (lembretes agrupados) — validar 10 cenários em ambiente limpo.
+- BUG-035 (fast-path resposta tardia ao esgotamento) — validar 7 cenários em ambiente limpo,
+  `briefings/BRIEFING_BUG035.md` seção 5.
 
 1. **BUG-031** [30/06] — linguagem inadequada no relatório semanal. URGENTE (envio segunda 06/07). Conectado ao item 5.
 2. **BUG-032** [30/06] — encerramento de tratamento é fluxo sem saída. Mesma família do BUG-033.
@@ -436,6 +466,11 @@ quanto tempo. Cada item de backlog carrega sua data de entrada para permitir ess
 2. Gerar relatório .docx e apresentar para download (upload manual no Drive)
 3. Gerar briefings/encerramento_[nome].md com o CONTEXT.md atualizado para o Claude Code commitar
 
+⚠️ **Lição registrada (v13):** conferir que o nome do arquivo `encerramento_vN.md` bate com o
+número de versão do CONTEXT.md que ele gera *antes* de salvar — na v12, o arquivo foi criado
+como `encerramento_v13.md` por engano (conteúdo correto, nome trocado), ficando sem commit por
+um tempo até ser corrigido retroativamente (commit `8a1468a`).
+
 ### Filosofia de debugging — inegociável
 - **Nunca propor solução sem causa raiz confirmada.** Hipóteses devem ser identificadas como hipóteses e testadas/eliminadas uma a uma.
 - **Analisar no contexto completo da Nami** — não o bug como fato isolado. Rever estrutura se necessário (inclusive modelo de IA usado nas respostas).
@@ -459,7 +494,7 @@ node src/index.js
 
 - **GitHub:** `Gui-eng26/Nami_life` (público) — raw via `curl -s "https://raw.githubusercontent.com/Gui-eng26/Nami_life/main/[filepath]"`.
 - **Schema:** `supabase/migrations/` (baseline + mh032_horario_agendado).
-- **Google Drive:** pasta Desenvolvimento Nami, ID `17uNtuBHOHw41FBc0zxZjx_-kjTW7bRmN`. Último relatório: `Nami_Relatorio_v12.docx`.
+- **Google Drive:** pasta Desenvolvimento Nami, ID `17uNtuBHOHw41FBc0zxZjx_-kjTW7bRmN`. Último relatório: `Nami_Relatorio_v13.docx`.
 - **Supabase:** banco Brasil (São Paulo). `agent_logs` = histórico conversacional. `conversation_state` = estado operacional (sem 's'). Migrations aplicadas manualmente no SQL Editor.
 - **Railway:** produção com auto-deploy no git push. Logs exportados em UTC.
 - **Claude Code (VS Code):** implementação via briefings `.md`.
