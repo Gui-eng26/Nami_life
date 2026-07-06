@@ -1,4 +1,4 @@
-# 🌿 NAMI — Contexto do Projeto (v13 — BUG-035 implementado, aguardando validação — 03/07/2026)
+# 🌿 NAMI — Contexto do Projeto (v14 — MH-042 implementado e validado por completo, BUG-036 encontrado — 06/07/2026)
 
 ---
 
@@ -35,6 +35,9 @@ O onboarding tem etapas necessárias (nome, LGPD), mas essas etapas devem ser ap
 **Cálculo de dado de saúde não depende do LLM.**
 Aritmética que afeta segurança do tratamento — cálculo de horários de dose, contagem de estoque — deve ser feita em código determinístico, não por inferência do modelo.
 
+**Comunicação de resultado ao usuário também não depende do LLM (reforçado v14).**
+Não basta o cálculo em si ser determinístico — a MENSAGEM que informa o resultado ao usuário também precisa nascer depois que a ação real já rodou, lendo o valor verdadeiro do banco. O LLM decide texto e ações na mesma chamada, antes de qualquer ação executar; qualquer número que ele declarar sobre o resultado é uma previsão não confiável, não o fato. Ver seção MH-042 Complemento.
+
 **Status de dose nunca é alterado por timeout silencioso quando há ambiguidade reversível.**
 nao_tomado só é registrado mediante declaração explícita do usuário. Status terminais (confirmado, nao_informado) devem permitir correção retroativa quando o usuário traz nova informação.
 
@@ -60,6 +63,10 @@ Frases que mostram conexão com o que o usuário pediu, não seguir etapas de fo
 
 ⚠️ **Banco migrado em 29/06/2026:** Oregon (US) → Brasil (São Paulo) por LGPD e latência.
 
+⚠️ **Instabilidade observada (06/07/2026):** Supabase ficou fora do ar durante a sessão v14,
+impedindo a validação de 2 cenários pendentes (ver Backlog). Sem causa raiz própria do projeto —
+registrar apenas como fato operacional. Se recorrente, avaliar plano de contingência.
+
 ---
 
 ## Estrutura de Arquivos
@@ -70,13 +77,13 @@ nami-backend/
 │   ├── index.js              → Entry point + webhook + proteção idempotência
 │   ├── agent.js              → Orquestrador — chama routeMessage
 │   ├── router.js             → Roteador central (classificador LLM no else)
-│   ├── database.js           → Todas as queries no Supabase
+│   ├── database.js           → Todas as queries no Supabase; registrarMovimentoEstoque (MH-042) é o único ponto de escrita em estoque
 │   ├── whatsapp.js           → Envio de mensagens e parse Z-API
 │   ├── scheduler.js          → Cron: lembretes + follow-ups + resumo semanal (agrupamento MH-032)
 │   ├── prompts.js            → System prompt do agente_principal
 │   └── agentes/
 │       ├── recepcionista.js  → Onboarding de novos usuários (v3)
-│       ├── principal.js      → Conversa geral + confirmação + ciclo de vida da dose (v11)
+│       ├── principal.js      → Conversa geral + confirmação + ciclo de vida da dose + UPDATE_STOCK (MH-042)
 │       ├── cadastro.js       → Cadastro (cálculo determinístico + MH-038 duplicata no início)
 │       ├── lembrete.js       → Follow-up espaçado (30min/1h/30min)
 │       ├── relatorios.js     → Consultas de histórico (híbrido: query + Claude)
@@ -84,8 +91,9 @@ nami-backend/
 ├── briefings/                → Briefings de implementação (na raiz da pasta, sem subpastas)
 ├── supabase/
 │   └── migrations/
-│       ├── 20260629000000_baseline.sql          → Schema completo v10 + auditoria v11
-│       └── 20260701000000_mh032_horario_agendado.sql → Coluna horario_agendado (MH-032)
+│       ├── 20260629000000_baseline.sql              → Schema completo v10 + auditoria v11
+│       ├── 20260701000000_mh032_horario_agendado.sql → Coluna horario_agendado (MH-032)
+│       └── 20260706000000_mh042_stock_movements.sql  → Tabela stock_movements (MH-042), aplicada manualmente
 ├── CONTEXT.md                → Este arquivo — ponto de partida de toda sessão
 └── package.json
 ```
@@ -114,8 +122,7 @@ o incidente de duplicação de lembretes (ver seção dedicada). Recomendação:
 
 ⚠️ **APRENDIZADO OPERACIONAL (v13):** o `origin` git local pode estar configurado para o nome
 antigo do repositório (`Gui-eng26/nami-backend.git`), funcionando apenas por redirect automático
-do GitHub para o nome atual (`Gui-eng26/Nami_life.git`). Confirmado em dois relatórios distintos
-do Claude Code nesta sessão. Corrigir com:
+do GitHub para o nome atual (`Gui-eng26/Nami_life.git`). Corrigir com:
 ```
 git remote set-url origin https://github.com/Gui-eng26/Nami_life.git
 ```
@@ -126,8 +133,8 @@ git remote set-url origin https://github.com/Gui-eng26/Nami_life.git
 
 ### Schema versionado no repositório
 Schema formalizado em `supabase/migrations/`. Baseline `20260629000000_baseline.sql` +
-migration `20260701000000_mh032_horario_agendado.sql`. Toda alteração futura via novo arquivo
-de migration numerado.
+`20260701000000_mh032_horario_agendado.sql` + `20260706000000_mh042_stock_movements.sql`.
+Toda alteração futura via novo arquivo de migration numerado.
 
 ⚠️ **Migrations NÃO são aplicadas automaticamente** (não há Supabase CLI no deploy; Railway só
 roda `node src/index.js`). Os arquivos em `supabase/migrations/` são documentação formal do
@@ -144,216 +151,140 @@ status (pendente/confirmado/nao_informado/nao_tomado/sem_estoque),
 tentativas, ultima_tentativa_at, caregiver_notified, caregiver_notified_at,
 zapi_message_id (text) ← formato zaapId (019E...), NÃO bate com referenceMessageId,
 revertido (boolean), revertido_at, revertido_de, revertido_motivo,
-horario_agendado (time) ← NOVO (MH-032): horário de cadastro que originou a dose
+horario_agendado (time, MH-032 — NULL em registros pré-migration, tratado como "não agrupa")
 ```
-⚠️ **horario_agendado (v12/MH-032):** preenchido no nascimento do dose_log (sendReminder →
-createDoseLog, lendo reminder.horario). Registros antigos ficam NULL (fallback individual —
-não agrupam). Serve para agrupar lembretes/follow-ups de doses do mesmo horário exato e dá
-granularidade por horário como bônus futuro para o MH-037. `scheduled_at` permanece com seu
-significado original (timestamp do disparo do cron) e é lido por principal.js e lembrete.js.
 
-Demais tabelas (users, medications, schedules, conversation_state, agent_logs,
-intencoes_nao_suportadas, care_network) inalteradas em relação à v11.
+**medications**
+```sql
+id, user_id (FK), nome, dosagem, instrucoes, estoque_atual, estoque_minimo,
+forma_farmaceutica, tipo_tratamento, tratamento_dias, tratamento_fim, ativo, created_at
+```
+⚠️ `estoque_atual` NUNCA deve ser escrito diretamente — sempre via `registrarMovimentoEstoque`
+(database.js), único ponto de escrita desde o MH-042.
+
+**stock_movements (novo — MH-042, 06/07/2026)**
+```sql
+id, medication_id (FK), tipo (cadastro_inicial | cadastro_substituicao | reativacao_com_estoque |
+recompra | correcao_soma | correcao_subtracao | correcao_set | dose_confirmada | dose_retroativa |
+dose_revertida), origem (manual | automatico), quantidade_delta, estoque_anterior, estoque_novo,
+motivo (text, nullable), dose_log_id (FK, nullable), created_at
+```
+Append-only — nunca UPDATE ou DELETE. Auditoria completa de todo movimento de estoque, manual
+e automático. Absorve a antiga nota de rastreabilidade que estava anexada ao MH-037.
+
+**conversation_state** (sem "s") — estado operacional, jsonb livre.
+**agent_logs** — fotografia diagnóstica imutável, nunca lida pelo fluxo operacional.
 
 ### ⚠️ Padrão crítico no Supabase JS SDK
-Filtros via join NÃO funcionam. Sempre usar abordagem em duas etapas com `.in()`.
-
-### Stored Functions
-- `get_pending_reminders()` — usada pelo scheduler; já retorna o campo `horario` (time) por lembrete.
-- `get_dose_history(p_user_id, p_days)` — usada pelo agente_relatorios.
-Comparações usam `AT TIME ZONE 'America/Sao_Paulo'`.
+Filtros via join NÃO funcionam: `.eq('medications.user_id', userId)` retorna todos os registros.
+Sempre usar abordagem em duas etapas com `.in()`.
 
 ---
 
-## VALIDAÇÕES CONCLUÍDAS NA v12 (evidência: logs + banco + prints)
+## MH-042 — Correção Manual de Estoque + Auditoria Sistêmica (v14)
 
-### ✅ Ciclo de Vida da Dose — VALIDADO
-Três caminhos confirmados em dados reais de dose_logs: confirmação retroativa
-(nao_informado → confirmado), nao_tomado retroativo, e reversão de confirmação
-(confirmado → outro status). Ver seção "Ciclo de Vida da Dose" abaixo para o design.
+**Problema original:** a Nami só reconhecia recompra como linguagem de atualização de estoque;
+recontagem e perda não tinham gatilho algum.
 
-### ✅ MH-038 — VALIDADO (verificação de duplicata no início do cadastro)
-Descoberto já implementado no código (comentário "TRABALHO 2" em cadastro.js ~368-497 e
-database.js `verificarMedicamentoExistente` ~linha 156, usa `.ilike()` case-insensitive).
-Validado nos 3 cenários: medicamento ativo, pausado/inativo, encerrado. Ao tentar cadastrar
-um medicamento já existente, mostra os dados atuais sem reiniciar o fluxo completo.
+**Entregue (commit `55e25be`):**
+- Tabela `stock_movements` (ver Banco de Dados acima)
+- `registrarMovimentoEstoque` (database.js) — único ponto de escrita em `estoque_atual`, com clamp
+  determinístico em 0 (nunca negativo); todos os 8 pontos que já escreviam em estoque foram
+  retrofitados para passar por ela (cadastro inicial/substituição, 4 funções do ciclo de vida de
+  dose, recompra, reativação de tratamento pausado)
+- Novos modos em `UPDATE_STOCK`: `soma` (recompra/recontagem para mais), `subtracao` (perda/quebra),
+  `set` (correção absoluta); pergunta de acompanhamento quando a mensagem não traz número
+- **Exclusão deliberada:** "tomei X mas não avisei" nunca aciona `UPDATE_STOCK` — permanece só em
+  `CONFIRM_RETROATIVA`, protegendo o dado de adesão de ser corrompido por um atalho de estoque
+- Inventário de capacidades do router (`classificarIntencaoComContexto`) atualizado
 
-### 🔄 MH-032 — Lembretes agrupados por horário (implementado, EM VALIDAÇÃO)
-Ver seção dedicada abaixo. Validação anterior foi contaminada pelo processo local fantasma
-(incidente de duplicação) — retomar com ambiente limpo. Requer usuário com 2+ medicamentos
-no mesmo horário exato. 10 cenários no `briefings/BRIEFING_MH032.md`.
+**Complemento (commit `5e1dfdd`) — correção de mensagem, não de cálculo:**
+Validação em produção mostrou que a mensagem final podia declarar um número de estoque calculado
+pelo LLM ("vai ficar em -3"), contradizendo o alerta determinístico real ("estoque zerado"), porque
+`message` e `actions` nascem na mesma chamada do LLM, antes da ação (e do clamp) rodar de fato.
+- `registrarMovimentoEstoque` agora retorna `{ estoqueAnterior, estoqueNovo, deltaAplicado }`
+- Nova `buildEstoqueAtualizadoMessage` (principal.js) — monta "Estoque atualizado! Seu novo estoque
+  de X é Y unidades" sempre a partir do banco, nunca do texto do LLM; explica quando o clamp foi
+  aplicado (perda pedida > estoque disponível)
+- `buildAlertaEstoqueAjusteMessage` mantida **intocada e desacoplada** — cuidado deliberado para não
+  misturar o informativo de resultado com a regra de alerta de limiar, que vai receber a oferta de
+  recompra via parceiro no futuro
+- Prompt: regra absoluta proibindo o LLM de declarar qualquer número de estoque calculado; formalizada
+  a confirmação prévia quando a perda informada ≥ estoque atual (sem declarar resultado calculado)
 
-### 🔄 BUG-035 — Fast-path de "resposta tardia ao esgotamento" (implementado, EM VALIDAÇÃO)
-Implementado e pushado em 03/07/2026 (commit `328fdbc`). Causa raiz: dose que vira `nao_informado`
-após esgotar follow-ups não tinha caminho de confirmação para um "sim" que chega logo depois —
-`dosesPendentes` (principal.js) exclui `nao_informado` de propósito, e o bloco retroativo (v11)
-exige apresentação prévia da dose, que nunca ocorre quando o "sim" é a 1ª mensagem do usuário
-desde o esgotamento. Solução: novo fast-path 100% determinístico (`tentarConfirmarRespostaTardia`
-em router.js, item 4b da cadeia de roteamento) que confirma direto via `confirmarDoseRetroativa`
-quando: (1) dose `nao_informado` mais recente está dentro de 24h, (2) é comprovadamente a 1ª
-resposta do usuário desde o esgotamento (`usuarioRespondeuDesde`, fail-safe seguro em erro), (3)
-sem ambiguidade de medicamento (agrupa por `horario_agendado` do MH-032, sem misturar horários
-diferentes). Fora dessas condições, cai no fluxo retroativo com apresentação já existente (v11),
-inalterado. Não usa `referenceMessageId` — independente do BUG-029, que continua quebrado.
-**Ainda sem validação em produção** — implementado sem acesso a Supabase/WhatsApp reais no momento
-do push. 7 cenários de teste no `briefings/BRIEFING_BUG035.md` (seção 5), incluindo caso de
-grupo MH-032, fora da janela de 24h, resposta intermediária do usuário, ambiguidade entre
-medicamentos de horários diferentes, negação, e fail-safe de erro. Hipótese de filtro adicional
-de ambiguidade (limite de palavras + marcadores de ressalva) foi levantada e conscientemente
-**não implementada** por falta de evidência empírica — registrada no briefing (seção 9) para
-revisão futura, caso o padrão apareça de fato em produção.
+**Achado registrado, fora de escopo:** existem hoje DUAS implementações de alerta de estoque
+distintas — `buildAlertaEstoqueAjusteMessage` (simples, limiar, usada em ajuste manual) e
+`buildAlertaEstoqueMessage` (sofisticada, com `diasRestantes`/`tratamento`/debounce por
+`confirmacoesDoDia`, usada em confirmação de dose, ligada ao MH-029 ainda em aberto). Não foram
+unificadas — decisão de consolidação fica para quando o MH-029 for priorizado.
 
----
+**Validado nesta sessão — 100% dos cenários, MH-042 encerrado:** recompra, recontagem (soma/set),
+perda com clamp em 0 (banco), exclusão do "tomei mas não avisei", auditoria automática de
+confirmação/reversão de dose, cadastro inicial, fluxo "sem número", reconciliação matemática
+completa (soma dos deltas = estoque_atual final), reteste de "perdi X ≥ estoque" pós-complemento
+(mensagem final limpa, sem contradição — evidência: teste com Cataflam, sem número calculado pelo
+LLM), e reativação de tratamento pausado com estoque atualizado via recadastro (`tipo:
+reativacao_com_estoque`, evidência: Dipirona 20→10 registrado corretamente em `stock_movements`).
 
-## 🆕 MH-032 — Lembretes Agrupados por Horário (v12)
+**Achado importante durante a validação — dois fluxos de reativação distintos (não é bug, é desenho
+intencional, mas gerou confusão na hora de testar):**
+- Comando direto "reativar [medicamento]" → `agente_configuracao` → `reativarMedicamento` — rápido,
+  não toca estoque, pressupõe que os dados continuam válidos.
+- Recadastro de medicamento já existente mas pausado → `agente_cadastro` detecta duplicata pausada
+  (`todosInativos`) → fluxo completo (tipo de tratamento → estoque → horários) → `reativarComAtualizacao`
+  com valor real de estoque. É este o caminho que gera auditoria em `stock_movements`.
+Vale considerar, em sessão futura, se o comando direto "reativar" deveria ao menos perguntar se o
+estoque mudou (hoje ele assume que não) — não decidido ainda, registrar como observação, sem ID.
 
-**Status: implementado e pushado em 01/07/2026, aguardando validação em ambiente limpo.**
-
-### Princípio central (NÃO VIOLAR)
-Agrupamento é EXCLUSIVAMENTE camada de apresentação. O estado interno de cada dose permanece
-100% individual (status, tentativas, ultima_tentativa_at, follow-up, nao_informado, cuidadores,
-estoque). Só a mensagem de texto que o usuário lê é unificada.
-
-### Regra de agrupamento
-Doses do mesmo usuário com `horario_agendado` idêntico (mesmo HH:MM de cadastro). SEM janela,
-SEM tolerância. Grupo de 1 dose → mensagem individual (inalterada). Grupo de 2+ → mensagem
-agrupada. Vale para lembrete inicial E follow-up (mesma regra nos dois caminhos).
-
-### Decisões de design
-- Dose sem estoque (`estoque_atual <= 0`) sai do agrupamento → mensagem de estoque zerado individual.
-- Confirmação parcial já funciona via `[ref:]` no principal.js (não mudou): "tomei todos"
-  confirma o grupo; "só tomei o X" confirma só o X, o resto segue pendente e é cobrado no
-  próximo follow-up (que virá agrupado só com o que falta).
-- Follow-up agrupado (`handleGroupedFollowUp` em scheduler.js) reaproveita o `handleFollowUp`
-  original de lembrete.js para os casos de esgotamento (nao_informado/cuidadores/estoque
-  continuam individuais por dose). lembrete.js NÃO foi alterado.
-- Mensagem = Variação C (instrutiva: "✅ Tomou todos? Responda SIM / 💬 Tomou só alguns? Me diga quais").
-
-### Complemento aplicado na revisão (antes do push)
-Doses agrupadas NÃO gravam `zapi_message_id` (ficam NULL). Uma mensagem agrupada tem 1
-message_id para N doses, incompatível com o fast-path por natureza (que resolve 1 dose por
-resposta). Elas confirmam pelo fluxo `[ref:]` do LLM. Doses individuais continuam gravando
-zapi_message_id normalmente. Ao resolver o BUG-029 no futuro, NÃO tentar fazer doses agrupadas
-usarem o fast-path — é uma incompatibilidade de desenho, não um esquecimento.
-
-### Arquivos tocados
-- `supabase/migrations/20260701000000_mh032_horario_agendado.sql` — coluna nova (aplicada manualmente no Supabase)
-- `database.js` — createDoseLog aceita/grava horarioAgendado
-- `scheduler.js` — separação sem/com estoque, agruparPorUsuarioEHorario, sendGroupedReminder,
-  buildGroupedReminderMessage, handleGroupedFollowUp, buildGroupedFollowUpMessage
+**BUG-036 encontrado durante esta mesma validação (`configuracao.js`):** na etapa `reativ_horarios`
+(fluxo de recadastro acima), a resposta "manter horários" não foi reconhecida como confirmação —
+a Nami pediu os horários de novo, só funcionando quando reformulado para "continua igual". Causa
+raiz confirmada (código real): a lista de termos aceitos como "manter como está" —
+`['sim','s','ok','continua','mesmo','igual','está certo','tá bom','pode']` — está duplicada
+literalmente em duas etapas (`reativ_estoque` linha 621 e `reativ_horarios` linha 651) e não inclui
+"manter" nem sinônimos comuns ("deixa assim", "sem alteração", "permanece"). Existe ainda uma
+terceira lista parecida mas distinta, `isConfirmacao` (linha 242), usada em outras etapas do mesmo
+agente — três listas de "o usuário concordou" espalhadas pelo arquivo, cada uma incompleta à sua
+maneira. Mesma classe de fragilidade já documentada no projeto (ex: "voltar" substring de
+"Voltaren"). Solução sistêmica proposta (não implementada ainda): extrair uma única função
+`confirmouManterComoEsta(message)` com lista de sinônimos expandida, usada nas duas etapas — mantendo
+`isConfirmacao` separada por ser semanticamente distinta ("sim, prossiga" vs. "mantenha o valor atual").
 
 ---
 
-## ⚠️ INCIDENTE v12 — Lembretes/Follow-ups Duplicados (RESOLVIDO)
+## Ciclo de Vida da Dose (v11 — validado v12)
 
-### Sintoma
-Vários usuários (Guilherme, Gil, Julia, Ivete) recebendo lembretes e follow-ups repetidos —
-2, 3 e até 4 vezes — sempre no mesmo horário. Efeito colateral grave: cada dose duplicada,
-ao ser confirmada, debitava o estoque em DOBRO, corrompendo o saldo.
+- Retroativa: janela de 2 dias, confirmação explícita obrigatória, `getDosesRetroativas`
+- Reversão: `tentativas<3` → volta a `pendente`; `tentativas≥3` → `nao_tomado`; estoque sempre +1
+- Scheduler e `ultima_tentativa_at` nunca resetam em reversão
+- Auditoria: `revertido/revertido_at/revertido_de/revertido_motivo`
 
-### Causa raiz CONFIRMADA (não hipótese)
-**Um processo Node local esquecido rodando no terminal do VS Code do Guilherme**, aberto desde
-a migração do banco (29/06), com o `.env de produção` e código PRÉ-MH-032 congelado em memória.
-Dois schedulers concorrentes (local + Railway) criavam dose_logs duplicados quando os crons
-colidiam na janela do guard `NOT EXISTS` (race de segundos).
-
-**Prova definitiva:** toda duplicata pós-01/07 tinha exatamente 1 registro com `horario_agendado`
-preenchido (Railway, código novo) + 1 com NULL (local, código antigo). Como a coluna só existe
-no código pós-MH-032, isso provou que dois processos com versões diferentes gravavam no mesmo
-banco. As conversas nunca duplicaram porque o webhook Z-API aponta só para o Railway — apenas o
-cron, que roda sozinho, era executado em dobro.
-
-### Resolução
-Encerrar o processo local (Ctrl+C). A duplicação parou imediatamente. Limpeza pós-incidente
-concluída: dose_logs órfãos deletados + estoque físico reconciliado nos medicamentos afetados.
-
-### Hipóteses descartadas no caminho (registradas para não reabrir)
-- Schedules duplicados no mesmo horário — refutado (era texto de dosagem, sem impacto em código).
-- Falha do guard NOT EXISTS ao cruzar meia-noite — plausível mas não era a causa dominante.
-- Doses nao_informado reentrando no fluxo — hipótese testada e refutada com ambiente limpo.
-- Dois containers concorrentes no Railway — refutado pelo painel (1 deployment ativo, 1 réplica).
-
-### Vacina registrada: BUG-034
-Proteção sistêmica contra dose_logs duplicados: unique constraint/índice em dose_logs impedindo
-2 registros do mesmo medicamento na mesma janela de disparo + insert tratando conflito
-silenciosamente. Torna a duplicata fisicamente impossível independente de quantos processos
-rodem. Não urgente (causa operacional já eliminada), mas recomendado.
-
----
-
-## 🆕 Ciclo de Vida da Dose (v11 — VALIDADO na v12)
-
-### Situação 1 — Confirmação retroativa
-Dose virou nao_informado após 3 follow-ups sem resposta, mas o usuário tomou e quer registrar
-depois. Janela de 2 dias (ontem e anteontem). Busca determinística por medicamento + data
-(`getDosesRetroativas`), apresenta a dose específica e exige confirmação explícita antes de
-registrar. nao_informado → confirmado, estoque -1, revertido_de = 'nao_informado'. Fora da
-janela: resposta de limite + oferta de UPDATE_STOCK manual.
-
-### Situação 2 — Reversão de confirmação
-O campo `tentativas` decide o destino: `tentativas < 3` → confirmado → pendente (reentra no
-fluxo); `tentativas >= 3` → confirmado → nao_tomado. Estoque sempre +1. **Scheduler e
-ultima_tentativa_at NUNCA são resetados** — preserva a referência do horário original.
-(Nota: na prática, reversões horas depois caem em tentativas >= 3 → nao_tomado; a branch
-pendente só é atingida se a reversão ocorrer dentro dos ~30min do primeiro follow-up.)
-
-### Semântica nao_tomado vs nao_informado
-- Dentro do follow-up + "não tomei" simples → fica pendente (ainda pode tomar)
-- Dentro do follow-up + "não vou tomar / sem estoque / registra" → nao_tomado explícito
-- Fora do follow-up (já nao_informado) + "não tomei" → nao_tomado via fluxo retroativo
-- nao_tomado só é registrado mediante declaração explícita, nunca por timeout
-
-### Auditoria
-Overwrite em `status` (sempre reflete a realidade atual) + colunas revertido/revertido_at/
-revertido_de/revertido_motivo preservam o histórico.
-
-### Implementação (briefing: briefings/BRIEFING_CICLO_VIDA_DOSE.md)
-database.js (getDosesRetroativas, getDosesConfirmadasHoje, confirmarDoseRetroativa,
-reverterConfirmacao, registrarNaoTomado estendida); prompts.js (actions CONFIRM_RETROATIVA e
-REVERSE_CONFIRMATION, prefixos [ref-retro:] e [ref-conf:] com separação absoluta de contextos);
-principal.js (blocos condicionais em buildUserMessage, novos cases em processAction);
-router.js (inventário do classificador atualizado).
-
----
+## MH-032 — Lembretes Agrupados por Horário (v12)
+Coluna `horario_agendado` em `dose_logs`; agrupa lembretes/follow-ups do mesmo horário exato.
 
 ## Agente Lembrete — Follow-up Espaçado
-
 ```
-Tentativa 1: horário agendado (lembrete chega ~2min antes do horário cadastrado)
-Tentativa 2: +30 minutos (tom gentil)
-Tentativa 3: +1 hora (último aviso)
-Após tent. 3: +30min → nao_informado + notifica cuidadores ativos
+Tentativa 1: horário agendado
+Tentativa 2: +30 minutos
+Tentativa 3: +1 hora
+Após tent. 3: +30min → nao_informado + notifica cuidadores
 ```
-A partir da v12, quando há 2+ doses do mesmo horário, a apresentação é agrupada (MH-032),
-mas o processamento interno de tentativas/nao_informado/cuidadores continua individual por dose.
-
----
 
 ## Agente Relatórios — Modelo Híbrido
-
-| Consulta | Tipo |
-|---|---|
-| Tomei hoje? / Meus remédios / Estoque / Próximo remédio | Query direta |
-| Adesão | Claude empático |
-| Resumo semanal | Claude proativo (segunda 08h) |
-
-⚠️ **BUG-031 (URGENTE — resolver antes de segunda 06/07):** o bloco "Claude empático" gera
-linguagem inadequada no relatório semanal sem guardrail/template — casos reais: "nudezinha"
-(conotação indesejada) e sugestão de "criar lembrete no celular" (contradiz a proposta de valor
-da Nami, que existe justamente para substituir esse hack). Montar templates padrão para o envio.
-⚠️ Cálculo de adesão (MH-037) ainda não considera o impacto de `revertido = true`.
+Query direta para: tomei hoje, meus remédios, estoque, próximo remédio. Claude empático para
+adesão e resumo semanal (segunda 08h).
 
 ---
 
-## Status dos Bugs (atualizado 03/07/2026)
+## Status dos Bugs (atualizado 06/07/2026)
 
-**Resolvido na v12:**
-- **Incidente de duplicação de lembretes/follow-ups** — processo local esquecido (ver seção dedicada).
+**Em validação:**
+- MH-032 (lembretes agrupados) — validar 10 cenários em ambiente limpo
+- BUG-035 (fast-path resposta tardia ao esgotamento) — validar 7 cenários, `BRIEFING_BUG035.md` §5
 
-**Em validação (v13):**
-- **BUG-035** — fast-path determinístico de "resposta tardia ao esgotamento" — implementado e
-  pushado (commit `328fdbc`), aguardando os 7 cenários de `briefings/BRIEFING_BUG035.md` em
-  ambiente limpo (WhatsApp real + Supabase). Ver seção dedicada acima.
+**MH-042 (correção de estoque + auditoria) — VALIDADO POR COMPLETO nesta sessão.** Todos os
+cenários, incluindo os 2 que ficaram pendentes por instabilidade do Supabase, foram testados com
+evidência real (ver seção MH-042 acima). Sai da lista de validação.
 
 **Limitação conhecida aceitável:**
 - **BUG-029** — fast-path "responder": zaapId (019E...) ≠ referenceMessageId (3EB0...). Fallback via texto funciona.
@@ -363,6 +294,8 @@ da Nami, que existe justamente para substituir esse hack). Montar templates padr
 - **BUG-032** — encerramento de tratamento é fluxo sem saída (viola saída de emergência)
 - **BUG-033** — dead-end residual em configuracao para alteração genérica sem tipo
 - **BUG-034** — proteção sistêmica contra dose_logs duplicados (vacina, não urgente)
+- **BUG-036** — "manter horários" não reconhecido como confirmação em `reativ_horarios`/`reativ_estoque`
+  (lista de termos duplicada e incompleta — ver seção MH-042 acima). Encontrado nesta sessão, não implementado.
 - **BUG-027** — nome de medicamento pré-cadastro perdido no cad_nome
 - **BUG-028** — "ta bom" interpretado como pergunta em contexto idle
 - **BUG-030** — pareceNome() não filtra "Sim, quero continuar"
@@ -371,50 +304,47 @@ da Nami, que existe justamente para substituir esse hack). Montar templates padr
 
 ## Convenção de IDs de Backlog (formalizada v12)
 
-Todo item novo recebe ID obrigatório, sem exceção (nunca "Trabalho X" ou "NOVO" como
-identificador permanente).
+Todo item novo recebe ID obrigatório, sem exceção.
 - **BUG-xxx** = comportamento que já deveria funcionar e não funciona, ou viola princípio
-  não-negociável (regressão, erro factual, fluxo sem saída de emergência).
-- **MH-xxx** (Melhoria) = capacidade nova que nunca existiu, ou ajuste de algo que já funciona
-  mas pode ser melhor/mais completo.
-- Numeração sequencial contínua a partir do maior número já usado em cada série — nunca reusar.
-- Próximo BUG livre: **BUG-036**. Próximo MH livre: **MH-042**.
+  não-negociável.
+- **MH-xxx** (Melhoria) = capacidade nova, ou ajuste de algo que já funciona mas pode ser melhor.
+- Numeração sequencial contínua — nunca reusar.
+- Próximo BUG livre: **BUG-037**. Próximo MH livre: **MH-043**.
 
 ---
 
-## Backlog Priorizado (atualizado 03/07/2026, fim v13)
+## Backlog Priorizado (atualizado 06/07/2026, fim v14)
 
 **Em validação:**
 - MH-032 (lembretes agrupados) — validar 10 cenários em ambiente limpo.
-- BUG-035 (fast-path resposta tardia ao esgotamento) — validar 7 cenários em ambiente limpo,
-  `briefings/BRIEFING_BUG035.md` seção 5.
+- BUG-035 (fast-path resposta tardia ao esgotamento) — validar 7 cenários, `BRIEFING_BUG035.md` §5.
 
-1. **BUG-031** [30/06] — linguagem inadequada no relatório semanal. URGENTE (envio segunda 06/07). Conectado ao item 5.
+**MH-042 validado por completo nesta sessão** — não entra mais na lista de validação nem no backlog priorizado.
+
+1. **BUG-031** [30/06] — linguagem inadequada no relatório semanal. URGENTE (envio segunda 06/07). Conectado ao item 4.
 2. **BUG-032** [30/06] — encerramento de tratamento é fluxo sem saída. Mesma família do BUG-033.
 3. **MH-039** [30/06] — avaliar fluxo de encerramento em lote ("encerrar todos"). Relacionado ao BUG-032.
-4. **BUG-034** [02/07] — proteção sistêmica contra dose_logs duplicados (vacina). Não urgente.
-5. **Relatório de adesão — unificação de tipos** [28/06] — getAdesaoPeriodo(7) retornando só dados do dia; considerar revertido=true. Conecta ao BUG-031. Sem ID próprio.
-6. **BUG-033** [28/06] — dead-end residual em configuracao (alteração genérica). Solução sistêmica única com BUG-032.
-7. **MH-029** [19/06] — alerta de estoque incorreto para tratamento de tempo determinado com estoque suficiente.
-8. **MH-040** [28/06] — mensagens fragmentadas do mesmo contexto recebem respostas independentes.
-9. **MH-041** [30/06 — OBSERVAÇÃO] — dose do horário antigo continua cobrando follow-up após alteração de horário (alterarHorarioSchedule só atualiza schedules). Observar antes de tratar.
-10. **MH-030** [19/06] — encerramento automático de tratamento agudo.
-11. **MH-027** [19/06] — reagendamento de lembrete sob demanda.
-12. **MH-037** [28/06] — cálculo de adesão via COUNT dose_logs (horario_agendado do MH-032 dá granularidade por horário como bônus).
-13. **BUG-027 / BUG-028 / BUG-030** [18-19/06] e outros menores.
+4. **Relatório de adesão — unificação de tipos** [28/06] — getAdesaoPeriodo(7) retornando só dados do dia; considerar revertido=true. Conecta ao BUG-031. Sem ID próprio.
+5. **BUG-033** [28/06] — dead-end residual em configuracao (alteração genérica). Solução sistêmica única com BUG-032.
+6. **BUG-034** [02/07] — proteção sistêmica contra dose_logs duplicados (vacina). Não urgente.
+7. **BUG-036** [06/07] — "manter horários" não reconhecido como confirmação em `reativ_horarios`/`reativ_estoque` (configuracao.js). Causa raiz confirmada, solução sistêmica já desenhada (ver seção MH-042). Não urgente, mas simples de corrigir.
+8. **MH-029** [19/06] — alerta de estoque incorreto para tratamento de tempo determinado com estoque suficiente. Ver também nota de consolidação de alertas ligada ao MH-042.
+9. **MH-040** [28/06] — mensagens fragmentadas do mesmo contexto recebem respostas independentes.
+10. **MH-041** [30/06 — OBSERVAÇÃO] — dose do horário antigo continua cobrando follow-up após alteração de horário. Observar antes de tratar.
+11. **MH-030** [19/06] — encerramento automático de tratamento agudo.
+12. **MH-027** [19/06] — reagendamento de lembrete sob demanda.
+13. **MH-037** [28/06] — cálculo de adesão via COUNT dose_logs (horario_agendado do MH-032 dá granularidade por horário como bônus). Nota de rastreabilidade de estoque que estava anexada aqui foi absorvida pelo MH-042 (implementada).
+14. **BUG-027 / BUG-028 / BUG-030** [18-19/06] e outros menores.
 
-**NOTA (estoque — sem ID, ligada ao MH-037):** evoluir para rastreabilidade de estoque por
-dose_log (registrar posição de estoque a cada movimentação: dose confirmada -1, reversão +1,
-ajuste/recompra do usuário) + colunas em medications (estoque inicial estável, ajustes_estoque,
-estoque_atual como consulta rápida consistente com dose_logs). Proposta esboçada em 01/07,
-retomar desenho quando priorizar auditoria de estoque.
+**NOTA (sem ID, observação da v14):** avaliar se o comando direto "reativar [medicamento]" deveria
+perguntar sobre mudança de estoque, hoje ele assume que nada mudou (ver seção MH-042 acima).
 
 ### Fase 3+ (deferred)
 - MH-004 Whisper (áudio), MH-007 RAG ANVISA, avaliação de unificação router+principal (decisão revisável).
 
 ---
 
-## Princípios de Engenharia (formalizados v10, reforçados v11-v12)
+## Princípios de Engenharia (formalizados v10, reforçados v11-v14)
 
 1. **Sistêmico vs. remendo** — resolver a classe inteira do problema, não só o caso que apareceu.
 2. **Baixo acoplamento, alta coesão** — arquitetura deve permitir manutenção e expansão futura.
@@ -422,10 +352,16 @@ retomar desenho quando priorizar auditoria de estoque.
 4. **Cálculos de saúde determinísticos** — aritmética de horários, status de dose, contagem de estoque sempre em código.
 5. **Inventário do roteador sempre atual** — classificarIntencaoComContexto (router.js) atualizado na mesma alteração que adicionar/remover capacidade.
 6. **Propagação de histórico sistêmica** — buscar histórico uma vez no roteador e propagar a todos os agentes LLM; lembrete fica fora (determinístico puro).
-7. **Schema de banco como código** — toda alteração via migration numerada. Migrations são aplicadas MANUALMENTE no Supabase (não há automação no deploy).
-8. **Status terminais devem ter saída quando reversível** — nunca desenhar status clínico como "sem volta" se há cenário de correção legítimo. Toda transição de correção exige trilha auditável.
+7. **Schema de banco como código** — toda alteração via migration numerada. Migrations são aplicadas MANUALMENTE no Supabase.
+8. **Status terminais devem ter saída quando reversível** — nunca desenhar status clínico como "sem volta" se há cenário de correção legítimo.
 9. **Scheduler nunca é resetado por correções retroativas** — o horário original do tratamento é uma referência protegida.
-10. **Isolamento de ambiente (v12)** — nunca rodar servidor local com .env de produção; um processo fantasma concorrente causou o incidente de duplicação.
+10. **Isolamento de ambiente** — nunca rodar servidor local com .env de produção.
+11. **Mensagem de resultado nunca antes da ação executar (formalizado v14)** — qualquer número que o
+    usuário vê sobre o resultado de uma ação relevante à saúde (estoque, dose) deve vir de uma leitura
+    determinística do banco feita DEPOIS que a ação real rodou — nunca do texto que o LLM escreveu antes.
+12. **Informativo de resultado e regra de alerta são funções separadas** — não fundir "o que aconteceu"
+    com "o que fazer a respeito" (limiar de alerta) na mesma função, mesmo quando aparecem na mesma
+    mensagem — a regra de alerta evolui por conta própria (ex: oferta de recompra via parceiro).
 
 ---
 
@@ -445,38 +381,28 @@ Este chat = planejamento/análise/arquitetura. Claude Code (VS Code) = implement
 
 ### 🔔 Rito de abertura de sessão (formalizado v12)
 Quando o Guilherme disser frases como **"o que temos pra hoje"**, **"no que precisamos
-trabalhar"**, **"quais as prioridades"** (ou equivalentes pedindo direção/foco do dia),
-responder IMEDIATAMENTE com o quadro completo da fila de backlog, incluindo para cada item:
-- ID (BUG-xxx / MH-xxx quando existir)
-- descrição breve
-- **"há quantos dias está aguardando"**, calculado dinamicamente a partir da data de entrada
-  registrada e da data atual da sessão — NUNCA usar um número de dias gravado fixo.
-
-Objetivo: ajudar o Guilherme a calibrar rapidamente o que tem sido deixado para trás e por
-quanto tempo. Cada item de backlog carrega sua data de entrada para permitir esse cálculo.
+trabalhar"**, **"quais as prioridades"** (ou equivalentes), responder IMEDIATAMENTE com o quadro
+completo da fila de backlog, incluindo para cada item: ID, descrição breve, e **dias aguardando**
+calculado dinamicamente a partir da data de entrada e da data atual da sessão — nunca um número fixo.
 
 ### Ritual de início de sessão
 1. Ler CONTEXT.md via `curl -s "https://raw.githubusercontent.com/Gui-eng26/Nami_life/main/CONTEXT.md"`
-2. Verificar relatório mais recente no Google Drive (pasta Desenvolvimento Nami, ID: 17uNtuBHOHw41FBc0zxZjx_-kjTW7bRmN)
-3. Confirmar estado atual com Guilherme antes de começar
-4. Schema do banco: ler supabase/migrations/ no repositório
+2. Confirmar estado atual com Guilherme antes de começar
+3. Schema do banco: ler supabase/migrations/ no repositório
 
 ### Ritual de encerramento de sessão
-1. Atualizar memory (itens de estado de projeto e backlog, cada item com data de entrada)
-2. Gerar relatório .docx e apresentar para download (upload manual no Drive)
-3. Gerar briefings/encerramento_[nome].md com o CONTEXT.md atualizado para o Claude Code commitar
+1. Gerar relatório .docx e apresentar para download (upload manual no Drive)
+2. Gerar briefings/encerramento_vN.md com o CONTEXT.md atualizado para o Claude Code commitar
 
 ⚠️ **Lição registrada (v13):** conferir que o nome do arquivo `encerramento_vN.md` bate com o
-número de versão do CONTEXT.md que ele gera *antes* de salvar — na v12, o arquivo foi criado
-como `encerramento_v13.md` por engano (conteúdo correto, nome trocado), ficando sem commit por
-um tempo até ser corrigido retroativamente (commit `8a1468a`).
+número de versão do CONTEXT.md que ele gera *antes* de salvar.
 
 ### Filosofia de debugging — inegociável
 - **Nunca propor solução sem causa raiz confirmada.** Hipóteses devem ser identificadas como hipóteses e testadas/eliminadas uma a uma.
 - **Analisar no contexto completo da Nami** — não o bug como fato isolado. Rever estrutura se necessário (inclusive modelo de IA usado nas respostas).
 - **Evidências primeiro:** logs do Railway, código atual, dados do Supabase.
-- **Atenção a fuso horário:** timestamps nos arquivos de log exportados do Railway estão em UTC; o painel exibe em GMT-3. Sempre ancorar a qual fuso um horário se refere (lição da v12).
-- **Verificar implementação direto no repositório antes de assumir que está completa** — afirmações de "tudo implementado" devem ser confirmadas lendo o código real.
+- **Atenção a fuso horário:** timestamps de logs exportados do Railway estão em UTC; o painel exibe em GMT-3.
+- **Verificar implementação direto no repositório antes de assumir que está completa** — afirmações de "tudo implementado" devem ser confirmadas lendo o código real, nunca aceitas pelo resumo do Claude Code.
 
 ---
 
@@ -493,8 +419,8 @@ node src/index.js
 ## Ferramentas e Recursos
 
 - **GitHub:** `Gui-eng26/Nami_life` (público) — raw via `curl -s "https://raw.githubusercontent.com/Gui-eng26/Nami_life/main/[filepath]"`.
-- **Schema:** `supabase/migrations/` (baseline + mh032_horario_agendado).
-- **Google Drive:** pasta Desenvolvimento Nami, ID `17uNtuBHOHw41FBc0zxZjx_-kjTW7bRmN`. Último relatório: `Nami_Relatorio_v13.docx`.
-- **Supabase:** banco Brasil (São Paulo). `agent_logs` = histórico conversacional. `conversation_state` = estado operacional (sem 's'). Migrations aplicadas manualmente no SQL Editor.
+- **Schema:** `supabase/migrations/` (baseline + mh032_horario_agendado + mh042_stock_movements).
+- **Google Drive:** pasta Desenvolvimento Nami, ID `17uNtuBHOHw41FBc0zxZjx_-kjTW7bRmN`. Último relatório: `Nami_Relatorio_v14.docx`.
+- **Supabase:** banco Brasil (São Paulo). `agent_logs` = histórico conversacional. `conversation_state` = estado operacional (sem 's'). Migrations aplicadas manualmente no SQL Editor. Instabilidade pontual observada em 06/07/2026.
 - **Railway:** produção com auto-deploy no git push. Logs exportados em UTC.
 - **Claude Code (VS Code):** implementação via briefings `.md`.
