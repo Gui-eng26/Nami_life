@@ -67,6 +67,23 @@ function buildAlertaEstoqueAjusteMessage(info) {
     return '';
 }
 
+// Informativo determinístico pós-ajuste manual de estoque (complemento MH-042) — o único
+// número de estoque comunicado ao usuário depois de UPDATE_STOCK vem daqui, nunca do texto
+// gerado pelo LLM. Responsabilidade única: não decide alerta de limiar (isso continua em
+// buildAlertaEstoqueAjusteMessage, chamada separadamente).
+function buildEstoqueAtualizadoMessage({ medNome, estoqueAnterior, estoqueNovo, deltaAplicado, quantidadeSolicitada }) {
+    let msg = `\n\n📦 Estoque atualizado! Seu novo estoque de *${medNome}* é *${estoqueNovo}* ${estoqueNovo === 1 ? 'unidade' : 'unidades'}.`;
+
+    // Se o que foi de fato aplicado é menor (em módulo) do que o solicitado, o clamp em 0 entrou em ação —
+    // só é detectável comparando o delta pedido com o delta realmente aplicado.
+    if (quantidadeSolicitada != null && Math.abs(deltaAplicado) < quantidadeSolicitada) {
+        msg += ` (Você tinha ${estoqueAnterior} — como o estoque não pode ficar negativo, o ajuste foi ` +
+               `limitado a ${estoqueAnterior}, não aos ${quantidadeSolicitada} informados.)`;
+    }
+
+    return msg;
+}
+
 export async function handlePrincipal({ user, message, image, historicoConversa = [], intencaoNaoSuportada = false }) {
     const state = await getConversationState(user.id);
     console.log(`📊 Estado atual de ${user.phone}: ${state.state}`);
@@ -420,23 +437,34 @@ async function processAction(action, user) {
                     return null;
             }
 
-            await registrarMovimentoEstoque({
+            const { estoqueAnterior, estoqueNovo, deltaAplicado } = await registrarMovimentoEstoque({
                 medicationId: action.medicationId,
                 origem: 'manual',
                 motivo: action.motivo || null,
                 ...params
             });
 
+            let textoFinal = '';
             try {
                 const statusInfo = await getEstoqueStatusSimples(action.medicationId);
                 if (statusInfo) {
-                    const alerta = buildAlertaEstoqueAjusteMessage(statusInfo);
-                    if (alerta) return { alertaEstoque: alerta };
+                    // Passo 1 — informativo determinístico (nunca o número que o LLM escreveu)
+                    textoFinal += buildEstoqueAtualizadoMessage({
+                        medNome: statusInfo.medNome,
+                        estoqueAnterior,
+                        estoqueNovo,
+                        deltaAplicado,
+                        // "quantidade" só representa um delta pedido em soma/subtracao; em "set" é o
+                        // total desejado, não comparável a deltaAplicado — não faz sentido de clamp aqui.
+                        quantidadeSolicitada: action.modo === 'set' ? null : action.quantidade
+                    });
+                    // Passo 2 — alerta de limiar, função existente e intocada
+                    textoFinal += buildAlertaEstoqueAjusteMessage(statusInfo);
                 }
             } catch (e) {
-                console.error('⚠️ Erro ao verificar alerta pós-ajuste de estoque:', e.message);
+                console.error('⚠️ Erro ao montar mensagem de estoque atualizado:', e.message);
             }
-            return null;
+            return textoFinal ? { alertaEstoque: textoFinal } : null;
         }
 
         default:

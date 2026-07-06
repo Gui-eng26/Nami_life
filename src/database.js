@@ -126,14 +126,14 @@ export async function saveMedication({
 
     if (error) throw new Error(`Erro ao salvar medicamento: ${error.message}`);
 
-    const estoqueFinal = await registrarMovimentoEstoque({
+    const { estoqueNovo } = await registrarMovimentoEstoque({
         medicationId: data.id,
         tipo: 'cadastro_inicial',
         origem: 'manual',
         valorAbsoluto: estoque || 0
     });
 
-    return { ...data, estoque_atual: estoqueFinal };
+    return { ...data, estoque_atual: estoqueNovo };
 }
 
 export async function replaceMedication({ medicationId, dosagem, instrucoes, estoque, horarios }) {
@@ -147,13 +147,13 @@ export async function replaceMedication({ medicationId, dosagem, instrucoes, est
 
     if (error) throw new Error(`Erro ao substituir medicamento: ${error.message}`);
 
-    const estoqueFinal = await registrarMovimentoEstoque({
+    const { estoqueNovo } = await registrarMovimentoEstoque({
         medicationId,
         tipo: 'cadastro_substituicao',
         origem: 'manual',
         valorAbsoluto: estoque || 0
     });
-    data.estoque_atual = estoqueFinal;
+    data.estoque_atual = estoqueNovo;
 
     // Apaga horários antigos e recria
     await supabase.from('schedules').delete().eq('medication_id', medicationId);
@@ -254,7 +254,7 @@ export async function registrarMovimentoEstoque({
 
     console.log(`📦 Movimento de estoque — tipo: ${tipo}, medication: ${medicationId}, ${estoqueAnterior} → ${estoqueNovo}`);
 
-    return estoqueNovo;
+    return { estoqueAnterior, estoqueNovo, deltaAplicado };
 }
 
 // ============================================================
