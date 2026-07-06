@@ -9,7 +9,8 @@ import {
     updateUserName,
     getRecentDoses,
     getUserMedications,
-    updateMedicationStock,
+    registrarMovimentoEstoque,
+    getEstoqueStatusSimples,
     getEstoqueInfoParaAlerta,
     contarConfirmacoesHoje,
     calcularAlertaEstoque,
@@ -44,6 +45,26 @@ function buildAlertaEstoqueMessage(info) {
         `do *${medNome}* — suficiente para ${prazo}. ` +
         `Bom momento para planejar a recompra! 💊`
     );
+}
+
+// Alerta pós-ajuste manual de estoque (MH-042) — reaproveita o mesmo limiar
+// crítico/baixo/ok já usado em relatorioEstoque, sem criar um segundo mecanismo.
+function buildAlertaEstoqueAjusteMessage(info) {
+    const { medNome, estoqueAtual, status } = info;
+
+    if (status === 'critico') {
+        return (
+            `\n\n🚨 *Atenção:* o estoque do *${medNome}* está zerado. ` +
+            `Providencie a recompra assim que possível! 💊`
+        );
+    }
+    if (status === 'baixo') {
+        return (
+            `\n\n⚠️ *Lembrete de estoque:* o *${medNome}* está com *${estoqueAtual}* ${estoqueAtual === 1 ? 'unidade' : 'unidades'} — ` +
+            `hora de planejar a recompra! 💊`
+        );
+    }
+    return '';
 }
 
 export async function handlePrincipal({ user, message, image, historicoConversa = [], intencaoNaoSuportada = false }) {
@@ -374,9 +395,49 @@ async function processAction(action, user) {
             }
             return null;
 
-        case 'UPDATE_STOCK':
-            await updateMedicationStock(action.medicationId, action.quantidade);
+        case 'UPDATE_STOCK': {
+            if (!action.medicationId) {
+                console.warn('⚠️ UPDATE_STOCK sem medicationId — ignorando');
+                return null;
+            }
+
+            let params;
+            switch (action.modo) {
+                case 'soma':
+                    params = {
+                        tipo: action.motivo === 'recompra' ? 'recompra' : 'correcao_soma',
+                        delta: action.quantidade
+                    };
+                    break;
+                case 'subtracao':
+                    params = { tipo: 'correcao_subtracao', delta: -action.quantidade };
+                    break;
+                case 'set':
+                    params = { tipo: 'correcao_set', valorAbsoluto: action.quantidade };
+                    break;
+                default:
+                    console.warn(`⚠️ UPDATE_STOCK com modo desconhecido: ${action.modo}`);
+                    return null;
+            }
+
+            await registrarMovimentoEstoque({
+                medicationId: action.medicationId,
+                origem: 'manual',
+                motivo: action.motivo || null,
+                ...params
+            });
+
+            try {
+                const statusInfo = await getEstoqueStatusSimples(action.medicationId);
+                if (statusInfo) {
+                    const alerta = buildAlertaEstoqueAjusteMessage(statusInfo);
+                    if (alerta) return { alertaEstoque: alerta };
+                }
+            } catch (e) {
+                console.error('⚠️ Erro ao verificar alerta pós-ajuste de estoque:', e.message);
+            }
             return null;
+        }
 
         default:
             console.warn(`⚠️ Ação desconhecida no agente principal: ${action.type}`);

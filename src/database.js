@@ -105,7 +105,9 @@ export async function saveMedication({
         return { ...existing, isDuplicate: true };
     }
 
-    // Se não existe, cria novo normalmente
+    // Se não existe, cria novo normalmente (estoque nasce em 0; o valor informado
+    // é aplicado logo em seguida via registrarMovimentoEstoque, para gerar o
+    // movimento cadastro_inicial com estoque_anterior = 0)
     const { data, error } = await supabase
         .from('medications')
         .insert({
@@ -113,7 +115,7 @@ export async function saveMedication({
             nome,
             dosagem,
             instrucoes: instrucoes || null,
-            estoque_atual: estoque || 0,
+            estoque_atual: 0,
             estoque_minimo: 7,
             forma_farmaceutica: forma || 'comprimido',
             tipo_tratamento: tipo_tratamento || 'continuo',
@@ -123,19 +125,35 @@ export async function saveMedication({
         .single();
 
     if (error) throw new Error(`Erro ao salvar medicamento: ${error.message}`);
-    return data;
+
+    const estoqueFinal = await registrarMovimentoEstoque({
+        medicationId: data.id,
+        tipo: 'cadastro_inicial',
+        origem: 'manual',
+        valorAbsoluto: estoque || 0
+    });
+
+    return { ...data, estoque_atual: estoqueFinal };
 }
 
 export async function replaceMedication({ medicationId, dosagem, instrucoes, estoque, horarios }) {
-    // Atualiza o medicamento existente
+    // Atualiza o medicamento existente (estoque é tratado à parte, via registrarMovimentoEstoque)
     const { data, error } = await supabase
         .from('medications')
-        .update({ dosagem, instrucoes, estoque_atual: estoque || 0 })
+        .update({ dosagem, instrucoes })
         .eq('id', medicationId)
         .select()
         .single();
 
     if (error) throw new Error(`Erro ao substituir medicamento: ${error.message}`);
+
+    const estoqueFinal = await registrarMovimentoEstoque({
+        medicationId,
+        tipo: 'cadastro_substituicao',
+        origem: 'manual',
+        valorAbsoluto: estoque || 0
+    });
+    data.estoque_atual = estoqueFinal;
 
     // Apaga horários antigos e recria
     await supabase.from('schedules').delete().eq('medication_id', medicationId);
@@ -179,13 +197,64 @@ export async function getUserMedications(userId) {
     return data || [];
 }
 
-export async function updateMedicationStock(medicationId, novoEstoque) {
-    const { error } = await supabase
+// Único ponto de escrita em estoque — toda mudança em medications.estoque_atual
+// passa por aqui e gera uma linha em stock_movements (MH-042).
+//
+// Risco de inconsistência: a atualização em `medications` e o insert em `stock_movements`
+// não são atômicos (a Supabase JS SDK não expõe transação client-side). Se o insert em
+// stock_movements falhar após o update em medications, o estoque muda mas o movimento
+// não fica registrado. Aceito por ora — mover para uma stored procedure (rpc, no padrão
+// de get_pending_reminders) é a evolução natural caso isso vire problema real.
+export async function registrarMovimentoEstoque({
+    medicationId, tipo, origem, motivo = null, doseLogId = null,
+    delta = null,        // use quando o movimento é um incremento/decremento conhecido
+    valorAbsoluto = null // use quando o movimento é "setar para X" (recontagem, cadastro)
+}) {
+    const { data: med, error: fetchError } = await supabase
         .from('medications')
-        .update({ estoque_atual: novoEstoque })
+        .select('estoque_atual')
+        .eq('id', medicationId)
+        .single();
+
+    if (fetchError || !med) throw new Error(`Medicamento não encontrado: ${medicationId}`);
+
+    const estoqueAnterior = med.estoque_atual ?? 0;
+    let estoqueNovo;
+    let deltaAplicado;
+
+    if (valorAbsoluto !== null) {
+        estoqueNovo = Math.max(0, valorAbsoluto);
+        deltaAplicado = estoqueNovo - estoqueAnterior;
+    } else {
+        estoqueNovo = Math.max(0, estoqueAnterior + delta);
+        deltaAplicado = estoqueNovo - estoqueAnterior; // já reflete o clamp em 0
+    }
+
+    const { error: updateError } = await supabase
+        .from('medications')
+        .update({ estoque_atual: estoqueNovo })
         .eq('id', medicationId);
 
-    if (error) throw new Error(`Erro ao atualizar estoque: ${error.message}`);
+    if (updateError) throw new Error(`Erro ao atualizar estoque: ${updateError.message}`);
+
+    const { error: logError } = await supabase
+        .from('stock_movements')
+        .insert({
+            medication_id: medicationId,
+            tipo,
+            origem,
+            quantidade_delta: deltaAplicado,
+            estoque_anterior: estoqueAnterior,
+            estoque_novo: estoqueNovo,
+            motivo,
+            dose_log_id: doseLogId
+        });
+
+    if (logError) throw new Error(`Erro ao registrar movimento de estoque: ${logError.message}`);
+
+    console.log(`📦 Movimento de estoque — tipo: ${tipo}, medication: ${medicationId}, ${estoqueAnterior} → ${estoqueNovo}`);
+
+    return estoqueNovo;
 }
 
 // ============================================================
@@ -269,15 +338,13 @@ export async function confirmDose(medicationId) {
     console.log(`✅ Dose confirmada — log id: ${log.id}`);
 
     // Decrementa o estoque
-    const { data: med } = await supabase
-        .from('medications')
-        .select('estoque_atual')
-        .eq('id', medicationId)
-        .single();
-
-    if (med && med.estoque_atual > 0) {
-        await updateMedicationStock(medicationId, med.estoque_atual - 1);
-    }
+    await registrarMovimentoEstoque({
+        medicationId,
+        tipo: 'dose_confirmada',
+        origem: 'automatico',
+        delta: -1,
+        doseLogId: log.id
+    });
 }
 
 export async function getRecentDoses(userId, days = 3) {
@@ -411,10 +478,13 @@ export async function confirmDoseByLogId(doseLogId) {
     if (updateError) throw new Error(`Erro ao confirmar dose: ${updateError.message}`);
     console.log(`✅ Dose confirmada por log id: ${doseLogId}`);
 
-    const estoque = log.medications?.estoque_atual;
-    if (estoque !== null && estoque > 0) {
-        await updateMedicationStock(log.medication_id, estoque - 1);
-    }
+    await registrarMovimentoEstoque({
+        medicationId: log.medication_id,
+        tipo: 'dose_confirmada',
+        origem: 'automatico',
+        delta: -1,
+        doseLogId
+    });
 
     return log.medication_id;
 }
@@ -585,10 +655,13 @@ export async function confirmarDoseRetroativa(doseLogId, motivo) {
     if (updateError) throw new Error(`Erro ao confirmar dose retroativa: ${updateError.message}`);
     console.log(`⏪ Dose confirmada retroativamente — log id: ${doseLogId}`);
 
-    const estoque = log.medications?.estoque_atual;
-    if (estoque !== null && estoque > 0) {
-        await updateMedicationStock(log.medication_id, estoque - 1);
-    }
+    await registrarMovimentoEstoque({
+        medicationId: log.medication_id,
+        tipo: 'dose_retroativa',
+        origem: 'automatico',
+        delta: -1,
+        doseLogId
+    });
 
     return log.medication_id;
 }
@@ -622,10 +695,13 @@ export async function reverterConfirmacao(doseLogId, motivo) {
     if (updateError) throw new Error(`Erro ao reverter confirmação: ${updateError.message}`);
     console.log(`↩️ Confirmação revertida — log id: ${doseLogId}, novo status: ${novoStatus}`);
 
-    const estoque = log.medications?.estoque_atual;
-    if (estoque !== null) {
-        await updateMedicationStock(log.medication_id, estoque + 1);
-    }
+    await registrarMovimentoEstoque({
+        medicationId: log.medication_id,
+        tipo: 'dose_revertida',
+        origem: 'automatico',
+        delta: 1,
+        doseLogId
+    });
 
     return { medicationId: log.medication_id, novoStatus };
 }
@@ -742,13 +818,19 @@ export async function reativarComAtualizacao({ medicationId, estoque, tipo_trata
         const { error: errMed } = await supabase
             .from('medications')
             .update({
-                estoque_atual: estoque,
                 tipo_tratamento,
                 tratamento_dias: tratamento_dias || null,
                 ativo: true
             })
             .eq('id', medicationId);
         if (errMed) throw new Error(`Erro ao atualizar medicamento: ${errMed.message}`);
+
+        await registrarMovimentoEstoque({
+            medicationId,
+            tipo: 'reativacao_com_estoque',
+            origem: 'manual',
+            valorAbsoluto: estoque || 0
+        });
     }
 
     const { error: errDel } = await supabase
@@ -1106,6 +1188,27 @@ export async function getEstoqueInfoParaAlerta(medicationId) {
         tipo_tratamento: med.tipo_tratamento || 'continuo',
         tratamento_dias: med.tratamento_dias || null
     };
+}
+
+// Status de estoque simples (mesmo limiar crítico/baixo/ok usado em relatorioEstoque e
+// getAdesaoPorMedicamento) — usado para o alerta pós-ajuste manual de estoque (MH-042),
+// que não depende de doses/dia como o alerta pós-confirmação de dose.
+export async function getEstoqueStatusSimples(medicationId) {
+    const { data: med } = await supabase
+        .from('medications')
+        .select('nome, estoque_atual, estoque_minimo')
+        .eq('id', medicationId)
+        .single();
+
+    if (!med) return null;
+
+    const status = med.estoque_atual <= 0
+        ? 'critico'
+        : med.estoque_atual <= med.estoque_minimo
+            ? 'baixo'
+            : 'ok';
+
+    return { medNome: med.nome, estoqueAtual: med.estoque_atual, status };
 }
 
 // Conta confirmações de hoje para o medicamento (determina se é 1ª do dia)
