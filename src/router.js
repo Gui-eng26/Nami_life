@@ -6,8 +6,9 @@ import { getConversationState, logAgentInteraction, getRecentDoses,
 import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
 import { handleCadastro } from './agentes/cadastro.js';
-import { handleRelatorios, classificarIntencaoRelatorio } from './agentes/relatorios.js';
+import { handleRelatorios, classificarIntencaoRelatorio, extrairPeriodo } from './agentes/relatorios.js';
 import { handleConfiguracao } from './agentes/configuracao.js';
+import { isCancelamento } from './nlp_helpers.js';
 
 // ============================================================
 // MENSAGEM DE ALERTA DE ESTOQUE PÓS-CONFIRMAÇÃO
@@ -441,10 +442,74 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         }
 
     // 2b. Usuário no meio do fluxo de seleção de período do relatório de adesão
+    // BUG-057: esse estado travava TODA mensagem seguinte (inclusive confirmação de
+    // dose real) como se fosse resposta de período. Ordem de checagem abaixo dá
+    // precedência a dose > cancelamento > período válido > classificador central.
     } else if (currentState === 'aguardando_periodo_adesao') {
-        agentName = 'relatorios';
-        console.log(`📊 Roteando para relatorios (aguardando período de adesão) — ${user.phone}`);
-        response = await handleRelatorios({ user, message, subtipo: 'adesao', state });
+
+        if (detectarConfirmacaoDose(message) && await temDosePendente(user.id)) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            agentName = 'principal';
+            console.log(`💊 Confirmação de dose detectada (aguardando_periodo_adesao), roteando para principal — ${user.phone}`);
+            response = await handlePrincipal({ user, message, image, historicoConversa });
+
+        } else if (isCancelamento(message)) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            agentName = 'relatorios';
+            const firstName = user.name ? user.name.split(' ')[0] : 'você';
+            console.log(`📊 Desistência do período de adesão — ${user.phone}`);
+            response = `Sem problemas, ${firstName}! Se quiser ver sua adesão depois, é só me chamar 🌿`;
+
+        } else if (extrairPeriodo(message)) {
+            agentName = 'relatorios';
+            console.log(`📊 Roteando para relatorios (aguardando período de adesão) — ${user.phone}`);
+            response = await handleRelatorios({ user, message, subtipo: 'adesao', state });
+
+        } else {
+            const { agente: agenteSelecionado, subtipoRelatorio } = await classificarIntencaoComContexto({
+                message, currentState, historicoConversa
+            });
+
+            if (agenteSelecionado === 'relatorios' && subtipoRelatorio === 'adesao') {
+                agentName = 'relatorios';
+                console.log(`📊 [CLASSIFICADOR] Ainda sobre adesão, sem período reconhecível — ${user.phone}`);
+                response = await handleRelatorios({ user, message, subtipo: 'adesao', state });
+            } else {
+                await saveConversationState(user.id, { state: 'idle', context: {} });
+                agentName = agenteSelecionado;
+                const idleState = { state: 'idle', context: {} };
+
+                if (agenteSelecionado === 'cadastro') {
+                    console.log(`💊 [CLASSIFICADOR] Roteando para cadastro (saiu de aguardando_periodo_adesao) — ${user.phone}`);
+                    response = await handleCadastro({
+                        user, message, state: idleState, historicoConversa,
+                        context: { etapa: 'cad_nome' }
+                    });
+                } else if (agenteSelecionado === 'relatorios') {
+                    console.log(`📊 [CLASSIFICADOR] Roteando para relatorios (${subtipoRelatorio}, saiu de aguardando_periodo_adesao) — ${user.phone}`);
+                    response = await handleRelatorios({ user, message, subtipo: subtipoRelatorio, state: idleState });
+                    if (!response) {
+                        agentName = 'principal';
+                        response = await handlePrincipal({ user, message, image, historicoConversa });
+                    }
+                } else if (agenteSelecionado === 'configuracao') {
+                    console.log(`⚙️ [CLASSIFICADOR] Roteando para configuracao (saiu de aguardando_periodo_adesao) — ${user.phone}`);
+                    response = await handleConfiguracao({
+                        user, message, state: idleState, historicoConversa,
+                        context: { etapa: 'identif_intencao' }
+                    });
+                } else if (agenteSelecionado === 'nao_suportado') {
+                    agentName = 'principal';
+                    console.log(`🚧 [CLASSIFICADOR] Intenção não suportada (saiu de aguardando_periodo_adesao) — ${user.phone}`);
+                    await registrarIntencaoNaoSuportada(user.id, message);
+                    response = await handlePrincipal({ user, message, image, historicoConversa, intencaoNaoSuportada: true });
+                } else {
+                    agentName = 'principal';
+                    console.log(`🤖 [CLASSIFICADOR] Roteando para principal (saiu de aguardando_periodo_adesao) — ${user.phone}`);
+                    response = await handlePrincipal({ user, message, image, historicoConversa });
+                }
+            }
+        }
 
     // 3. Usuário no meio de um fluxo de configuração
     } else if (currentState === 'configurando') {

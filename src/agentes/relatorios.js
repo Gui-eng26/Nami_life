@@ -257,7 +257,7 @@ async function relatorioProximoRemedio(user) {
 // R-005: ADESÃO SOB DEMANDA — seleção de período em duas etapas
 // ============================================================
 
-function extrairPeriodo(message) {
+export function extrairPeriodo(message) {
     for (const periodo of PERIODOS_VALIDOS) {
         if (new RegExp(`\\b${periodo}\\b`).test(message)) return periodo;
     }
