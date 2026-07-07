@@ -6,3 +6,21 @@
 export function isCancelamento(message) {
     return /\b(não|nao|cancela|cancelar|desiste|desistir|para|esquece|esquece isso)\b/.test(message.toLowerCase());
 }
+
+function normalizar(str) {
+    return str
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '');
+}
+
+export function encontrarMedicamento(texto, medications) {
+    if (!texto) return null;
+    const t = normalizar(texto);
+    return medications.find(m => normalizar(m.nome) === t)
+        || medications.find(m =>
+            t.includes(normalizar(m.nome)) ||
+            normalizar(m.nome).includes(t)
+        )
+        || null;
+}

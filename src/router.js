@@ -6,7 +6,7 @@ import { getConversationState, logAgentInteraction, getRecentDoses,
 import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
 import { handleCadastro } from './agentes/cadastro.js';
-import { handleRelatorios, classificarIntencaoRelatorio, extrairPeriodo } from './agentes/relatorios.js';
+import { handleRelatorios, classificarIntencaoRelatorio, extrairPeriodo, reconheceEscolhaTratamento } from './agentes/relatorios.js';
 import { handleConfiguracao } from './agentes/configuracao.js';
 import { isCancelamento } from './nlp_helpers.js';
 
@@ -506,6 +506,74 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                 } else {
                     agentName = 'principal';
                     console.log(`🤖 [CLASSIFICADOR] Roteando para principal (saiu de aguardando_periodo_adesao) — ${user.phone}`);
+                    response = await handlePrincipal({ user, message, image, historicoConversa });
+                }
+            }
+        }
+
+    // 2c. Usuário no meio da escolha de qual tratamento ver o progresso (2+ ativos, BUG-056)
+    // Mesma precedência do BUG-057: dose > cancelamento > resposta reconhecida > classificador central.
+    } else if (currentState === 'aguardando_escolha_tratamento') {
+
+        if (detectarConfirmacaoDose(message) && await temDosePendente(user.id)) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            agentName = 'principal';
+            console.log(`💊 Confirmação de dose detectada (aguardando_escolha_tratamento), roteando para principal — ${user.phone}`);
+            response = await handlePrincipal({ user, message, image, historicoConversa });
+
+        } else if (isCancelamento(message)) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            agentName = 'relatorios';
+            const firstName = user.name ? user.name.split(' ')[0] : 'você';
+            console.log(`📊 Desistência da escolha de tratamento — ${user.phone}`);
+            response = `Sem problemas, ${firstName}! Se quiser ver de novo, é só me chamar 🌿`;
+
+        } else if (await reconheceEscolhaTratamento(user.id, message)) {
+            agentName = 'relatorios';
+            console.log(`📊 Roteando para relatorios (escolha de tratamento reconhecida) — ${user.phone}`);
+            response = await handleRelatorios({ user, message, subtipo: 'progresso_tratamento', state });
+
+        } else {
+            const { agente: agenteSelecionado, subtipoRelatorio } = await classificarIntencaoComContexto({
+                message, currentState, historicoConversa
+            });
+
+            if (agenteSelecionado === 'relatorios' && subtipoRelatorio === 'progresso_tratamento') {
+                agentName = 'relatorios';
+                console.log(`📊 [CLASSIFICADOR] Ainda sobre progresso, sem nome reconhecível — ${user.phone}`);
+                response = await handleRelatorios({ user, message, subtipo: 'progresso_tratamento', state });
+            } else {
+                await saveConversationState(user.id, { state: 'idle', context: {} });
+                agentName = agenteSelecionado;
+                const idleState = { state: 'idle', context: {} };
+
+                if (agenteSelecionado === 'cadastro') {
+                    console.log(`💊 [CLASSIFICADOR] Roteando para cadastro (saiu de aguardando_escolha_tratamento) — ${user.phone}`);
+                    response = await handleCadastro({
+                        user, message, state: idleState, historicoConversa,
+                        context: { etapa: 'cad_nome' }
+                    });
+                } else if (agenteSelecionado === 'relatorios') {
+                    console.log(`📊 [CLASSIFICADOR] Roteando para relatorios (${subtipoRelatorio}, saiu de aguardando_escolha_tratamento) — ${user.phone}`);
+                    response = await handleRelatorios({ user, message, subtipo: subtipoRelatorio, state: idleState });
+                    if (!response) {
+                        agentName = 'principal';
+                        response = await handlePrincipal({ user, message, image, historicoConversa });
+                    }
+                } else if (agenteSelecionado === 'configuracao') {
+                    console.log(`⚙️ [CLASSIFICADOR] Roteando para configuracao (saiu de aguardando_escolha_tratamento) — ${user.phone}`);
+                    response = await handleConfiguracao({
+                        user, message, state: idleState, historicoConversa,
+                        context: { etapa: 'identif_intencao' }
+                    });
+                } else if (agenteSelecionado === 'nao_suportado') {
+                    agentName = 'principal';
+                    console.log(`🚧 [CLASSIFICADOR] Intenção não suportada (saiu de aguardando_escolha_tratamento) — ${user.phone}`);
+                    await registrarIntencaoNaoSuportada(user.id, message);
+                    response = await handlePrincipal({ user, message, image, historicoConversa, intencaoNaoSuportada: true });
+                } else {
+                    agentName = 'principal';
+                    console.log(`🤖 [CLASSIFICADOR] Roteando para principal (saiu de aguardando_escolha_tratamento) — ${user.phone}`);
                     response = await handlePrincipal({ user, message, image, historicoConversa });
                 }
             }

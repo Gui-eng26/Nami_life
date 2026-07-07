@@ -11,7 +11,7 @@ import {
     registrarIntencaoNaoSuportada
 } from '../database.js';
 import { sendTextMessage } from '../whatsapp.js';
-import { isCancelamento } from '../nlp_helpers.js';
+import { isCancelamento, encontrarMedicamento } from '../nlp_helpers.js';
 import {
     escolherFaixa,
     montarMensagemSemanal,
@@ -24,9 +24,13 @@ import {
     escolherFaseProgresso,
     montarMensagemProgresso,
     montarFallbackContinuo,
+    montarResumoCompacto,
     montarPerguntaPeriodo,
     montarRecusaPeriodo
 } from '../templates/adesaoTemplates.js';
+
+// "Todos"/"tudo" etc — pedido genérico de progresso quando há 2+ tratamentos (BUG-056)
+const PEDIDO_TODOS = /\b(todos?|tudo|geral|completo)\b/i;
 
 // Considera fechamento mensal quando o último fechamento tem 28+ dias (ou nunca fechou).
 const DIAS_FECHAMENTO_MENSAL = 28;
@@ -131,7 +135,7 @@ export async function handleRelatorios({ user, message, subtipo, state }) {
         case 'adesao':
             return await relatorioAdesao({ user, message, state });
         case 'progresso_tratamento':
-            return await relatorioProgressoTratamento(user);
+            return await relatorioProgressoTratamento({ user, message, state });
         default:
             return null; // não reconheceu — router cai no agente_principal
     }
@@ -330,37 +334,68 @@ async function montarRespostaAdesaoDireta(user, dados, periodo) {
 // R-006: PROGRESSO DO TRATAMENTO
 // ============================================================
 
-async function relatorioProgressoTratamento(user) {
+function montarBlocoIndividual(firstName, p) {
+    const fase = escolherFaseProgresso(p.percentualDecorrido);
+    const diasCobertosPeloEstoque = Math.floor(p.estoqueAtual / p.dosesPorDia);
+    const suficiente = diasCobertosPeloEstoque >= p.diasRestantes;
+    const blocoEstoque = montarBlocoEstoque({
+        suficiente,
+        estoque: p.estoqueAtual,
+        diasRestantes: p.diasRestantes
+    });
+
+    return montarMensagemProgresso({
+        nome: firstName,
+        medicamento: p.nome,
+        diasDecorridos: p.diasDecorridos,
+        tratamentoDias: p.tratamentoDias,
+        diasRestantes: p.diasRestantes,
+        dosesRestantes: p.dosesRestantes,
+        blocoEstoque,
+        fase
+    });
+}
+
+// Usado pelo router.js para decidir, em 'aguardando_escolha_tratamento', se a mensagem
+// já resolve a escolha (nome reconhecido ou pedido genérico) sem precisar do classificador LLM.
+export async function reconheceEscolhaTratamento(userId, message) {
+    if (PEDIDO_TODOS.test(message || '')) return true;
+    const progressos = await calcularProgressoTratamento(userId);
+    if (progressos.length < 2) return false;
+    const medicationsElegiveis = progressos.map(p => ({ id: p.medicationId, nome: p.nome }));
+    return !!encontrarMedicamento(message, medicationsElegiveis);
+}
+
+async function relatorioProgressoTratamento({ user, message }) {
     const firstName = user.name?.split(' ')[0] || 'você';
     const progressos = await calcularProgressoTratamento(user.id);
 
     if (progressos.length === 0) {
+        await saveConversationState(user.id, { state: 'idle', context: {} });
         return montarFallbackContinuo(firstName);
     }
 
-    const blocos = progressos.map(p => {
-        const fase = escolherFaseProgresso(p.percentualDecorrido);
-        const diasCobertosPeloEstoque = Math.floor(p.estoqueAtual / p.dosesPorDia);
-        const suficiente = diasCobertosPeloEstoque >= p.diasRestantes;
-        const blocoEstoque = montarBlocoEstoque({
-            suficiente,
-            estoque: p.estoqueAtual,
-            diasRestantes: p.diasRestantes
-        });
+    if (progressos.length === 1) {
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        return montarBlocoIndividual(firstName, progressos[0]);
+    }
 
-        return montarMensagemProgresso({
-            nome: firstName,
-            medicamento: p.nome,
-            diasDecorridos: p.diasDecorridos,
-            tratamentoDias: p.tratamentoDias,
-            diasRestantes: p.diasRestantes,
-            dosesRestantes: p.dosesRestantes,
-            blocoEstoque,
-            fase
-        });
+    // 2+ tratamentos — tenta casar nome mencionado
+    const medicationsElegiveis = progressos.map(p => ({ id: p.medicationId, nome: p.nome }));
+    const mencionado = encontrarMedicamento(message, medicationsElegiveis);
+
+    if (mencionado) {
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        const p = progressos.find(x => x.medicationId === mencionado.id);
+        return montarBlocoIndividual(firstName, p);
+    }
+
+    // Pedido genérico ("todos", "tudo", "meu tratamento" sem nome) — resumo compacto
+    await saveConversationState(user.id, {
+        state: 'aguardando_escolha_tratamento',
+        context: { medicationIds: progressos.map(p => p.medicationId) }
     });
-
-    return blocos.join('\n\n');
+    return montarResumoCompacto(firstName, progressos);
 }
 
 // ============================================================

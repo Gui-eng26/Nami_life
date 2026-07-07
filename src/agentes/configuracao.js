@@ -13,7 +13,7 @@ import {
     formatarHistoricoConversa,
     registrarIntencaoNaoSuportada
 } from '../database.js';
-import { isCancelamento } from '../nlp_helpers.js';
+import { isCancelamento, encontrarMedicamento } from '../nlp_helpers.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -101,24 +101,6 @@ REGRAS DE DECISÃO:
 // ============================================================
 // HELPERS DETERMINÍSTICOS
 // ============================================================
-
-function normalizar(str) {
-    return str
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[̀-ͯ]/g, '');
-}
-
-function encontrarMedicamento(texto, medications) {
-    if (!texto) return null;
-    const t = normalizar(texto);
-    return medications.find(m => normalizar(m.nome) === t)
-        || medications.find(m =>
-            t.includes(normalizar(m.nome)) ||
-            normalizar(m.nome).includes(t)
-        )
-        || null;
-}
 
 function extrairHorarioOrigem(message) {
     const matches = [...message.matchAll(/(\d{1,2})[:h](\d{2})?/g)];

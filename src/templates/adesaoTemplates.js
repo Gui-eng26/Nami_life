@@ -213,6 +213,14 @@ export function montarFallbackContinuo(nome) {
     return substituir(FALLBACK_CONTINUO, { Nome: nome });
 }
 
+export function montarResumoCompacto(nome, progressos) {
+    const linhas = progressos.map(p =>
+        `💊 *${p.nome}* — dia ${p.diasDecorridos} de ${p.tratamentoDias}, ${p.diasRestantes} dias restantes`
+    ).join('\n');
+
+    return `Olá, ${nome}! Aqui está o progresso dos seus tratamentos:\n\n${linhas}\n\nQuer detalhes de algum específico? É só me dizer o nome!`;
+}
+
 export function montarPerguntaPeriodo(nome) {
     return substituir(PERGUNTA_PERIODO, { Nome: nome });
 }
