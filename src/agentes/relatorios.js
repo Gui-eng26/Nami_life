@@ -8,7 +8,8 @@ import {
     getAdesaoEstado,
     upsertAdesaoEstado,
     saveConversationState,
-    registrarIntencaoNaoSuportada
+    registrarIntencaoNaoSuportada,
+    precisaSaudacao
 } from '../database.js';
 import { sendTextMessage } from '../whatsapp.js';
 import { isCancelamento, encontrarMedicamento } from '../nlp_helpers.js';
@@ -34,6 +35,13 @@ const DIAS_FECHAMENTO_MENSAL = 28;
 const PERIODOS_VALIDOS = [7, 15, 30];
 // '100' > '80_99' > '50_79' > 'abaixo_50' — usado para marco (melhor faixa já atingida)
 const RANKING_FAIXA = { abaixo_50: 0, '50_79': 1, '80_99': 2, '100': 3 };
+
+// Saudação condicional dos templates "sob demanda" (BRIEFING_APRESENTACAO_V2.md, seção 1) —
+// evita repetir "Olá, [Nome]!" quando o usuário manda várias perguntas seguidas em pouco tempo.
+async function comSaudacao(userId, nome, corpo) {
+    const saudacao = await precisaSaudacao(userId) ? `Olá, ${nome}! ` : '';
+    return saudacao + corpo;
+}
 
 // ============================================================
 // CLASSIFICADOR DE INTENÇÃO DE RELATÓRIO
@@ -286,9 +294,9 @@ async function relatorioAdesao({ user, message, state }) {
 
         if (mencionaPeriodoInvalido(message)) {
             await registrarIntencaoNaoSuportada(user.id, message);
-            return montarRecusaPeriodo(firstName);
+            return comSaudacao(user.id, firstName, montarRecusaPeriodo());
         }
-        return montarPerguntaPeriodo(firstName);
+        return comSaudacao(user.id, firstName, montarPerguntaPeriodo());
     }
 
     await saveConversationState(user.id, { state: 'idle', context: {} });
@@ -298,7 +306,7 @@ async function relatorioAdesao({ user, message, state }) {
         return `Ainda não tenho dados suficientes para calcular sua adesão, ${firstName}. Continue confirmando suas doses e em breve terei um histórico para te mostrar! 💊`;
     }
 
-    return await montarRespostaAdesaoDireta(user, dados, periodo);
+    return comSaudacao(user.id, firstName, await montarRespostaAdesaoDireta(user, dados, periodo));
 }
 
 // "Sob demanda: versão direta" (4.7) — números atuais + tendência desde o último
@@ -331,18 +339,18 @@ async function montarRespostaAdesaoDireta(user, dados, periodo) {
 // R-006: PROGRESSO DO TRATAMENTO
 // ============================================================
 
-function montarBlocoIndividual(firstName, p) {
+function montarBlocoIndividual(p) {
     const fase = escolherFaseProgresso(p.percentualDecorrido);
     const diasCobertosPeloEstoque = Math.floor(p.estoqueAtual / p.dosesPorDia);
     const suficiente = diasCobertosPeloEstoque >= p.diasRestantes;
     const blocoEstoque = montarBlocoEstoque({
         suficiente,
         estoque: p.estoqueAtual,
-        diasRestantes: p.diasRestantes
+        diasRestantes: p.diasRestantes,
+        diasCobertos: diasCobertosPeloEstoque
     });
 
     return montarMensagemProgresso({
-        nome: firstName,
         medicamento: p.nome,
         diasDecorridos: p.diasDecorridos,
         tratamentoDias: p.tratamentoDias,
@@ -359,12 +367,12 @@ async function relatorioProgressoTratamento({ user, message }) {
 
     if (progressos.length === 0) {
         await saveConversationState(user.id, { state: 'idle', context: {} });
-        return montarFallbackContinuo(firstName);
+        return comSaudacao(user.id, firstName, montarFallbackContinuo());
     }
 
     if (progressos.length === 1) {
         await saveConversationState(user.id, { state: 'idle', context: {} });
-        return montarBlocoIndividual(firstName, progressos[0]);
+        return comSaudacao(user.id, firstName, montarBlocoIndividual(progressos[0]));
     }
 
     // 2+ tratamentos — tenta casar nome mencionado
@@ -374,7 +382,7 @@ async function relatorioProgressoTratamento({ user, message }) {
     if (mencionado) {
         await saveConversationState(user.id, { state: 'idle', context: {} });
         const p = progressos.find(x => x.medicationId === mencionado.id);
-        return montarBlocoIndividual(firstName, p);
+        return comSaudacao(user.id, firstName, montarBlocoIndividual(p));
     }
 
     // Pedido genérico ("todos", "tudo", "meu tratamento" sem nome) — resumo compacto
@@ -382,7 +390,7 @@ async function relatorioProgressoTratamento({ user, message }) {
         state: 'aguardando_escolha_tratamento',
         context: { medicationIds: progressos.map(p => p.medicationId) }
     });
-    return montarResumoCompacto(firstName, progressos);
+    return comSaudacao(user.id, firstName, montarResumoCompacto(progressos));
 }
 
 // ============================================================

@@ -1419,6 +1419,35 @@ export function formatarHistoricoConversa(historicoConversa) {
         .join('\n\n');
 }
 
+// ============================================================
+// SAUDAÇÃO CONDICIONAL — para templates "sob demanda" de adesão/progresso
+// (BRIEFING_APRESENTACAO_V2.md, seção 1)
+// ============================================================
+
+const MINUTOS_PARA_NOVA_SAUDACAO = 10;
+
+export async function getUltimaInteracao(userId) {
+    const { data, error } = await supabase
+        .from('agent_logs')
+        .select('created_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+    if (error) {
+        console.error('Erro ao buscar última interação:', error.message);
+        return null;
+    }
+    return data?.[0]?.created_at || null;
+}
+
+export async function precisaSaudacao(userId) {
+    const ultimaInteracao = await getUltimaInteracao(userId);
+    if (!ultimaInteracao) return true;
+    const minutosDesdeUltima = (Date.now() - new Date(ultimaInteracao).getTime()) / 60000;
+    return minutosDesdeUltima > MINUTOS_PARA_NOVA_SAUDACAO;
+}
+
 export async function registrarIntencaoNaoSuportada(userId, mensagem) {
     const { error } = await supabase
         .from('intencoes_nao_suportadas')
