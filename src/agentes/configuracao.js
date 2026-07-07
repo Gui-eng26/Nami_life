@@ -13,6 +13,7 @@ import {
     formatarHistoricoConversa,
     registrarIntencaoNaoSuportada
 } from '../database.js';
+import { isCancelamento } from '../nlp_helpers.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -243,10 +244,6 @@ function isConfirmacao(message) {
     const msg = message.toLowerCase().trim();
     const termos = ['sim', 's', 'ok', 'pode', 'claro', 'confirmar', 'confirmo', 'vai', 'vamos', 'isso'];
     return termos.some(t => msg === t || msg.startsWith(t + ' '));
-}
-
-function isCancelamento(message) {
-    return /\b(não|nao|cancela|cancelar|desiste|desistir|para|esquece|esquece isso)\b/.test(message.toLowerCase());
 }
 
 function formatarHorarios(schedules) {

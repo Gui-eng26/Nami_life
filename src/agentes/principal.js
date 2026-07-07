@@ -202,17 +202,7 @@ Medicamentos cadastrados: ${medications.length === 0
                 ? `próxima dose: ${proximaDose.horario} (${proximaDose.quando})`
                 : 'sem próxima dose calculada';
 
-            let tratamentoInfo = `tipo: ${m.tipo_tratamento || 'contínuo'}`;
-            if (m.tratamento_dias) {
-                const inicio = new Date(m.created_at);
-                const agora = new Date();
-                const diasDecorridos = Math.floor((agora - inicio) / (1000 * 60 * 60 * 24));
-                const diasRestantes = Math.max(0, m.tratamento_dias - diasDecorridos);
-                const dosesPerDia = schedulesAtivos.length || 1;
-                const dosesTotais = m.tratamento_dias * dosesPerDia;
-                const dosesRestantesEstimadas = diasRestantes * dosesPerDia;
-                tratamentoInfo += `, duração total: ${m.tratamento_dias} dias, doses totais do tratamento: ${dosesTotais}, dias decorridos desde o início: ${diasDecorridos}, dias restantes: ${diasRestantes}, doses restantes estimadas: ${dosesRestantesEstimadas}`;
-            }
+            const tratamentoInfo = `tipo: ${m.tipo_tratamento || 'contínuo'}`;
 
             return `[id:${m.id}] ${m.nome} (${m.dosagem}, estoque: ${m.estoque_atual}, horários: ${horarios}, ${proximaDoseStr}, ${tratamentoInfo})`;
         }).join(' | ')

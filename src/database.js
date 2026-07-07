@@ -87,6 +87,16 @@ export async function saveConversationState(userId, { state, context }) {
 // MEDICAMENTOS
 // ============================================================
 
+// tratamento_fim é sempre recalculada a partir de agora — na criação (~= created_at)
+// e na reativação (reinicia o relógio do tratamento). Fonte da verdade para
+// calcularProgressoTratamento; null para tratamento contínuo ou sem tratamento_dias.
+function calcularTratamentoFim(tipo_tratamento, tratamento_dias) {
+    if (!tratamento_dias || tipo_tratamento === 'continuo' || !tipo_tratamento) return null;
+    const fim = new Date();
+    fim.setDate(fim.getDate() + tratamento_dias);
+    return fim.toISOString().split('T')[0];
+}
+
 export async function saveMedication({
     userId, nome, dosagem, instrucoes, estoque,
     forma, tipo_tratamento, tratamento_dias
@@ -119,7 +129,8 @@ export async function saveMedication({
             estoque_minimo: 7,
             forma_farmaceutica: forma || 'comprimido',
             tipo_tratamento: tipo_tratamento || 'continuo',
-            tratamento_dias: tratamento_dias || null
+            tratamento_dias: tratamento_dias || null,
+            tratamento_fim: calcularTratamentoFim(tipo_tratamento, tratamento_dias)
         })
         .select()
         .single();
@@ -820,6 +831,7 @@ export async function reativarComAtualizacao({ medicationId, estoque, tipo_trata
             .update({
                 tipo_tratamento,
                 tratamento_dias: tratamento_dias || null,
+                tratamento_fim: calcularTratamentoFim(tipo_tratamento, tratamento_dias),
                 ativo: true
             })
             .eq('id', medicationId);
@@ -1022,128 +1034,180 @@ function _minutesDiff(horaAtual, horarioAlvo) {
     return (hT * 60 + mT) - (hA * 60 + mA);
 }
 
-// Adesão em um período (em dias) para um usuário
-export async function getAdesaoPeriodo(userId, dias = 7) {
+// Limiar de diagnóstico por turno — sinaliza um turno quando concentra >= 60% das
+// ocorrências de um status (nao_tomado/nao_informado), com no mínimo 3 casos.
+// Ajustável após dados reais de uso (ver briefing seção 6).
+const TURNO_LIMIAR_PERCENTUAL = 0.6;
+const TURNO_LIMIAR_MINIMO_CASOS = 3;
+
+// Deriva turno (manhã/tarde/noite) a partir de horario_agendado (MH-032).
+// Logs pré-MH-032 têm horario_agendado nulo — não entram no diagnóstico de turno.
+function derivarTurno(horarioAgendado) {
+    if (!horarioAgendado) return null;
+    const hora = parseInt(String(horarioAgendado).substring(0, 2), 10);
+    if (hora >= 5 && hora <= 11) return 'manha';
+    if (hora >= 12 && hora <= 17) return 'tarde';
+    return 'noite'; // 18h-04h
+}
+
+// Adesão unificada — substitui getAdesaoPeriodo e getAdesaoPorMedicamento.
+// Filtra por scheduled_at (nunca taken_at): atribui confirmações retroativas ao
+// dia devido e exclui automaticamente doses revertidas (confirmed:false no reverso).
+// diagnosticoPorTurno só é calculado quando dias >= 28 (fechamento mensal).
+export async function calcularAdesao(userId, dias) {
     const agora = new Date();
     const desde = new Date();
     desde.setDate(desde.getDate() - dias);
 
     const medications = await getUserMedications(userId);
+    const medicationIds = medications.map(m => m.id);
+    const medNomeMap = Object.fromEntries(medications.map(m => [m.id, m.nome]));
 
-    let totalEsperado = 0;
-    let totalConfirmado = 0;
-    let piorMedicamento = null;
-    let piorPercentual = 101; // começa acima de 100 para capturar o menor
+    const vazio = {
+        esperado: 0, confirmado: 0, percentual: 0,
+        porStatus: { confirmado: 0, nao_informado: 0, nao_tomado: 0, sem_estoque: 0 },
+        porMedicamento: {},
+        diagnosticoPorTurno: null
+    };
+    if (medicationIds.length === 0) return vazio;
 
-    for (const med of medications) {
-        const schedulesAtivos = (med.schedules || []).filter(s => s.ativo).length;
-        if (schedulesAtivos === 0) continue;
+    const { data: logs, error } = await supabase
+        .from('dose_logs')
+        .select('id, medication_id, status, horario_agendado')
+        .in('medication_id', medicationIds)
+        .gte('scheduled_at', desde.toISOString())
+        .lte('scheduled_at', agora.toISOString());
 
-        const medCriadoEm = new Date(med.created_at);
-        const inicioEfetivo = medCriadoEm > desde ? medCriadoEm : desde;
-        const diasEfetivos = Math.max(1, Math.ceil((agora - inicioEfetivo) / (1000 * 60 * 60 * 24)));
-        const esperado = schedulesAtivos * diasEfetivos;
-        totalEsperado += esperado;
+    if (error) throw new Error(`Erro ao calcular adesão: ${error.message}`);
 
-        const { data: confirmadas } = await supabase
-            .from('dose_logs')
-            .select('id')
-            .eq('medication_id', med.id)
-            .eq('confirmed', true)
-            .gte('taken_at', desde.toISOString());
+    const todosLogs = logs || [];
+    const esperado = todosLogs.length;
+    if (esperado === 0) return vazio;
 
-        const confirmado = (confirmadas || []).length;
-        totalConfirmado += confirmado;
+    const porStatus = { confirmado: 0, nao_informado: 0, nao_tomado: 0, sem_estoque: 0 };
+    const porMedicamento = {};
 
-        const pct = Math.round((confirmado / esperado) * 100);
-        if (pct < piorPercentual) {
-            piorPercentual = pct;
-            piorMedicamento = med.nome;
+    for (const log of todosLogs) {
+        // Dose recém-criada, ainda aguardando follow-up — conta como "sem resposta" por ora.
+        const statusEfetivo = log.status === 'pendente' ? 'nao_informado' : log.status;
+        if (porStatus[statusEfetivo] !== undefined) porStatus[statusEfetivo]++;
+
+        if (!porMedicamento[log.medication_id]) {
+            porMedicamento[log.medication_id] = {
+                nome: medNomeMap[log.medication_id] || 'desconhecido',
+                esperado: 0,
+                confirmado: 0,
+                percentual: 0,
+                porStatus: { confirmado: 0, nao_informado: 0, nao_tomado: 0, sem_estoque: 0 }
+            };
+        }
+        const bucket = porMedicamento[log.medication_id];
+        bucket.esperado++;
+        if (statusEfetivo === 'confirmado') bucket.confirmado++;
+        if (bucket.porStatus[statusEfetivo] !== undefined) bucket.porStatus[statusEfetivo]++;
+    }
+
+    for (const bucket of Object.values(porMedicamento)) {
+        bucket.percentual = bucket.esperado > 0 ? Math.round((bucket.confirmado / bucket.esperado) * 100) : 0;
+    }
+
+    const confirmado = porStatus.confirmado;
+    const percentual = Math.round((confirmado / esperado) * 100);
+
+    let diagnosticoPorTurno = null;
+    if (dias >= 28) {
+        diagnosticoPorTurno = {};
+        for (const statusAlvo of ['nao_tomado', 'nao_informado']) {
+            const porTurno = { manha: 0, tarde: 0, noite: 0 };
+            let totalStatus = 0;
+
+            for (const log of todosLogs) {
+                const statusEfetivo = log.status === 'pendente' ? 'nao_informado' : log.status;
+                if (statusEfetivo !== statusAlvo) continue;
+                const turno = derivarTurno(log.horario_agendado);
+                if (!turno) continue;
+                porTurno[turno]++;
+                totalStatus++;
+            }
+
+            diagnosticoPorTurno[statusAlvo] = null;
+            if (totalStatus > 0) {
+                for (const [turno, count] of Object.entries(porTurno)) {
+                    if (count >= TURNO_LIMIAR_MINIMO_CASOS && (count / totalStatus) >= TURNO_LIMIAR_PERCENTUAL) {
+                        diagnosticoPorTurno[statusAlvo] = turno;
+                        break;
+                    }
+                }
+            }
         }
     }
 
-    const percentual = totalEsperado > 0
-        ? Math.round((totalConfirmado / totalEsperado) * 100)
-        : 0;
-
-    return { totalEsperado, totalConfirmado, percentual, piorMedicamento };
+    return { esperado, confirmado, percentual, porStatus, porMedicamento, diagnosticoPorTurno };
 }
 
-// Adesão detalhada por medicamento — usada no resumo semanal
-// Retorna breakdown individual + totais gerais
-export async function getAdesaoPorMedicamento(userId, dias = 7) {
-    const agora = new Date();
-    const desde = new Date();
-    desde.setDate(desde.getDate() - dias);
-
+// Progresso do tratamento — só medicamentos ativos, não-contínuos, com tratamento_dias.
+// tratamento_fim é sempre a fonte da verdade (populada em saveMedication/reativarComAtualizacao).
+export async function calcularProgressoTratamento(userId) {
     const medications = await getUserMedications(userId);
-    const estoque = await (async () => {
-        const { data } = await supabase
-            .from('medications')
-            .select('id, estoque_atual, estoque_minimo')
-            .eq('user_id', userId)
-            .eq('ativo', true);
-        return data || [];
-    })();
-    const estoqueMap = Object.fromEntries(estoque.map(m => [m.id, m]));
+    const hoje = new Date();
 
-    let totalEsperado = 0;
-    let totalConfirmado = 0;
-    const porMedicamento = [];
+    const elegiveis = medications.filter(m =>
+        m.tipo_tratamento && m.tipo_tratamento !== 'continuo' && m.tratamento_dias && m.tratamento_fim
+    );
 
-    for (const med of medications) {
-        const schedulesAtivos = (med.schedules || []).filter(s => s.ativo).length;
-        if (schedulesAtivos === 0) continue;
+    return elegiveis.map(med => {
+        const tratamentoFim = new Date(med.tratamento_fim);
+        const diasRestantes = Math.max(0, Math.ceil((tratamentoFim - hoje) / (1000 * 60 * 60 * 24)));
+        const diasDecorridos = Math.max(0, med.tratamento_dias - diasRestantes);
+        const dosesPorDia = (med.schedules || []).filter(s => s.ativo).length || 1;
+        const dosesRestantes = diasRestantes * dosesPorDia;
+        const percentualDecorrido = Math.round((diasDecorridos / med.tratamento_dias) * 100);
 
-        const medCriadoEm = new Date(med.created_at);
-        const inicioEfetivo = medCriadoEm > desde ? medCriadoEm : desde;
-        const diasEfetivos = Math.max(1, Math.ceil((agora - inicioEfetivo) / (1000 * 60 * 60 * 24)));
-        const esperado = schedulesAtivos * diasEfetivos;
-        totalEsperado += esperado;
-
-        const { data: confirmadas } = await supabase
-            .from('dose_logs')
-            .select('id')
-            .eq('medication_id', med.id)
-            .eq('confirmed', true)
-            .gte('taken_at', desde.toISOString());
-
-        const confirmado = (confirmadas || []).length;
-        const naoRegistrado = esperado - confirmado;
-        totalConfirmado += confirmado;
-
-        const percentual = Math.round((confirmado / esperado) * 100);
-        const estoqueInfo = estoqueMap[med.id];
-
-        porMedicamento.push({
+        return {
+            medicationId: med.id,
             nome: med.nome,
-            doses_esperadas: esperado,
-            doses_tomadas: confirmado,
-            doses_nao_registradas: naoRegistrado,
-            percentual,
-            estoque_atual: estoqueInfo?.estoque_atual ?? null,
-            estoque_minimo: estoqueInfo?.estoque_minimo ?? 7,
-            estoque_status: estoqueInfo
-                ? (estoqueInfo.estoque_atual <= 0
-                    ? 'critico'
-                    : estoqueInfo.estoque_atual <= estoqueInfo.estoque_minimo
-                        ? 'baixo'
-                        : 'ok')
-                : 'desconhecido'
-        });
-    }
+            tratamentoDias: med.tratamento_dias,
+            diasDecorridos,
+            diasRestantes,
+            dosesRestantes,
+            percentualDecorrido,
+            estoqueAtual: med.estoque_atual,
+            dosesPorDia
+        };
+    });
+}
 
-    const percentualGeral = totalEsperado > 0
-        ? Math.round((totalConfirmado / totalEsperado) * 100)
-        : 0;
+// ============================================================
+// ADESAO_ESTADO — jornada de faixa/semana e cadência semanal/mensal
+// ============================================================
 
-    return {
-        porMedicamento,
-        totalEsperado,
-        totalConfirmado,
-        totalNaoRegistrado: totalEsperado - totalConfirmado,
-        percentualGeral
+export async function getAdesaoEstado(userId) {
+    const { data } = await supabase
+        .from('adesao_estado')
+        .select('*')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+    return data || {
+        user_id: userId,
+        ultimo_fechamento_mensal_at: null,
+        faixa_atual: null,
+        percentual_ultimo_envio: null,
+        semana_atual_na_faixa: 1,
+        melhor_faixa_atingida: null
     };
+}
+
+export async function upsertAdesaoEstado(userId, patch) {
+    const { error } = await supabase
+        .from('adesao_estado')
+        .upsert({
+            user_id: userId,
+            ...patch,
+            updated_at: new Date().toISOString()
+        }, { onConflict: 'user_id' });
+
+    if (error) throw new Error(`Erro ao atualizar adesao_estado: ${error.message}`);
 }
 
 // Buscar todos os usuários onboarded (para resumo semanal)
@@ -1190,9 +1254,9 @@ export async function getEstoqueInfoParaAlerta(medicationId) {
     };
 }
 
-// Status de estoque simples (mesmo limiar crítico/baixo/ok usado em relatorioEstoque e
-// getAdesaoPorMedicamento) — usado para o alerta pós-ajuste manual de estoque (MH-042),
-// que não depende de doses/dia como o alerta pós-confirmação de dose.
+// Status de estoque simples (mesmo limiar crítico/baixo/ok usado em relatorioEstoque)
+// — usado para o alerta pós-ajuste manual de estoque (MH-042), que não depende de
+// doses/dia como o alerta pós-confirmação de dose.
 export async function getEstoqueStatusSimples(medicationId) {
     const { data: med } = await supabase
         .from('medications')

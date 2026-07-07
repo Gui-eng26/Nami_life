@@ -1,21 +1,42 @@
-import Anthropic from '@anthropic-ai/sdk';
-import 'dotenv/config';
 import {
     getDosesHoje,
     getMedicamentosAtivos,
     getEstoque,
     getProximosMedicamentos,
-    getAdesaoPeriodo,
-    getAdesaoPorMedicamento,
-    formatarHistoricoConversa
+    calcularAdesao,
+    calcularProgressoTratamento,
+    getAdesaoEstado,
+    upsertAdesaoEstado,
+    saveConversationState,
+    registrarIntencaoNaoSuportada
 } from '../database.js';
 import { sendTextMessage } from '../whatsapp.js';
+import { isCancelamento } from '../nlp_helpers.js';
+import {
+    escolherFaixa,
+    montarMensagemSemanal,
+    montarMensagemMensal,
+    montarBlocoMotivo,
+    montarBlocoTurno,
+    montarBlocoTendencia,
+    montarBlocoMarco,
+    montarBlocoEstoque,
+    escolherFaseProgresso,
+    montarMensagemProgresso,
+    montarFallbackContinuo,
+    montarPerguntaPeriodo,
+    montarRecusaPeriodo
+} from '../templates/adesaoTemplates.js';
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+// Considera fechamento mensal quando o último fechamento tem 28+ dias (ou nunca fechou).
+const DIAS_FECHAMENTO_MENSAL = 28;
+const PERIODOS_VALIDOS = [7, 15, 30];
+// '100' > '80_99' > '50_79' > 'abaixo_50' — usado para marco (melhor faixa já atingida)
+const RANKING_FAIXA = { abaixo_50: 0, '50_79': 1, '80_99': 2, '100': 3 };
 
 // ============================================================
 // CLASSIFICADOR DE INTENÇÃO DE RELATÓRIO
-// Exportado para uso no router.js
+// Exportado para uso no router.js (Camada 1 — fast-path por palavra-chave)
 // ============================================================
 
 export function classificarIntencaoRelatorio(message) {
@@ -71,6 +92,16 @@ export function classificarIntencaoRelatorio(message) {
             'faltei alguma dose',
             'como tá meu histórico',
             'tô me cuidando bem'
+        ],
+        progresso_tratamento: [
+            'como estou no meu tratamento',
+            'como está meu tratamento',
+            'quanto falta pro tratamento acabar',
+            'quantos dias faltam de tratamento',
+            'em que dia do tratamento eu estou',
+            'já estou terminando o tratamento',
+            'quanto tempo ainda vou tomar esse remédio',
+            'meu tratamento já acabou?'
         ]
     };
 
@@ -83,12 +114,12 @@ export function classificarIntencaoRelatorio(message) {
 
 // ============================================================
 // HANDLER PRINCIPAL
+// subtipo é sempre fornecido por quem chama (Camada 1 ou Camada 2 do router.js) —
+// nunca mais recalculado aqui dentro (Camada 3 eliminada, causa raiz do BUG-037).
 // ============================================================
 
-export async function handleRelatorios({ user, message, historicoConversa = [] }) {
-    const intencao = classificarIntencaoRelatorio(message);
-
-    switch (intencao) {
+export async function handleRelatorios({ user, message, subtipo, state }) {
+    switch (subtipo) {
         case 'tomei_hoje':
             return await relatorioTomeiHoje(user);
         case 'meus_remedios':
@@ -98,7 +129,9 @@ export async function handleRelatorios({ user, message, historicoConversa = [] }
         case 'proximo_remedio':
             return await relatorioProximoRemedio(user);
         case 'adesao':
-            return await relatorioAdesao(user, historicoConversa);
+            return await relatorioAdesao({ user, message, state });
+        case 'progresso_tratamento':
+            return await relatorioProgressoTratamento(user);
         default:
             return null; // não reconheceu — router cai no agente_principal
     }
@@ -221,116 +254,190 @@ async function relatorioProximoRemedio(user) {
 }
 
 // ============================================================
-// R-005: ADESÃO (Claude com contexto)
+// R-005: ADESÃO SOB DEMANDA — seleção de período em duas etapas
 // ============================================================
 
-async function relatorioAdesao(user, historicoConversa = []) {
-    const firstName = user.name?.split(' ')[0] || 'você';
-    const dados = await getAdesaoPeriodo(user.id, 7);
+function extrairPeriodo(message) {
+    for (const periodo of PERIODOS_VALIDOS) {
+        if (new RegExp(`\\b${periodo}\\b`).test(message)) return periodo;
+    }
+    return null;
+}
 
-    if (dados.totalEsperado === 0) {
+// Mensagem menciona algum número (fora dos 3 períodos válidos) — pedido de período fora de escopo
+function mencionaPeriodoInvalido(message) {
+    return /\b\d{1,3}\b/.test(message);
+}
+
+async function relatorioAdesao({ user, message, state }) {
+    const firstName = user.name?.split(' ')[0] || 'você';
+    const aguardandoPeriodo = state?.state === 'aguardando_periodo_adesao';
+
+    if (aguardandoPeriodo && isCancelamento(message)) {
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        return `Sem problemas, ${firstName}! Se quiser ver sua adesão depois, é só me chamar 🌿`;
+    }
+
+    const periodo = extrairPeriodo(message);
+
+    if (!periodo) {
+        await saveConversationState(user.id, { state: 'aguardando_periodo_adesao', context: {} });
+
+        if (mencionaPeriodoInvalido(message)) {
+            await registrarIntencaoNaoSuportada(user.id, message);
+            return montarRecusaPeriodo(firstName);
+        }
+        return montarPerguntaPeriodo(firstName);
+    }
+
+    await saveConversationState(user.id, { state: 'idle', context: {} });
+
+    const dados = await calcularAdesao(user.id, periodo);
+    if (dados.esperado === 0) {
         return `Ainda não tenho dados suficientes para calcular sua adesão, ${firstName}. Continue confirmando suas doses e em breve terei um histórico para te mostrar! 💊`;
     }
 
-    const prompt = `Você é a Nami, assistente de saúde calorosa e empática.
+    return await montarRespostaAdesaoDireta(user, dados, periodo);
+}
 
-Responda sobre a adesão ao tratamento do usuário com base nos dados abaixo.
+// "Sob demanda: versão direta" (4.7) — números atuais + tendência desde o último
+// envio automático, sem avançar nem repetir o texto da jornada semanal/mensal.
+// Não atualiza adesao_estado — só os envios automáticos fazem isso.
+async function montarRespostaAdesaoDireta(user, dados, periodo) {
+    const firstName = user.name?.split(' ')[0] || 'você';
+    const adesaoEstado = await getAdesaoEstado(user.id);
 
-CONVERSA RECENTE:
-${formatarHistoricoConversa(historicoConversa)}
+    let msg = `📊 Sua adesão nos últimos ${periodo} dias, ${firstName}:\n\n`;
+    msg += `${dados.percentual}% (${dados.confirmado}/${dados.esperado} doses)\n\n`;
+    msg += `✅ Confirmadas: ${dados.porStatus.confirmado}\n`;
+    msg += `⏳ Sem resposta: ${dados.porStatus.nao_informado}\n`;
+    msg += `❌ Não tomadas: ${dados.porStatus.nao_tomado}\n`;
+    msg += `📦 Sem estoque: ${dados.porStatus.sem_estoque}`;
 
-Nome: ${firstName}
-Período: últimos 7 dias
-Doses esperadas: ${dados.totalEsperado}
-Doses confirmadas: ${dados.totalConfirmado}
-Percentual de adesão: ${dados.percentual}%
-Medicamento com menor adesão: ${dados.piorMedicamento || 'nenhum identificado'}
+    if (adesaoEstado.percentual_ultimo_envio !== null && adesaoEstado.percentual_ultimo_envio !== undefined) {
+        const diff = dados.percentual - adesaoEstado.percentual_ultimo_envio;
+        const tipoTendencia = diff > 5 ? 'subiu' : diff < -5 ? 'caiu' : 'estavel';
+        msg += `\n\n${montarBlocoTendencia(tipoTendencia, {
+            taxaAnterior: adesaoEstado.percentual_ultimo_envio,
+            taxaAtual: dados.percentual
+        })}`;
+    }
 
-Regras:
-- Se adesão >= 80%: celebre e encoraje a manter o ritmo
-- Se adesão entre 50-79%: seja empática, sem julgamento, dê uma dica simples
-- Se adesão < 50%: acolha sem culpa, pergunte se está tudo bem, ofereça ajuda
-- Seja breve (máximo 4 linhas)
-- Responda APENAS com a mensagem para o usuário. Sem JSON. Texto simples.`;
-
-    const response = await anthropic.messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 256,
-        messages: [{ role: 'user', content: prompt }]
-    });
-
-    return response.content[0].text.trim();
+    return msg;
 }
 
 // ============================================================
-// RESUMO SEMANAL PROATIVO (chamado pelo scheduler)
+// R-006: PROGRESSO DO TRATAMENTO
+// ============================================================
+
+async function relatorioProgressoTratamento(user) {
+    const firstName = user.name?.split(' ')[0] || 'você';
+    const progressos = await calcularProgressoTratamento(user.id);
+
+    if (progressos.length === 0) {
+        return montarFallbackContinuo(firstName);
+    }
+
+    const blocos = progressos.map(p => {
+        const fase = escolherFaseProgresso(p.percentualDecorrido);
+        const diasCobertosPeloEstoque = Math.floor(p.estoqueAtual / p.dosesPorDia);
+        const suficiente = diasCobertosPeloEstoque >= p.diasRestantes;
+        const blocoEstoque = montarBlocoEstoque({
+            suficiente,
+            estoque: p.estoqueAtual,
+            diasRestantes: p.diasRestantes
+        });
+
+        return montarMensagemProgresso({
+            nome: firstName,
+            medicamento: p.nome,
+            diasDecorridos: p.diasDecorridos,
+            tratamentoDias: p.tratamentoDias,
+            diasRestantes: p.diasRestantes,
+            dosesRestantes: p.dosesRestantes,
+            blocoEstoque,
+            fase
+        });
+    });
+
+    return blocos.join('\n\n');
+}
+
+// ============================================================
+// RESUMO AUTOMÁTICO — SEMANAL OU FECHAMENTO MENSAL (chamado pelo scheduler)
 // ============================================================
 
 export async function enviarResumoSemanal(user) {
     try {
         const firstName = user.name?.split(' ')[0] || 'você';
-        const adesao = await getAdesaoPorMedicamento(user.id, 7);
+        const adesaoEstado = await getAdesaoEstado(user.id);
 
-        // Sem medicamentos ativos com horários — pula
-        if (adesao.porMedicamento.length === 0) {
-            console.log(`⏭️  Resumo semanal ignorado (sem medicamentos com horário): ${user.phone}`);
+        const isMensal = !adesaoEstado.ultimo_fechamento_mensal_at ||
+            (Date.now() - new Date(adesaoEstado.ultimo_fechamento_mensal_at).getTime()) >= DIAS_FECHAMENTO_MENSAL * 24 * 60 * 60 * 1000;
+        const dias = isMensal ? 30 : 7;
+
+        const dados = await calcularAdesao(user.id, dias);
+        if (dados.esperado === 0) {
+            console.log(`⏭️  Resumo ${isMensal ? 'mensal' : 'semanal'} ignorado (sem doses no período): ${user.phone}`);
             return;
         }
 
-        const dadosFormatados = {
-            periodo: 'últimos 7 dias',
-            por_medicamento: adesao.porMedicamento.map(m => ({
-                nome: m.nome,
-                doses_tomadas: m.doses_tomadas,
-                doses_nao_registradas: m.doses_nao_registradas,
-                doses_esperadas: m.doses_esperadas,
-                adesao_percentual: m.percentual,
-                estoque_atual: m.estoque_atual,
-                estoque_status: m.estoque_status   // 'ok' | 'baixo' | 'critico'
-            })),
-            total_geral: {
-                doses_tomadas: adesao.totalConfirmado,
-                doses_nao_registradas: adesao.totalNaoRegistrado,
-                doses_esperadas: adesao.totalEsperado,
-                adesao_percentual: adesao.percentualGeral
+        const faixaNova = escolherFaixa(dados.percentual);
+        const mudouDeFaixa = adesaoEstado.faixa_atual !== null && adesaoEstado.faixa_atual !== faixaNova;
+        const semanaNova = (adesaoEstado.faixa_atual === null || mudouDeFaixa)
+            ? 1
+            : (adesaoEstado.semana_atual_na_faixa || 1) + 1;
+
+        let texto = isMensal
+            ? montarMensagemMensal({ nome: firstName, taxa: dados.percentual, faixa: faixaNova })
+            : montarMensagemSemanal({ nome: firstName, taxa: dados.percentual, faixa: faixaNova, semana: semanaNova });
+
+        // Bloco motivo dominante — só o de maior contagem entre os 3; empate/zerado, omite
+        const motivos = ['nao_tomado', 'nao_informado', 'sem_estoque'];
+        const motivoDominante = motivos.reduce((maior, atual) =>
+            dados.porStatus[atual] > (dados.porStatus[maior] || 0) ? atual : maior, null);
+
+        if (motivoDominante) {
+            texto += `\n\n${montarBlocoMotivo(motivoDominante)}`;
+
+            // Turno — só no fechamento mensal, só para nao_tomado/nao_informado
+            if (isMensal && motivoDominante !== 'sem_estoque' && dados.diagnosticoPorTurno) {
+                const turno = dados.diagnosticoPorTurno[motivoDominante];
+                if (turno) texto += `\n\n${montarBlocoTurno(turno)}`;
             }
-        };
+        }
 
-        const prompt = `Você é a Nami, assistente de saúde calorosa.
+        // Bloco tendência — compara com o envio automático anterior
+        if (adesaoEstado.percentual_ultimo_envio !== null && adesaoEstado.percentual_ultimo_envio !== undefined) {
+            const diff = dados.percentual - adesaoEstado.percentual_ultimo_envio;
+            const tipoTendencia = diff > 5 ? 'subiu' : diff < -5 ? 'caiu' : 'estavel';
+            texto += `\n\n${montarBlocoTendencia(tipoTendencia, {
+                taxaAnterior: adesaoEstado.percentual_ultimo_envio,
+                taxaAtual: dados.percentual
+            })}`;
+        }
 
-Monte um resumo semanal para ${firstName} com base nos dados abaixo.
+        // Bloco marco — primeira vez alcançando 100%
+        const melhorAnterior = adesaoEstado.melhor_faixa_atingida;
+        if (faixaNova === '100' && melhorAnterior !== '100') {
+            texto += `\n\n${montarBlocoMarco()}`;
+        }
 
-${JSON.stringify(dadosFormatados, null, 2)}
+        await sendTextMessage(user.phone, texto);
 
-FORMATO OBRIGATÓRIO — siga esta estrutura exata:
+        const melhorFaixaNova = (!melhorAnterior || RANKING_FAIXA[faixaNova] > RANKING_FAIXA[melhorAnterior])
+            ? faixaNova
+            : melhorAnterior;
 
-1. Saudação curta com o nome do usuário
-
-2. Para CADA medicamento em por_medicamento, uma linha no formato:
-   💊 {nome}: {doses_tomadas} tomadas · {doses_nao_registradas} não registradas ({adesao_percentual}%)
-
-3. Total geral (linha de encerramento):
-   📊 Total da semana: {doses_tomadas}/{doses_esperadas} doses ({adesao_percentual}%)
-
-4. Se algum medicamento tiver estoque_status = 'baixo' ou 'critico', mencione brevemente.
-
-5. Frase motivadora curta adaptada ao percentual geral:
-   - >= 80%: celebre e encoraje
-   - 50–79%: empática, sem julgamento, dica simples
-   - < 50%: acolha sem culpa, ofereça ajuda
-
-Seja calorosa e clara. Máximo 10 linhas no total.
-Responda APENAS com a mensagem. Sem JSON. Texto simples.`;
-
-        const response = await anthropic.messages.create({
-            model: 'claude-sonnet-4-6',
-            max_tokens: 400,
-            messages: [{ role: 'user', content: prompt }]
+        await upsertAdesaoEstado(user.id, {
+            faixa_atual: faixaNova,
+            percentual_ultimo_envio: dados.percentual,
+            semana_atual_na_faixa: semanaNova,
+            melhor_faixa_atingida: melhorFaixaNova,
+            ultimo_fechamento_mensal_at: isMensal ? new Date().toISOString() : adesaoEstado.ultimo_fechamento_mensal_at
         });
 
-        const mensagem = response.content[0].text.trim();
-        await sendTextMessage(user.phone, mensagem);
-        console.log(`📊 Resumo semanal enviado para ${user.phone}`);
+        console.log(`📊 Resumo ${isMensal ? 'mensal' : 'semanal'} enviado para ${user.phone} (faixa: ${faixaNova}, ${dados.percentual}%)`);
 
     } catch (error) {
         console.error(`❌ Erro ao enviar resumo semanal para ${user.phone}:`, error.message);

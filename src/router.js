@@ -244,6 +244,8 @@ function detectarIntencaoCadastro(message) {
 // ============================================================
 
 async function classificarIntencaoComContexto({ message, currentState, historicoConversa }) {
+    const fallback = { agente: 'principal', subtipoRelatorio: null };
+
     try {
         // Monta o histórico como texto legível para o LLM
         const historicoTexto = historicoConversa.length > 0
@@ -258,7 +260,7 @@ Identifique para qual agente a mensagem deve ir, considerando o contexto da conv
 
 AGENTES E SUAS CAPACIDADES:
 - cadastro: cadastrar novo medicamento, iniciar novo tratamento
-- relatorios: consultar doses tomadas, adesão, estoque, próximos remédios, horários cadastrados
+- relatorios: consultar doses tomadas, adesão, estoque, próximos remédios, horários cadastrados, progresso do tratamento (dias restantes, % concluído)
 - configuracao: pausar, reativar, encerrar tratamento; alterar/remover/adicionar/redefinir horário de lembrete
 - principal: conversa geral, dúvidas, saudações, reações ("ok", "obrigado"), fechamentos, confirmação de doses, confirmação retroativa de doses (últimos 2 dias), reversão de confirmação por engano, correção/atualização de estoque (recompra, recontagem, perda)
 
@@ -277,38 +279,61 @@ ${historicoTexto}
 
 MENSAGEM ATUAL: "${message}"
 
-Responda APENAS com uma destas opções exatas:
-cadastro
-relatorios
-configuracao
-principal
-nao_suportado`;
+Se o agente escolhido for "relatorios", identifique também o subtipo do relatório em
+"subtipoRelatorio", escolhendo exatamente um destes valores:
+- tomei_hoje: perguntar se já tomou os remédios hoje
+- meus_remedios: listar medicamentos cadastrados
+- estoque: consultar quantidade em estoque
+- proximo_remedio: qual remédio tomar agora/a seguir
+- adesao: taxa de adesão ao tratamento (histórico de doses tomadas x esperadas)
+- progresso_tratamento: quantos dias/doses faltam para o tratamento acabar
+
+Para os demais agentes, "subtipoRelatorio" deve ser null.
+
+Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no formato exato:
+{"agente": "cadastro|relatorios|configuracao|principal|nao_suportado", "subtipoRelatorio": "tomei_hoje|meus_remedios|estoque|proximo_remedio|adesao|progresso_tratamento|null"}`;
 
         const { default: Anthropic } = await import('@anthropic-ai/sdk');
         const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
         const resposta = await anthropic.messages.create({
             model: 'claude-sonnet-4-6',
-            max_tokens: 10,
+            max_tokens: 60,
             messages: [{ role: 'user', content: prompt }]
         });
 
-        const agente = resposta.content[0]?.text?.trim().toLowerCase();
+        const textoResposta = resposta.content[0]?.text?.trim() || '';
         const agentesValidos = ['cadastro', 'relatorios', 'configuracao', 'principal', 'nao_suportado'];
+        const subtiposValidos = ['tomei_hoje', 'meus_remedios', 'estoque', 'proximo_remedio', 'adesao', 'progresso_tratamento'];
 
-        if (agentesValidos.includes(agente)) {
-            console.log(`🧠 [CLASSIFICADOR] Intenção classificada como: ${agente} — mensagem: "${message}"`);
-            return agente;
+        let parsed;
+        try {
+            parsed = JSON.parse(textoResposta);
+        } catch {
+            console.warn(`⚠️ [CLASSIFICADOR] Resposta não-JSON do LLM: "${textoResposta}" — usando principal`);
+            return fallback;
         }
 
-        // Resposta inesperada do LLM — fallback seguro
-        console.warn(`⚠️ [CLASSIFICADOR] Resposta inesperada do LLM: "${agente}" — usando principal`);
-        return 'principal';
+        const agente = String(parsed?.agente || '').trim().toLowerCase();
+        const subtipoRelatorio = String(parsed?.subtipoRelatorio || '').trim().toLowerCase();
+
+        if (!agentesValidos.includes(agente)) {
+            console.warn(`⚠️ [CLASSIFICADOR] Agente inesperado do LLM: "${agente}" — usando principal`);
+            return fallback;
+        }
+
+        if (agente === 'relatorios' && !subtiposValidos.includes(subtipoRelatorio)) {
+            console.warn(`⚠️ [CLASSIFICADOR] Subtipo de relatório ausente/inválido: "${subtipoRelatorio}" — não reconhecido`);
+            return { agente: 'relatorios', subtipoRelatorio: null };
+        }
+
+        console.log(`🧠 [CLASSIFICADOR] Intenção classificada como: ${agente}${subtipoRelatorio && agente === 'relatorios' ? ` (${subtipoRelatorio})` : ''} — mensagem: "${message}"`);
+        return { agente, subtipoRelatorio: agente === 'relatorios' ? subtipoRelatorio : null };
 
     } catch (error) {
         // Erro na chamada LLM — fallback seguro, não interrompe o usuário
         console.error(`❌ [CLASSIFICADOR] Erro ao classificar intenção: ${error.message} — usando principal`);
-        return 'principal';
+        return fallback;
     }
 }
 
@@ -415,6 +440,12 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             }
         }
 
+    // 2b. Usuário no meio do fluxo de seleção de período do relatório de adesão
+    } else if (currentState === 'aguardando_periodo_adesao') {
+        agentName = 'relatorios';
+        console.log(`📊 Roteando para relatorios (aguardando período de adesão) — ${user.phone}`);
+        response = await handleRelatorios({ user, message, subtipo: 'adesao', state });
+
     // 3. Usuário no meio de um fluxo de configuração
     } else if (currentState === 'configurando') {
         agentName = 'configuracao';
@@ -496,9 +527,10 @@ export async function routeMessage({ user, message, image, messageId, referenceM
 
     // 5. Usuário idle com intenção de relatório → agente_relatorios
     } else if (currentState === 'idle' && classificarIntencaoRelatorio(message)) {
+        const subtipo = classificarIntencaoRelatorio(message);
         agentName = 'relatorios';
-        console.log(`📊 Roteando para relatorios — ${user.phone}`);
-        const resultado = await handleRelatorios({ user, message, historicoConversa });
+        console.log(`📊 Roteando para relatorios (${subtipo}) — ${user.phone}`);
+        const resultado = await handleRelatorios({ user, message, subtipo, state });
 
         if (resultado) {
             response = resultado;
@@ -511,7 +543,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
 
     // 6. Demais casos → classificador LLM com contexto conversacional
     } else {
-        const agenteSelecionado = await classificarIntencaoComContexto({
+        const { agente: agenteSelecionado, subtipoRelatorio } = await classificarIntencaoComContexto({
             message,
             currentState,
             historicoConversa
@@ -526,8 +558,8 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                 context: { etapa: 'cad_nome' }
             });
         } else if (agenteSelecionado === 'relatorios') {
-            console.log(`📊 [CLASSIFICADOR] Roteando para relatorios — ${user.phone}`);
-            response = await handleRelatorios({ user, message, historicoConversa });
+            console.log(`📊 [CLASSIFICADOR] Roteando para relatorios (${subtipoRelatorio}) — ${user.phone}`);
+            response = await handleRelatorios({ user, message, subtipo: subtipoRelatorio, state });
             if (!response) {
                 agentName = 'principal';
                 response = await handlePrincipal({ user, message, image, historicoConversa });

@@ -19,8 +19,8 @@ export function startScheduler() {
         await checkAndSendReminders();
     });
 
-    // Resumo semanal — toda segunda-feira às 08:00 (horário de Brasília)
-    cron.schedule('0 8 * * 1', async () => {
+    // Resumo semanal (ou fechamento mensal, a cada 4 semanas) — todo domingo às 16:00 (horário de Brasília)
+    cron.schedule('0 16 * * 0', async () => {
         console.log('📊 Enviando resumos semanais...');
         try {
             const usuarios = await getUsuariosAtivos();
