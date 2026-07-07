@@ -6,7 +6,7 @@ import { getConversationState, logAgentInteraction, getRecentDoses,
 import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
 import { handleCadastro } from './agentes/cadastro.js';
-import { handleRelatorios, classificarIntencaoRelatorio, extrairPeriodo, reconheceEscolhaTratamento } from './agentes/relatorios.js';
+import { handleRelatorios, classificarIntencaoRelatorio, extrairPeriodo } from './agentes/relatorios.js';
 import { handleConfiguracao } from './agentes/configuracao.js';
 import { isCancelamento } from './nlp_helpers.js';
 
@@ -512,7 +512,11 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         }
 
     // 2c. Usuário no meio da escolha de qual tratamento ver o progresso (2+ ativos, BUG-056)
-    // Mesma precedência do BUG-057: dose > cancelamento > resposta reconhecida > classificador central.
+    // Mesma precedência do BUG-057: dose > cancelamento > classificador central.
+    // BUG-056 (complemento): decidir por nome de medicamento antes de confirmar o assunto
+    // gerava falso-positivo (ex: "qual estoque do Neosaldina?" virava progresso). O
+    // classificador central é sempre consultado primeiro — nome só é usado depois de
+    // confirmar que o assunto ainda é progresso_tratamento.
     } else if (currentState === 'aguardando_escolha_tratamento') {
 
         if (detectarConfirmacaoDose(message) && await temDosePendente(user.id)) {
@@ -527,11 +531,6 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             const firstName = user.name ? user.name.split(' ')[0] : 'você';
             console.log(`📊 Desistência da escolha de tratamento — ${user.phone}`);
             response = `Sem problemas, ${firstName}! Se quiser ver de novo, é só me chamar 🌿`;
-
-        } else if (await reconheceEscolhaTratamento(user.id, message)) {
-            agentName = 'relatorios';
-            console.log(`📊 Roteando para relatorios (escolha de tratamento reconhecida) — ${user.phone}`);
-            response = await handleRelatorios({ user, message, subtipo: 'progresso_tratamento', state });
 
         } else {
             const { agente: agenteSelecionado, subtipoRelatorio } = await classificarIntencaoComContexto({

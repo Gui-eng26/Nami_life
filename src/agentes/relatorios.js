@@ -29,9 +29,6 @@ import {
     montarRecusaPeriodo
 } from '../templates/adesaoTemplates.js';
 
-// "Todos"/"tudo" etc — pedido genérico de progresso quando há 2+ tratamentos (BUG-056)
-const PEDIDO_TODOS = /\b(todos?|tudo|geral|completo)\b/i;
-
 // Considera fechamento mensal quando o último fechamento tem 28+ dias (ou nunca fechou).
 const DIAS_FECHAMENTO_MENSAL = 28;
 const PERIODOS_VALIDOS = [7, 15, 30];
@@ -354,16 +351,6 @@ function montarBlocoIndividual(firstName, p) {
         blocoEstoque,
         fase
     });
-}
-
-// Usado pelo router.js para decidir, em 'aguardando_escolha_tratamento', se a mensagem
-// já resolve a escolha (nome reconhecido ou pedido genérico) sem precisar do classificador LLM.
-export async function reconheceEscolhaTratamento(userId, message) {
-    if (PEDIDO_TODOS.test(message || '')) return true;
-    const progressos = await calcularProgressoTratamento(userId);
-    if (progressos.length < 2) return false;
-    const medicationsElegiveis = progressos.map(p => ({ id: p.medicationId, nome: p.nome }));
-    return !!encontrarMedicamento(message, medicationsElegiveis);
 }
 
 async function relatorioProgressoTratamento({ user, message }) {
