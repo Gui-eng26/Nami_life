@@ -1145,7 +1145,19 @@ export async function calcularAdesao(userId, dias) {
     return { esperado, confirmado, percentual, porStatus, porMedicamento, diagnosticoPorTurno };
 }
 
-// Progresso do tratamento — só medicamentos ativos, não-contínuos, com tratamento_dias.
+// tratamento_fim é uma string YYYY-MM-DD, sempre interpretada como meia-noite UTC pelo
+// Date() — zerar em horário local aqui causaria off-by-one no fuso America/Sao_Paulo
+// (UTC-3): tratamento_fim = hoje seria lido como "ontem 21h" local e excluído
+// indevidamente. Por isso a comparação usa meia-noite UTC, não local.
+function startOfDayUTC(date) {
+    return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+// Progresso do tratamento — só medicamentos ativos, não-contínuos, com tratamento_dias,
+// cujo tratamento_fim ainda não passou. Comparação por data (não por diasRestantes/
+// dosesRestantes, que zeram no último dia mesmo com dose pendente — BRIEFING_ADESAO_AO_
+// TRATAMENTO_COMPLEMENTO.md) — assim o tratamento some da lista só a partir do dia
+// seguinte ao fim, nunca no próprio dia final.
 // tratamento_fim é sempre a fonte da verdade (populada em saveMedication/reativarComAtualizacao).
 export async function calcularProgressoTratamento(userId) {
     const medications = await getUserMedications(userId);
@@ -1153,6 +1165,7 @@ export async function calcularProgressoTratamento(userId) {
 
     const elegiveis = medications.filter(m =>
         m.tipo_tratamento && m.tipo_tratamento !== 'continuo' && m.tratamento_dias && m.tratamento_fim
+        && new Date(m.tratamento_fim) >= startOfDayUTC(hoje)
     );
 
     return elegiveis.map(med => {
