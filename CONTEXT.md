@@ -400,6 +400,11 @@ Não é mais mantido neste arquivo. Consultar via Supabase MCP:
     qualquer estado conversacional** — estabelecido no BUG-057, correto na prática, mas Guilherme
     pediu para não generalizar como regra permanente ainda sem refletir mais sobre o risco de
     acumular regras. Tratar caso a caso até decisão explícita numa sessão futura.
+16. **Escrita em tabela de auditoria/registro sempre via função única, nunca SQL direto (v16)** —
+    igual ao stock_movements (princípio já implícito no MH-042), backlog_items só é escrito pelo
+    código de produção através de src/backlog.js (registrarItemBacklog/atualizarStatusBacklogItem).
+    SQL direto (execute_sql) é aceitável apenas em briefings de correção/manutenção em lote
+    revisados explicitamente como exceção — nunca como caminho padrão de escrita.
 
 ---
 
