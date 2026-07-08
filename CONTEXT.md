@@ -345,82 +345,16 @@ Estoque e os demais tipos permanecem query direta, sem mudança.
 
 ---
 
-## Status dos Bugs (atualizado 07/07/2026)
+## Backlog (BUG/FIX/MH)
 
-**Em validação:**
-- MH-032 (lembretes agrupados) — validar 10 cenários em ambiente limpo (sem avanço nesta sessão).
-- BUG-035 (fast-path resposta tardia ao esgotamento) — validar 7 cenários, `BRIEFING_BUG035.md` §5 (sem avanço nesta sessão).
-- **BUG-057** — cenário de dose durante `aguardando_periodo_adesao` pendente (depende do próximo lembrete).
-- **Apresentação v2 (Adesão ao Tratamento)** — saudação condicional e textos novos implementados, ainda sem validação real em produção.
+A partir de 07/07/2026, o backlog completo vive na tabela `backlog_items`
+do Supabase (projeto Nami_Life Brazil, project_id nputymewnwmnhrtpizzs).
+Não é mais mantido neste arquivo. Consultar via Supabase MCP:
 
-**Fechados nesta sessão (evidência real de produção):**
-BUG-031, item "unificação de tipos" (sem ID), MH-037, BUG-055, BUG-056 + complemento, exclusão de
-tratamento finalizado.
-
-**Limitação conhecida aceitável:**
-- **BUG-029** — fast-path "responder": zaapId ≠ referenceMessageId. Fallback via texto funciona.
-
-**Bugs abertos (numeração atual, cuidado com colisão histórica — ver seção de Adesão ao Tratamento):**
-- **BUG-032** — encerramento de tratamento é fluxo sem saída (viola saída de emergência)
-- **BUG-033** — dead-end residual em configuracao para alteração genérica sem tipo
-- **BUG-034** — proteção sistêmica contra dose_logs duplicados (vacina, não urgente)
-- **BUG-036** — "manter horários" não reconhecido como confirmação em `reativ_horarios`/`reativ_estoque`
-- **BUG-027** — nome de medicamento pré-cadastro perdido no cad_nome
-- **BUG-028** — "ta bom" interpretado como pergunta em contexto idle
-- **BUG-030** — pareceNome() não filtra "Sim, quero continuar"
-- **BUG-058** (novo, v15) — `relatorioEstoque` perdeu a capacidade de filtrar por medicamento
-  nomeado; hoje sempre retorna a lista completa, independente do que foi pedido. Regressão a
-  investigar (não sabemos ainda se foi introduzida por alguma mudança desta sessão ou se é
-  anterior). Não trabalhar ainda — registrado para depois.
-
----
-
-## Convenção de IDs de Backlog (formalizada v12, numeração corrigida v15)
-
-Todo item novo recebe ID obrigatório, sem exceção.
-- **BUG-xxx** = comportamento que já deveria funcionar e não funciona, ou viola princípio
-  não-negociável.
-- **MH-xxx** (Melhoria) = capacidade nova, ou ajuste de algo que já funciona mas pode ser melhor.
-- Numeração sequencial contínua — nunca reusar.
-- ⚠️ **Antes de atribuir um número novo, sempre conferir `ls briefings/` no repositório real** —
-  a v14 apontava "próximo BUG livre: BUG-037" sem saber que BUG-037 a BUG-054 já existiam
-  (lote histórico commitado em bloco em 17/06). Não confiar cegamente neste ponteiro sem
-  checagem, mesmo que ele pareça atualizado.
-- **Próximo BUG livre: BUG-059. Próximo MH livre: MH-045.**
-
----
-
-## Backlog Priorizado (atualizado 07/07/2026, fim v15)
-
-**Em validação:**
-- MH-032 (lembretes agrupados) — validar 10 cenários em ambiente limpo.
-- BUG-035 (fast-path resposta tardia ao esgotamento) — validar 7 cenários, `BRIEFING_BUG035.md` §5.
-- BUG-057 — cenário de dose durante `aguardando_periodo_adesao` (depende do próximo lembrete).
-- Apresentação v2 de Adesão ao Tratamento — saudação condicional e textos novos, aguardando teste real.
-
-**Fechados na v15** (não entram mais no backlog): BUG-031, unificação de tipos (sem ID),
-MH-037, BUG-055, BUG-056 + complemento, exclusão de tratamento finalizado.
-
-1. **BUG-032** [30/06] — encerramento de tratamento é fluxo sem saída. Mesma família do BUG-033. ⚠️ Colisão de número com bug histórico já resolvido — ver nota de numeração.
-2. **MH-039** [30/06] — avaliar fluxo de encerramento em lote ("encerrar todos"). Relacionado ao BUG-032.
-3. **BUG-033** [28/06] — dead-end residual em configuracao (alteração genérica). Solução sistêmica única com BUG-032. ⚠️ Colisão de número — ver nota.
-4. **BUG-034** [02/07] — proteção sistêmica contra dose_logs duplicados (vacina). Não urgente. ⚠️ Colisão de número — ver nota.
-5. **BUG-036** [06/07] — "manter horários" não reconhecido como confirmação (configuracao.js). Causa raiz confirmada, solução sistêmica já desenhada (ver seção MH-042). ⚠️ Colisão de número — ver nota.
-6. **BUG-058** [07/07, NOVO] — relatório de estoque perdeu filtro por medicamento nomeado. Não investigado ainda.
-7. **MH-029** [19/06] — alerta de estoque incorreto para tratamento de tempo determinado com estoque suficiente.
-8. **MH-040** [28/06] — mensagens fragmentadas do mesmo contexto recebem respostas independentes.
-9. **MH-041** [30/06 — OBSERVAÇÃO] — dose do horário antigo continua cobrando follow-up após alteração de horário.
-10. **MH-030** [19/06] — encerramento automático de tratamento agudo.
-11. **MH-027** [19/06] — reagendamento de lembrete sob demanda.
-12. **MH-043** [07/07, NOVO] — fim de tratamento: lembretes pós-encerramento, alertas de recompra vencidos, relatório automático ao concluir, prorrogação de tratamento com rastreabilidade de `tratamento_fim` (semântica de "soma ao fim previsto" vs. "reinicia a partir de hoje" fica a critério de confirmação explícita do usuário no momento).
-13. **MH-044** [07/07, NOVO] — jornada 2 (mensagens) para usuários estáveis 5+ semanas na mesma faixa de adesão. Medir primeiro via `adesao_estado.semana_atual_na_faixa > 4` (sem tabela nova) antes de desenhar — depende de dados reais dos testers.
-14. **BUG-027 / BUG-028 / BUG-030** [18-19/06] e outros menores.
-
-**NOTA (sem ID, da v14):** avaliar se o comando direto "reativar [medicamento]" deveria perguntar
-sobre mudança de estoque.
-
-### Fase 3+ (deferred)
-- MH-004 Whisper (áudio), MH-007 RAG ANVISA, avaliação de unificação router+principal (decisão revisável).
+  SELECT tipo, numero, titulo, status, prioridade, data_criacao
+  FROM backlog_items
+  WHERE status IN ('aberto', 'em_validacao')
+  ORDER BY prioridade, data_criacao;
 
 ---
 
