@@ -285,8 +285,14 @@ que usa o significado ATUAL desses números). Decisão: manter os briefings anti
 (órfãos de contexto, não reescrever), só corrigir o ponteiro daqui para frente. **MH não tem esse
 problema** — numeração MH-017 a MH-042 é consistente.
 
-**Números corretos a partir de agora: próximo BUG livre é BUG-059. Próximo MH livre é MH-045.**
-(BUG-055 a BUG-058 e MH-043/044 já foram atribuídos nesta sessão — ver backlog abaixo.)
+Esse ponteiro fixo foi removido em 08/07/2026: a tabela `backlog_items` (índice único parcial em
+`(tipo, numero) WHERE status <> 'historico_substituido'`) já impede colisão de número
+independentemente de qualquer texto aqui. Para saber o próximo número livre, consultar:
+
+  SELECT tipo, MAX(numero) AS ultimo_usado
+  FROM backlog_items
+  WHERE status <> 'historico_substituido'
+  GROUP BY tipo;
 
 ---
 
@@ -424,8 +430,9 @@ calculado dinamicamente a partir da data de entrada e da data atual da sessão �
 1. Ler CONTEXT.md via `curl -s "https://raw.githubusercontent.com/Gui-eng26/Nami_life/main/CONTEXT.md"`
 2. Confirmar estado atual com Guilherme antes de começar
 3. Schema do banco: ler supabase/migrations/ no repositório
-4. **Antes de atribuir qualquer ID novo de BUG/MH, conferir `ls briefings/` no repositório real**
-   — não confiar cegamente no ponteiro "próximo livre" sem essa checagem (ver Convenção de IDs)
+4. Antes de atribuir qualquer ID novo de BUG/FIX/MH, consultar `backlog_items` no Supabase
+   (não mais `ls briefings/` — essa checagem manual foi substituída pela constraint do banco,
+   que rejeita fisicamente qualquer tentativa de reaproveitar um número ativo).
 
 ### Ritual de encerramento de sessão
 1. Gerar relatório .docx e apresentar para download (upload manual no Drive)
