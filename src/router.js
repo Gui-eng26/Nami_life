@@ -58,13 +58,22 @@ function isDuplicateMessage(messageId) {
 // DOSE PENDENTE DE CONFIRMAÇÃO
 // ============================================================
 
+// Dose 'nao_informado' já esgotou o ciclo de tentativas — não é mais "pendente" no
+// sentido de confirmação em andamento, é candidata a resposta tardia (BUG-035),
+// tratada por tentarConfirmarRespostaTardia(). Excluí-la aqui garante que o roteador
+// não intercepte a mensagem no bloco 4 (confirmação direta) e deixe o bloco 4b
+// (fast-path de resposta tardia) ser alcançado. Alinha esta função à mesma definição
+// de "dose pendente" já usada em buildUserMessage() (principal.js), que já excluía
+// nao_informado corretamente — a divergência entre as duas era a causa raiz do BUG-035
+// nunca disparar (confirmado com dados reais de produção, sessão de 08/07/2026).
 async function temDosePendente(userId) {
     const doses = await getRecentDoses(userId, 1);
     return doses.some(d =>
         d.reminder_sent === true &&
         d.confirmed === false &&
         d.status !== 'pausado' &&
-        d.status !== 'nao_tomado'
+        d.status !== 'nao_tomado' &&
+        d.status !== 'nao_informado'
     );
 }
 
