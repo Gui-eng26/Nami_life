@@ -161,6 +161,27 @@ function buildUserMessage({ text, image, user, state, medications, recentDoses, 
             return `⚠️ ${nome} — dose das ${hora} [ref: ${d.id}]`;
         }).join('\n');
 
+    // BUG-059: o Claude não recebia nenhuma âncora de "hoje" para julgar se uma dose
+    // retroativa era de hoje, ontem ou anteontem — e adivinhava errado no texto livre.
+    // calcularRotuloDia() resolve isso deterministicamente (mesmo princípio já aplicado
+    // em calcularProximaDose, ver prompts.js), comparando a data local (America/Sao_Paulo)
+    // do scheduled_at com a data local de agora.
+    function calcularRotuloDia(scheduledDate) {
+        const opts = { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'America/Sao_Paulo' };
+        const dataStr = scheduledDate.toLocaleDateString('pt-BR', opts);
+
+        const hojeStr = new Date().toLocaleDateString('pt-BR', opts);
+        if (dataStr === hojeStr) return 'hoje';
+
+        const ontemStr = new Date(Date.now() - 24 * 60 * 60 * 1000).toLocaleDateString('pt-BR', opts);
+        if (dataStr === ontemStr) return 'ontem';
+
+        const anteontemStr = new Date(Date.now() - 48 * 60 * 60 * 1000).toLocaleDateString('pt-BR', opts);
+        if (dataStr === anteontemStr) return 'anteontem';
+
+        return null; // fora da janela de 2 dias coberta por getDosesRetroativas — não deveria ocorrer
+    }
+
     const blocoRetroativo = dosesRetroativas.length === 0 ? null :
         dosesRetroativas.map(d => {
             const nome = d.medications?.nome || 'medicamento';
@@ -171,7 +192,9 @@ function buildUserMessage({ text, image, user, state, medications, recentDoses, 
             const hora = scheduledDate.toLocaleTimeString('pt-BR', {
                 hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo'
             });
-            return `⏰ ${nome} — dose de ${dataStr} às ${hora} [ref-retro: ${d.id}]`;
+            const rotulo = calcularRotuloDia(scheduledDate);
+            const rotuloStr = rotulo ? `${rotulo} (${dataStr})` : dataStr;
+            return `⏰ ${nome} — dose de ${rotuloStr} às ${hora} [ref-retro: ${d.id}]`;
         }).join('\n');
 
     const blocoConfirmadasHoje = dosesConfirmadasHoje.length === 0 ? null :
@@ -183,9 +206,20 @@ function buildUserMessage({ text, image, user, state, medications, recentDoses, 
             return `✅ ${nome} — confirmada às ${hora} [ref-conf: ${d.id}]`;
         }).join('\n');
 
+    const agora = new Date();
+    const dataAtualStr = agora.toLocaleDateString('pt-BR', {
+        day: '2-digit', month: '2-digit', year: 'numeric', weekday: 'long', timeZone: 'America/Sao_Paulo'
+    });
+    const horaAtualStr = agora.toLocaleTimeString('pt-BR', {
+        hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo'
+    });
+
     const context = `
 === CONTEXTO DO USUÁRIO ===
 Nome: ${user.name || 'ainda não informado'}
+Agora é ${dataAtualStr}, ${horaAtualStr} (horário de Brasília). Use esta data como
+referência para qualquer menção a "hoje", "ontem", "amanhã" ou datas relativas — nunca
+calcule isso de outra forma.
 Estado da conversa: ${state.state}
 Dados parciais em andamento: ${JSON.stringify(state.context)}
 
@@ -221,6 +255,7 @@ ${blocoRetroativo ? `
 ${blocoRetroativo}
 
 Como usar este bloco:
+- O rótulo do dia (hoje/ontem/anteontem) já vem calculado no bloco acima — use-o exatamente como está, nunca calcule ou infira esse rótulo por conta própria.
 - Se o usuário mencionar ter tomado uma dose do passado (ex: "tomei o ômega 3 de ontem", "tomei os remédios de anteontem"), apresente a dose específica ao usuário e PEÇA CONFIRMAÇÃO EXPLÍCITA antes de registrar. Aguarde "sim" / "isso" / "tomei".
 - Após confirmação explícita → CONFIRM_RETROATIVA com o [ref-retro: ...] correspondente.
 - Se o usuário disser que não tomou → REGISTER_NAO_TOMADO com o [ref-retro: ...].
