@@ -1,4 +1,4 @@
-# 🌿 NAMI — Contexto do Projeto (v15 — Adesão ao Tratamento consolidada: cálculo unificado, apresentação determinística, roteamento sem Camada 3 — 07/07/2026)
+# 🌿 NAMI — Contexto do Projeto (v17 — BUG-035 corrigido (fast-path de resposta tardia alcançável), BUG-057 validado e fechado, BUG-059 corrigido (rótulo de dia determinístico em confirmações retroativas) — 08/07/2026)
 
 ---
 
@@ -75,7 +75,7 @@ nami-backend/
 ├── src/
 │   ├── index.js              → Entry point + webhook + proteção idempotência
 │   ├── agent.js               → Orquestrador — chama routeMessage
-│   ├── router.js               → Roteador central (classificador LLM retorna JSON {agente, subtipoRelatorio} — v15)
+│   ├── router.js               → Roteador central (classificador LLM retorna JSON {agente, subtipoRelatorio} — v15); temDosePendente() exclui nao_informado (v17, BUG-035)
 │   ├── database.js             → Todas as queries no Supabase; registrarMovimentoEstoque (MH-042) é o único ponto de escrita em estoque; calcularAdesao/calcularProgressoTratamento (v15)
 │   ├── whatsapp.js              → Envio de mensagens e parse Z-API
 │   ├── scheduler.js             → Cron: lembretes + follow-ups + resumo de adesão (domingo 16h — mudou de segunda 08h na v15)
@@ -85,7 +85,7 @@ nami-backend/
 │   │   └── adesaoTemplates.js  → NOVO (v15): templates 100% determinísticos de adesão/progresso — espinha semanal (16) + mensal (12) + blocos aditivos (motivo/turno/tendência/marco) + progresso de tratamento (3 fases + estoque) + fluxo de período
 │   └── agentes/
 │       ├── recepcionista.js    → Onboarding de novos usuários (v3)
-│       ├── principal.js         → Conversa geral + confirmação + ciclo de vida da dose + UPDATE_STOCK (MH-042); perdeu o bloco ad-hoc de progresso de tratamento (v15, origem do BUG-055)
+│       ├── principal.js         → Conversa geral + confirmação + ciclo de vida da dose + UPDATE_STOCK (MH-042); perdeu o bloco ad-hoc de progresso de tratamento (v15, origem do BUG-055); calcularRotuloDia() + âncora "Agora é..." no context (v17, BUG-059)
 │       ├── cadastro.js          → Cadastro (cálculo determinístico + MH-038 duplicata no início)
 │       ├── lembrete.js          → Follow-up espaçado (30min/1h/30min)
 │       ├── relatorios.js        → 6 tipos de relatório determinísticos (v15: + progresso_tratamento), sem Camada 3 de reclassificação
@@ -126,6 +126,10 @@ antigo do repositório. Corrigir com:
 ```
 git remote set-url origin https://github.com/Gui-eng26/Nami_life.git
 ```
+⚠️ **Reforço (v17):** o mesmo redirect (`Gui-eng26/nami-backend` → `Gui-eng26/Nami_life`) ainda
+aparece como aviso do GitHub no push do Claude Code — o push funciona normalmente via redirect,
+não é bloqueante, mas ainda não foi corrigido na origem. Rodar o `git remote set-url` acima numa
+janela tranquila quando possível.
 
 ---
 
@@ -351,6 +355,73 @@ Estoque e os demais tipos permanecem query direta, sem mudança.
 
 ---
 
+## Sessão v17 (08/07/2026) — BUG-035, BUG-057, MH-046, BUG-059
+
+### BUG-035 — Fast-path de resposta tardia ao esgotamento nunca era alcançado
+
+**Causa raiz confirmada:** `temDosePendente()` (`router.js`) excluía apenas os status
+`pausado` e `nao_tomado`, mas não `nao_informado` — então uma dose já esgotada
+(`nao_informado`) ainda satisfazia `temDosePendente()`, fazendo o roteador tratar um "Sim"
+tardio como confirmação direta (`agentName = 'principal'`) em vez de cair no fast-path
+dedicado (`tentarConfirmarRespostaTardia`, bloco 4b, que já existia e nunca era alcançado).
+Dentro do `handlePrincipal`, o filtro de `dosesPendentes` já excluía `nao_informado`
+corretamente — a divergência entre as duas definições de "dose pendente" era a causa raiz.
+Confirmado com `agent_logs` reais de dois usuários (Guilherme/Cataflam, Ivete/Betaistina):
+`agent: principal` no momento exato do "Sim" tardio, quando deveria ser
+`fast_path_resposta_tardia`.
+
+**Correção:** `temDosePendente()` agora também exclui `nao_informado`. Afeta os 3 pontos que a
+usam no `router.js` (idle, `aguardando_periodo_adesao`, `aguardando_escolha_tratamento`) — o
+que é o comportamento desejado (ver MH-046 abaixo sobre o que isso NÃO resolve sozinho).
+
+**Status:** corrigido, commitado e pushado, verificado direto no repositório. `em_validacao`
+no backlog — falta um ciclo real de esgotamento em produção mostrando
+`agent: fast_path_resposta_tardia` nos logs para fechar de vez.
+
+### BUG-057 — Validado em produção e fechado
+
+Os dois cenários de precedência (dose real chegando durante `aguardando_periodo_adesao` e
+durante `aguardando_escolha_tratamento`) foram confirmados com `agent_logs`/`dose_logs` reais
+de produção. **Status: resolvido.**
+
+### MH-046 — Registrado, não implementado (monitoramento)
+
+Estender `tentarConfirmarRespostaTardia` para dentro dos estados
+`aguardando_periodo_adesao`/`aguardando_escolha_tratamento` resolveria o roteamento de um "Sim"
+tardio nesses estados (hoje cai no classificador central e geralmente repete a pergunta de
+período/tratamento — UX subótima, sem prejuízo de dado de saúde). Não implementado porque
+`usuarioRespondeuDesde()` só verifica SE o usuário respondeu algo desde a última tentativa, não
+SE o bot fez uma pergunta nova nesse meio-tempo. **Risco identificado, não observado em
+produção ainda:** se o usuário entrar num desses estados de espera ANTES de uma dose (de outro
+remédio) esgotar, e a primeira resposta dele depois for algo tipo "sim"/"ok" (que bate em
+`detectarConfirmacaoDose`), o fast-path confirmaria a dose antiga silenciosamente e ignoraria a
+pergunta de período/tratamento em aberto. Decisão explícita desta sessão: não implementar sem
+evidência real desse cenário; monitorar via `agent_logs`.
+
+### BUG-059 — Rótulo de dia incorreto ("ontem"/"hoje") em confirmações retroativas
+
+**Causa raiz confirmada:** o Claude nunca recebia a data/hora atual como referência em nenhum
+lugar do contexto (`prompts.js`/`principal.js`) — o único campo calculado deterministicamente
+com essa natureza era "próxima dose (hoje|amanhã)". O `blocoRetroativo` entregava só a data
+numérica (`dd/mm`) sem rótulo relativo, forçando o Claude a adivinhar em texto livre se uma
+data era "hoje" ou "ontem" — e errava. Confirmado com dados reais de produção em dois usuários
+(Guilherme: doses do mesmo dia da mensagem rotuladas "ontem"; Julia: dose do mesmo dia rotulada
+"ontem", causando em cascata a frase "a dose de hoje está agendada para amanhã").
+
+**Correção (dois níveis, mesma causa raiz):**
+1. `calcularRotuloDia()` novo em `principal.js` — calcula hoje/ontem/anteontem
+   deterministicamente (mesmo princípio já usado em `calcularProximaDose`), aplicado ao
+   `blocoRetroativo`.
+2. Âncora explícita `"Agora é [data], [hora] (horário de Brasília)"` adicionada ao início do
+   `context` geral — rede de segurança sistêmica para qualquer outra menção livre a datas
+   relativas que o Claude venha a fazer (inclusive ao ler o JSON bruto de `recentDoses`).
+
+**Status:** corrigido, commitado e pushado, verificado direto no repositório. `em_validacao`
+no backlog — falta testar em produção com uma dose de hoje e uma dose retroativa real de 1-2
+dias antes de fechar.
+
+---
+
 ## Backlog (BUG/FIX/MH)
 
 A partir de 07/07/2026, o backlog completo vive na tabela `backlog_items`
@@ -387,10 +458,12 @@ Não é mais mantido neste arquivo. Consultar via Supabase MCP:
     feita DEPOIS que a ação real rodou — nunca do texto que o LLM escreveu antes.
 12. **Informativo de resultado e regra de alerta são funções separadas** — não fundir "o que
     aconteceu" com "o que fazer a respeito" na mesma função, mesmo quando aparecem juntos.
-13. **Apresentação de dado de saúde também é determinística (v15)** — o mesmo raciocínio do
-    princípio 4/11 se estende à camada de apresentação: mensagens de adesão/progresso nascem de
-    templates fixos aprovados previamente, nunca de geração livre do LLM — elimina a raiz do
-    BUG-031, não só o sintoma.
+13. **Apresentação de dado de saúde também é determinística (v15, reforçado v17)** — o mesmo
+    raciocínio do princípio 4/11 se estende à camada de apresentação: mensagens de
+    adesão/progresso nascem de templates fixos aprovados previamente, nunca de geração livre do
+    LLM — elimina a raiz do BUG-031, não só o sintoma. **v17 estende isso a rótulos de data
+    relativa** (hoje/ontem/anteontem): o Claude não deve inferir esse cálculo sozinho — ver
+    BUG-059, `calcularRotuloDia()` e a âncora de data/hora atual no contexto geral.
 14. **Classificação semântica central, nunca lista de exclusão de palavras (v15)** — quando um
     atalho determinístico precisa decidir "essa mensagem foge do padrão esperado?", a resposta
     correta é consultar o classificador central (`classificarIntencaoComContexto`), não crescer
@@ -477,7 +550,7 @@ node src/index.js
 
 - **GitHub:** `Gui-eng26/Nami_life` (público) — raw via `curl -s "https://raw.githubusercontent.com/Gui-eng26/Nami_life/main/[filepath]"`.
 - **Schema:** `supabase/migrations/` (baseline + mh032 + mh042 + adesao_tratamento).
-- **Google Drive:** pasta Desenvolvimento Nami, ID `17uNtuBHOHw41FBc0zxZjx_-kjTW7bRmN`. Último relatório: `Nami_Relatorio_v15.docx`.
+- **Google Drive:** pasta Desenvolvimento Nami, ID `17uNtuBHOHw41FBc0zxZjx_-kjTW7bRmN`. Último relatório: `Nami_Relatorio_v17.docx`.
 - **Supabase:** banco Brasil (São Paulo). `agent_logs` = histórico conversacional (também usado para saudação condicional, v15). `conversation_state` = estado operacional (sem 's').
 - **Railway:** produção com auto-deploy no git push. Logs exportados em UTC.
 - **Claude Code (VS Code):** implementação via briefings `.md`, sempre com texto literal embutido.
