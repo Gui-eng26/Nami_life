@@ -259,9 +259,12 @@ async function classificarIntencaoComContexto({ message, currentState, historico
     try {
         // Monta o histórico como texto legível para o LLM
         const historicoTexto = historicoConversa.length > 0
-            ? historicoConversa.map(h =>
-                `Usuário: ${h.user_message}\nNami: ${h.agent_response}`
-              ).join('\n\n')
+            ? historicoConversa.map(h => {
+                const contextoResumo = h.contexto_conversa?.medicationNome
+                    ? ` [em andamento: configuração sobre ${h.contexto_conversa.medicationNome}, etapa ${h.contexto_conversa.etapa}]`
+                    : '';
+                return `Usuário: ${h.user_message}\nNami: ${h.agent_response}${contextoResumo}`;
+              }).join('\n\n')
             : 'Sem histórico recente.';
 
         const prompt = `Você é o classificador de intenções da Nami, um assistente de saúde via WhatsApp.
@@ -345,6 +348,63 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         console.error(`❌ [CLASSIFICADOR] Erro ao classificar intenção: ${error.message} — usando principal`);
         return fallback;
     }
+}
+
+// ============================================================
+// DESPACHO DE ESCALADA — usado quando um agente devolve
+// { escalarParaRoteador: true } em vez de uma resposta de texto
+// ============================================================
+
+async function despacharEscalada({ user, message, image, contextoPreservado, historicoConversa }) {
+    const { agente: agenteSelecionado, subtipoRelatorio } = await classificarIntencaoComContexto({
+        message, currentState: 'configurando', historicoConversa
+    });
+
+    let agentName = agenteSelecionado;
+    let response;
+
+    if (agenteSelecionado === 'configuracao') {
+        console.log(`⚙️ [ESCALADA] Ainda é configuração — reentra preservando medicamento — ${user.phone}`);
+        response = await handleConfiguracao({
+            user, message, historicoConversa,
+            state: { state: 'configurando', context: { etapa: 'identif_intencao' } },
+            context: {
+                etapa: 'identif_intencao',
+                medicationId: contextoPreservado?.medicationId || null,
+                medicationNome: contextoPreservado?.medicationNome || null,
+                schedulesAtivos: contextoPreservado?.schedulesAtivos || []
+            }
+        });
+    } else {
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        const idleState = { state: 'idle', context: {} };
+
+        if (agenteSelecionado === 'cadastro') {
+            console.log(`💊 [ESCALADA] Roteando para cadastro — ${user.phone}`);
+            response = await handleCadastro({
+                user, message, state: idleState, historicoConversa,
+                context: { etapa: 'cad_nome' }
+            });
+        } else if (agenteSelecionado === 'relatorios') {
+            console.log(`📊 [ESCALADA] Roteando para relatorios (${subtipoRelatorio}) — ${user.phone}`);
+            response = await handleRelatorios({ user, message, subtipo: subtipoRelatorio, state: idleState });
+            if (!response) {
+                agentName = 'principal';
+                response = await handlePrincipal({ user, message, image, historicoConversa });
+            }
+        } else if (agenteSelecionado === 'nao_suportado') {
+            agentName = 'principal';
+            console.log(`🚧 [ESCALADA] Intenção não suportada — ${user.phone}`);
+            await registrarIntencaoNaoSuportada(user.id, message);
+            response = await handlePrincipal({ user, message, image, historicoConversa, intencaoNaoSuportada: true });
+        } else {
+            agentName = 'principal';
+            console.log(`🤖 [ESCALADA] Roteando para principal — ${user.phone}`);
+            response = await handlePrincipal({ user, message, image, historicoConversa });
+        }
+    }
+
+    return { agentName, response };
 }
 
 // ============================================================
@@ -503,10 +563,20 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                     }
                 } else if (agenteSelecionado === 'configuracao') {
                     console.log(`⚙️ [CLASSIFICADOR] Roteando para configuracao (saiu de aguardando_periodo_adesao) — ${user.phone}`);
-                    response = await handleConfiguracao({
+                    const resultadoConfig = await handleConfiguracao({
                         user, message, state: idleState, historicoConversa,
                         context: { etapa: 'identif_intencao' }
                     });
+                    if (resultadoConfig?.escalarParaRoteador) {
+                        const escalada = await despacharEscalada({
+                            user, message, image, historicoConversa,
+                            contextoPreservado: null
+                        });
+                        agentName = escalada.agentName;
+                        response = escalada.response;
+                    } else {
+                        response = resultadoConfig;
+                    }
                 } else if (agenteSelecionado === 'nao_suportado') {
                     agentName = 'principal';
                     console.log(`🚧 [CLASSIFICADOR] Intenção não suportada (saiu de aguardando_periodo_adesao) — ${user.phone}`);
@@ -570,10 +640,20 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                     }
                 } else if (agenteSelecionado === 'configuracao') {
                     console.log(`⚙️ [CLASSIFICADOR] Roteando para configuracao (saiu de aguardando_escolha_tratamento) — ${user.phone}`);
-                    response = await handleConfiguracao({
+                    const resultadoConfig = await handleConfiguracao({
                         user, message, state: idleState, historicoConversa,
                         context: { etapa: 'identif_intencao' }
                     });
+                    if (resultadoConfig?.escalarParaRoteador) {
+                        const escalada = await despacharEscalada({
+                            user, message, image, historicoConversa,
+                            contextoPreservado: null
+                        });
+                        agentName = escalada.agentName;
+                        response = escalada.response;
+                    } else {
+                        response = resultadoConfig;
+                    }
                 } else if (agenteSelecionado === 'nao_suportado') {
                     agentName = 'principal';
                     console.log(`🚧 [CLASSIFICADOR] Intenção não suportada (saiu de aguardando_escolha_tratamento) — ${user.phone}`);
@@ -591,19 +671,39 @@ export async function routeMessage({ user, message, image, messageId, referenceM
     } else if (currentState === 'configurando') {
         agentName = 'configuracao';
         console.log(`⚙️ Roteando para configuração (estado configurando) — ${user.phone}`);
-        response = await handleConfiguracao({
+        const resultadoConfig = await handleConfiguracao({
             user, message, state, historicoConversa,
             context: state?.context || {}
         });
+        if (resultadoConfig?.escalarParaRoteador) {
+            const escalada = await despacharEscalada({
+                user, message, image, historicoConversa,
+                contextoPreservado: state?.context
+            });
+            agentName = escalada.agentName;
+            response = escalada.response;
+        } else {
+            response = resultadoConfig;
+        }
 
     // 3b. Usuário em idle com intenção de configuração detectada
     } else if (currentState === 'idle' && detectarIntencaoConfiguracao(message)) {
         agentName = 'configuracao';
         console.log(`⚙️ Roteando para configuração (intenção detectada) — ${user.phone}`);
-        response = await handleConfiguracao({
+        const resultadoConfig = await handleConfiguracao({
             user, message, state, historicoConversa,
             context: { etapa: 'identif_intencao' }
         });
+        if (resultadoConfig?.escalarParaRoteador) {
+            const escalada = await despacharEscalada({
+                user, message, image, historicoConversa,
+                contextoPreservado: null
+            });
+            agentName = escalada.agentName;
+            response = escalada.response;
+        } else {
+            response = resultadoConfig;
+        }
 
     // 4. Usuário já está em fluxo de cadastro → agente_cadastro
     } else if (currentState === 'adding_med') {
@@ -707,10 +807,20 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             }
         } else if (agenteSelecionado === 'configuracao') {
             console.log(`⚙️ [CLASSIFICADOR] Roteando para configuracao — ${user.phone}`);
-            response = await handleConfiguracao({
+            const resultadoConfig = await handleConfiguracao({
                 user, message, state, historicoConversa,
                 context: { etapa: 'identif_intencao' }
             });
+            if (resultadoConfig?.escalarParaRoteador) {
+                const escalada = await despacharEscalada({
+                    user, message, image, historicoConversa,
+                    contextoPreservado: null
+                });
+                agentName = escalada.agentName;
+                response = escalada.response;
+            } else {
+                response = resultadoConfig;
+            }
         } else if (agenteSelecionado === 'nao_suportado') {
             agentName = 'principal';
             console.log(`🚧 [CLASSIFICADOR] Intenção não suportada — ${user.phone}`);

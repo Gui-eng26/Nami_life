@@ -10,8 +10,7 @@ import {
     reativarComAtualizacao,
     removerSchedule,
     adicionarSchedule,
-    formatarHistoricoConversa,
-    registrarIntencaoNaoSuportada
+    formatarHistoricoConversa
 } from '../database.js';
 import { isCancelamento, encontrarMedicamento } from '../nlp_helpers.js';
 
@@ -379,6 +378,10 @@ export async function handleConfiguracao({ user, message, state, context, histor
 
     // ── ETAPA 1: Classificar intenção via Claude ─────────────────────────────
     if (etapa === 'identif_intencao') {
+        if (context.medicationId && isCancelamento(message)) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
+        }
         const { acao, medicamentoMencionado, novoHorario } = await classificarIntencao(message, medicationsAtivos, historicoConversa);
 
         if (medicationsAtivos.length === 0) {
@@ -386,11 +389,11 @@ export async function handleConfiguracao({ user, message, state, context, histor
             return `Você não tem nenhum medicamento cadastrado ainda, ${firstName}. Quer cadastrar um agora?`;
         }
 
-        // Rede de segurança — intenção não suportada que escorregou para configuração
+        // Rede de segurança do classificador interno — não decide mais sozinho se é
+        // "não suportado de verdade" ou "suportado por outro agente". Escala pro
+        // classificador central em vez de responder direto.
         if (acao === 'nao_suportado') {
-            await saveConversationState(user.id, { state: 'idle', context: {} });
-            await registrarIntencaoNaoSuportada(user.id, message);
-            return `Essa funcionalidade ainda não está disponível, ${firstName} — está no nosso radar de melhorias 🌱\n\nMas posso te ajudar com: cadastrar um remédio, alterar horários de lembrete, pausar ou encerrar um tratamento, ou ver seus relatórios. O que você precisa?`;
+            return { escalarParaRoteador: true };
         }
 
         // Intenção de parar sem pista temporal → perguntar se quer pausar ou encerrar
@@ -424,8 +427,11 @@ export async function handleConfiguracao({ user, message, state, context, histor
         const listaParaMostrar = context.acao === 'reativar' ? medicamentosPausados : medicamentosComSchedule;
 
         if (!med) {
-            const lista = listaParaMostrar.map(m => `• ${m.nome}`).join('\n');
-            return `Não encontrei esse medicamento, ${firstName}. Seus medicamentos:\n\n${lista}\n\nQual deles?`;
+            if (isCancelamento(message)) {
+                await saveConversationState(user.id, { state: 'idle', context: {} });
+                return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
+            }
+            return { escalarParaRoteador: true };
         }
 
         const schedulesAtivos = (med.schedules || []).filter(s => s.ativo);
@@ -461,8 +467,11 @@ export async function handleConfiguracao({ user, message, state, context, histor
             : null;
 
         if (!schedule) {
-            const lista = schedulesAtivos.map(s => `• ${s.horario.substring(0,5)}`).join('\n');
-            return `Não reconheci esse horário. Os lembretes cadastrados são:\n\n${lista}\n\nMe responda com um desses exatamente — por exemplo: *${schedulesAtivos[0]?.horario?.substring(0,5)}*`;
+            if (isCancelamento(message)) {
+                await saveConversationState(user.id, { state: 'idle', context: {} });
+                return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
+            }
+            return { escalarParaRoteador: true };
         }
 
         if (!context.novoHorario) {
@@ -487,8 +496,11 @@ export async function handleConfiguracao({ user, message, state, context, histor
             : null;
 
         if (!schedule) {
-            const lista = schedulesAtivos.map(s => `• ${s.horario.substring(0,5)}`).join('\n');
-            return `Não reconheci esse horário. Os lembretes cadastrados são:\n\n${lista}\n\nMe responda com um desses — por exemplo: *${schedulesAtivos[0]?.horario?.substring(0,5)}*`;
+            if (isCancelamento(message)) {
+                await saveConversationState(user.id, { state: 'idle', context: {} });
+                return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
+            }
+            return { escalarParaRoteador: true };
         }
 
         const ctx = { ...context, etapa: 'confirm_acao', scheduleId: schedule.id, horarioAtual: schedule.horario };
@@ -505,7 +517,11 @@ export async function handleConfiguracao({ user, message, state, context, histor
         });
 
         if (matches.length === 0) {
-            return `Não reconheci os horários, ${firstName}. Me diga os novos horários das doses — por exemplo: *06:00, 14:00 e 22:00*`;
+            if (isCancelamento(message)) {
+                await saveConversationState(user.id, { state: 'idle', context: {} });
+                return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
+            }
+            return { escalarParaRoteador: true };
         }
 
         const horariosUnicos = [...new Set(matches)];
@@ -518,7 +534,11 @@ export async function handleConfiguracao({ user, message, state, context, histor
     if (etapa === 'obter_horario') {
         const novoHorario = interpretarHorarioLivre(message);
         if (!novoHorario) {
-            return `Não reconheci esse horário, ${firstName}. Me diga o horário — pode ser assim: *15:00*, *3 da tarde* ou *15h* 😊`;
+            if (isCancelamento(message)) {
+                await saveConversationState(user.id, { state: 'idle', context: {} });
+                return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
+            }
+            return { escalarParaRoteador: true };
         }
         const newCtx = { ...context, etapa: 'confirm_acao', novoHorario };
         await saveConversationState(user.id, { state: 'configurando', context: newCtx });
@@ -576,7 +596,11 @@ export async function handleConfiguracao({ user, message, state, context, histor
         }
 
         if (!tipo_tratamento) {
-            return `Não entendi, ${firstName}. É uso *contínuo* (sem previsão de parada) ou *temporário* (tem um prazo determinado)?`;
+            if (isCancelamento(message)) {
+                await saveConversationState(user.id, { state: 'idle', context: {} });
+                return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
+            }
+            return { escalarParaRoteador: true };
         }
 
         if (tipo_tratamento === 'temporario' && !tratamento_dias) {
@@ -608,7 +632,11 @@ export async function handleConfiguracao({ user, message, state, context, histor
             if (numMatch) {
                 novoEstoque = parseInt(numMatch[0]);
             } else {
-                return `Não entendi, ${firstName}. Qual a quantidade atual em estoque? (ex: *20*)`;
+                if (isCancelamento(message)) {
+                    await saveConversationState(user.id, { state: 'idle', context: {} });
+                    return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
+                }
+                return { escalarParaRoteador: true };
             }
         }
 
@@ -644,7 +672,11 @@ export async function handleConfiguracao({ user, message, state, context, histor
             });
 
             if (matches.length === 0) {
-                return `Não entendi os horários, ${firstName}. Me diga os horários das doses — por exemplo: *08:00 e 20:00*`;
+                if (isCancelamento(message)) {
+                    await saveConversationState(user.id, { state: 'idle', context: {} });
+                    return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
+                }
+                return { escalarParaRoteador: true };
             }
 
             horariosFinais = matches;

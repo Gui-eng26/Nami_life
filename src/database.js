@@ -1395,7 +1395,7 @@ export async function usuarioRespondeuDesde(userId, timestampReferencia) {
 export async function getHistoricoRecente(userId, limite = 3) {
     const { data, error } = await supabase
         .from('agent_logs')
-        .select('user_message, agent_response, agent, created_at')
+        .select('user_message, agent_response, agent, estado_conversa, contexto_conversa, created_at')
         .eq('user_id', userId)
         .order('created_at', { ascending: false })
         .limit(limite);
