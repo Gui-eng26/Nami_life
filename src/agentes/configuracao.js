@@ -34,7 +34,7 @@ ${historicoTexto}
 
 Responda APENAS com JSON válido, sem markdown, sem explicações:
 {
-  "acao": "pausar" | "reativar" | "encerrar" | "alterar_horario" | "remover_horario" | "adicionar_horario" | "redefinir_horarios" | "esclarecer_pausar_encerrar" | "nao_suportado",
+  "acao": "pausar" | "reativar" | "encerrar" | "alterar_horario" | "remover_horario" | "adicionar_horario" | "redefinir_horarios" | "esclarecer_pausar_encerrar" | "recusa_opcoes_oferecidas" | "nao_suportado",
   "medicamentoMencionado": "nome mencionado ou null",
   "novoHorario": "HH:MM ou null"
 }
@@ -67,6 +67,12 @@ Definições:
 - esclarecer_pausar_encerrar: USAR APENAS quando o usuário quer parar de tomar/ser lembrado, mas NÃO dá nenhuma pista se é TEMPORÁRIO (pausar) ou DEFINITIVO (encerrar).
   Ex: "quero parar com o losartana", "cancela o dipirona", "não quero mais esse remédio" (sem dizer se terminou ou se é pausa)
 
+- recusa_opcoes_oferecidas: USAR quando a ÚLTIMA mensagem da Nami (ver CONVERSA RECENTE) apresentou
+  uma lista de opções para escolher — pode ser medicamentos, horários, ou a escolha entre pausar/
+  encerrar/contínuo/temporário — e a resposta do usuário rejeita TODAS essas opções sem mencionar
+  nenhum assunto novo.
+  Ex: "nenhum", "nenhuma", "nenhum dos dois", "nenhuma das opções", "nenhum desses", "nem um nem outro".
+
 - nao_suportado: pedidos que a configuração não faz — alterar tempo/duração de tratamento, alterar dosagem, alterar nome do medicamento.
   Ex: "mudar o tempo de tratamento", "alterar a dosagem", "trocar o nome do remédio", "mudar de 7 dias para 10 dias"
 
@@ -78,7 +84,10 @@ REGRAS DE DECISÃO:
    - pista de temporário ("essa semana", "por uns dias", "por enquanto") → pausar
 4. Só use esclarecer_pausar_encerrar quando quer parar e NÃO há nenhuma pista temporal.
 5. Intenção de horário sem detalhes → classifique pelo tipo de operação, nunca esclarecer.
-6. Se o pedido é sobre algo que a configuração não suporta (dosagem, tempo de tratamento, nome do medicamento) → nao_suportado.`;
+6. Se o pedido é sobre algo que a configuração não suporta (dosagem, tempo de tratamento, nome do medicamento) → nao_suportado.
+7. Se a última pergunta da Nami ofereceu uma lista de opções (medicamentos, horários, ou
+   pausar/encerrar/contínuo/temporário) e a resposta rejeita todas sem introduzir assunto novo
+   → recusa_opcoes_oferecidas. NUNCA confunda com reafirmar a ação anterior.`;
 
     try {
         const response = await anthropic.messages.create({
@@ -230,6 +239,13 @@ function sobrouConteudoAlemDoNome(message, medNome) {
     return restante.length > 0;
 }
 
+// "Parar a dipirona" cita um remédio — isso é intenção de encerrar tratamento,
+// não desistência da operação. Só aceita como cancelamento puro quando a
+// mensagem não menciona nenhum medicamento conhecido.
+function isCancelamentoGenuino(message, medicationsAtivos) {
+    return isCancelamento(message) && !encontrarMedicamento(message, medicationsAtivos);
+}
+
 function isConfirmacao(message) {
     const msg = message.toLowerCase().trim();
     const termos = ['sim', 's', 'ok', 'pode', 'claro', 'confirmar', 'confirmo', 'vai', 'vamos', 'isso'];
@@ -374,7 +390,7 @@ async function executarAcao(user, firstName, ctx) {
 // e decide o próximo passo — usado pela entrada fresca em identif_intencao E
 // por qualquer outra etapa que precise reconfirmar se a intenção mudou.
 async function processarIntencaoOuEscalar({ user, firstName, message, medicationsAtivos, medicamentosComSchedule, medicamentosPausados, historicoConversa, context }) {
-    if (context.medicationId && isCancelamento(message)) {
+    if (context.medicationId && isCancelamentoGenuino(message, medicationsAtivos)) {
         await saveConversationState(user.id, { state: 'idle', context: {} });
         return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
     }
@@ -392,9 +408,17 @@ async function processarIntencaoOuEscalar({ user, firstName, message, medication
         return { escalarParaRoteador: true };
     }
 
+    if (acao === 'recusa_opcoes_oferecidas') {
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
+    }
+
     // Intenção de parar sem pista temporal → perguntar se quer pausar ou encerrar
     if (acao === 'esclarecer_pausar_encerrar') {
-        const med = medicamentoMencionado ? encontrarMedicamento(medicamentoMencionado, medicationsAtivos) : (context.medicationId ? medicationsAtivos.find(m => m.id === context.medicationId) : null);
+        const medNaMensagemAtual = encontrarMedicamento(message, medicationsAtivos);
+        const med = medNaMensagemAtual
+            || (context.medicationId ? medicationsAtivos.find(m => m.id === context.medicationId) : null)
+            || (medicamentoMencionado ? encontrarMedicamento(medicamentoMencionado, medicationsAtivos) : null);
         const nomeExibir = med?.nome || medicamentoMencionado || context.medicationNome || 'esse medicamento';
         await saveConversationState(user.id, {
             state: 'configurando',
@@ -409,10 +433,11 @@ async function processarIntencaoOuEscalar({ user, firstName, message, medication
     }
 
     // Medicamento já identificado no contexto (vem de esclarecer_pausar_encerrar anterior ou de outro fluxo)
+    const medNaMensagemAtual = encontrarMedicamento(message, medicationsAtivos);
     const medDoContexto = context.medicationId
         ? medicationsAtivos.find(m => m.id === context.medicationId)
         : null;
-    const med = medDoContexto
+    const med = medNaMensagemAtual || medDoContexto
         || (medicamentoMencionado ? encontrarMedicamento(medicamentoMencionado, medicationsAtivos) : null);
     return await continuarComAcao({ user, firstName, acao, med, medicationsAtivos, medicamentosComSchedule, medicamentosPausados, novoHorario, message });
 }
@@ -495,7 +520,7 @@ export async function handleConfiguracao({ user, message, state, context, histor
             : null;
 
         if (!schedule) {
-            if (isCancelamento(message)) {
+            if (isCancelamentoGenuino(message, medicationsAtivos)) {
                 await saveConversationState(user.id, { state: 'idle', context: {} });
                 return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
             }
@@ -524,7 +549,7 @@ export async function handleConfiguracao({ user, message, state, context, histor
             : null;
 
         if (!schedule) {
-            if (isCancelamento(message)) {
+            if (isCancelamentoGenuino(message, medicationsAtivos)) {
                 await saveConversationState(user.id, { state: 'idle', context: {} });
                 return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
             }
@@ -545,7 +570,7 @@ export async function handleConfiguracao({ user, message, state, context, histor
         });
 
         if (matches.length === 0) {
-            if (isCancelamento(message)) {
+            if (isCancelamentoGenuino(message, medicationsAtivos)) {
                 await saveConversationState(user.id, { state: 'idle', context: {} });
                 return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
             }
@@ -562,7 +587,7 @@ export async function handleConfiguracao({ user, message, state, context, histor
     if (etapa === 'obter_horario') {
         const novoHorario = interpretarHorarioLivre(message);
         if (!novoHorario) {
-            if (isCancelamento(message)) {
+            if (isCancelamentoGenuino(message, medicationsAtivos)) {
                 await saveConversationState(user.id, { state: 'idle', context: {} });
                 return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
             }
@@ -624,7 +649,7 @@ export async function handleConfiguracao({ user, message, state, context, histor
         }
 
         if (!tipo_tratamento) {
-            if (isCancelamento(message)) {
+            if (isCancelamentoGenuino(message, medicationsAtivos)) {
                 await saveConversationState(user.id, { state: 'idle', context: {} });
                 return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
             }
@@ -660,7 +685,7 @@ export async function handleConfiguracao({ user, message, state, context, histor
             if (numMatch) {
                 novoEstoque = parseInt(numMatch[0]);
             } else {
-                if (isCancelamento(message)) {
+                if (isCancelamentoGenuino(message, medicationsAtivos)) {
                     await saveConversationState(user.id, { state: 'idle', context: {} });
                     return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
                 }
@@ -700,7 +725,7 @@ export async function handleConfiguracao({ user, message, state, context, histor
             });
 
             if (matches.length === 0) {
-                if (isCancelamento(message)) {
+                if (isCancelamentoGenuino(message, medicationsAtivos)) {
                     await saveConversationState(user.id, { state: 'idle', context: {} });
                     return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
                 }
