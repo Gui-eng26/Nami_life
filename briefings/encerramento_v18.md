@@ -663,3 +663,90 @@ node src/index.js
 - **Railway:** produção com auto-deploy no git push. Logs exportados em UTC.
 - **Claude Code (VS Code):** implementação via briefings `.md`, sempre com texto literal embutido.
 
+<!-- ==================================================================== -->
+<!-- FIM DO CONTEXT.md ATUALIZADO — o que vem abaixo NÃO faz parte do    -->
+<!-- CONTEXT.md. São instruções para o Claude Code executar nesta sessão -->
+<!-- de encerramento (v18), via src/backlog.js — nunca SQL direto.      -->
+<!-- ==================================================================== -->
+
+# INSTRUÇÕES DE ENCERRAMENTO — Sessão v18
+
+## 1. Sobrescrever CONTEXT.md
+Substituir o conteúdo de `CONTEXT.md` na raiz do repositório por tudo que está ACIMA do
+separador `<!-- FIM DO CONTEXT.md ATUALIZADO -->`, exatamente como está (sem a seção de Backlog
+detalhada — ela permanece só o ponteiro de consulta ao Supabase, como já é hoje).
+
+## 2. Atualizações em `backlog_items` (via `atualizarStatusBacklogItem`, nunca SQL direto)
+
+**BUG-032** (numero=32) — status `aberto` → `em_validacao`
+sessao_fechamento: `v18`, data_fechamento: `2026-07-10`
+notas: "Solução sistêmica implementada (modelo de 3 camadas + escalada via despacharEscalada). 31/31 testes automatizados + validação manual real em produção (escalada correta, retomada preservando contexto, resposta de não-suportado via LLM). Falta confirmar ausência de vazamento de contexto entre conversas não relacionadas (cenário 5) — monitoramento contínuo, não bloqueante."
+
+**BUG-033** (numero=33) — status `aberto` → `em_validacao`
+sessao_fechamento: `v18`, data_fechamento: `2026-07-10`
+notas: "Mesma correção sistêmica do BUG-032 (causa raiz compartilhada). Mesma validação."
+
+## 3. Novos itens em `backlog_items` (via `registrarItemBacklog`)
+
+**BUG-060**
+titulo: "identif_medicamento ignora mudança de intenção quando o remédio é reconhecido na mensagem"
+descricao: "Quando o usuário já tinha uma ação em andamento (ex: alterar_horario) e a etapa identif_medicamento reconhecia o remédio citado na frase, ela seguia cega com a ação antiga do contexto, ignorando qualquer mudança de intenção na mesma mensagem (ex: 'quero parar o Neosaldina' tratado só como escolha do remédio)."
+causa_raiz: "encontrarMedicamento(message, ...) confirmava o remédio e a etapa prosseguia direto com continuarComAcao usando context.acao, sem nunca reavaliar se a frase trazia uma ação diferente."
+status: `em_validacao`
+prioridade: `media`
+sessao_criacao: `v18`
+data_criacao: `2026-07-10`
+
+**BUG-061**
+titulo: "Recadastro de medicamento após encerramento não avança após confirmação 'Isso'"
+descricao: "Após encerrar um tratamento e tentar recadastrar o mesmo medicamento, a confirmação 'Isso' não parece levar adiante o fluxo de cadastro — evidência de print de produção."
+causa_raiz: "NÃO CONFIRMADA — apenas hipótese registrada a partir de evidência visual. Requer investigação em agent_logs e no código de cadastro.js antes de propor correção."
+status: `aberto`
+prioridade: null
+sessao_criacao: `v18`
+data_criacao: `2026-07-10`
+
+**BUG-062**
+titulo: "'parar [remédio]' interpretado como cancelamento genérico em vez de encerrar tratamento"
+descricao: "Mensagens como 'na verdade quero parar com a dipirona' ou 'parar dipirona' eram lidas como desistência da operação em vez de intenção de encerrar o tratamento daquele remédio, em qualquer etapa que checasse isCancelamento() com um medicamento já resolvido no contexto."
+causa_raiz: "isCancelamento() tem precedência cega sobre qualquer outra interpretação em 8 pontos do configuracao.js. A palavra 'parar' está no vocabulário de cancelamento, mas quando a mensagem também cita um medicamento, isso quase sempre significa encerrar tratamento, não desistir da operação."
+status: `em_validacao`
+prioridade: `media`
+sessao_criacao: `v18`
+data_criacao: `2026-07-10`
+
+**BUG-063**
+titulo: "Medicamento do contexto preservado vence sobre remédio citado explicitamente na mensagem atual"
+descricao: "Ao escalar e reentrar em identif_intencao preservando um medicamento do contexto (ex: Cataflam), se o usuário citasse um remédio diferente na mensagem que escalou (ex: 'quero alterar dipirona'), o sistema ignorava a menção nova e continuava com o medicamento preservado."
+causa_raiz: "processarIntencaoOuEscalar priorizava context.medicationId (ou o palpite medicamentoMencionado do classificador, que pode refletir historicoConversa desatualizado) sobre o texto literal da mensagem atual, que é o sinal mais confiável disponível."
+status: `em_validacao`
+prioridade: `media`
+sessao_criacao: `v18`
+data_criacao: `2026-07-10`
+
+**BUG-064**
+titulo: "Classificador interno não reconhece recusa de lista de opções oferecida"
+descricao: "Respostas como 'Nenhum'/'Nada' a perguntas de múltipla escolha (horários, medicamentos, pausar/encerrar, contínuo/temporário) faziam a Nami repetir a mesma pergunta em vez de reconhecer que o usuário recusou todas as opções."
+causa_raiz: "classificarIntencao() (classificador interno do configuracao.js) só classifica entre 9 ações de alto nível — não existia categoria para 'usuário recusou a lista de opções oferecida'. Sem essa categoria, o classificador reafirmava a ação em andamento."
+status: `em_validacao`
+prioridade: `media`
+sessao_criacao: `v18`
+data_criacao: `2026-07-10`
+
+**MH-047**
+titulo: "Uniformizar tom/voz das mensagens hardcoded do configuracao.js com o resto do sistema"
+descricao: "As mensagens do configuracao.js são strings fixas escritas sem instrução de tom, resultando em texto mais frio/formal do que o resto do sistema (que passa por instrução de persona carinhosa via LLM em prompts.js). Corrigir por reescrita manual das strings, não por reescrita via LLM da resposta final (risco de alterar nome de remédio/horário/número — fere princípios 4/11)."
+causa_raiz: "Confirmado via agent_logs: mesma intenção do usuário gera respostas com tom visivelmente diferente dependendo de qual agente responde (principal via LLM com persona vs. configuracao com string fixa sem persona)."
+status: `aberto`
+prioridade: `baixa`
+sessao_criacao: `v18`
+data_criacao: `2026-07-10`
+
+**MH-048**
+titulo: "Registrar sinal explícito de escalada em agent_logs"
+descricao: "Hoje, confirmar se uma mensagem escalou (Camada 3) exige inspecionar console.log do Railway e cruzar timestamps manualmente — a informação não fica em agent_logs, que é a fonte consultável e permanente do projeto. Sugestão: gravar um marcador (ex: dentro de contexto_conversa) quando despacharEscalada roda. Não desenhado ainda — precisa de sessão própria pra decidir onde gravar sem misturar com o contexto operacional que as etapas leem."
+causa_raiz: "N/A — melhoria de instrumentação, não correção de bug."
+status: `aberto`
+prioridade: `baixa`
+sessao_criacao: `v18`
+data_criacao: `2026-07-10`
