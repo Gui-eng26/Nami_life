@@ -12,7 +12,7 @@ import {
     adicionarSchedule,
     formatarHistoricoConversa
 } from '../database.js';
-import { isCancelamento, encontrarMedicamento } from '../nlp_helpers.js';
+import { isCancelamento, encontrarMedicamento, normalizar } from '../nlp_helpers.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -221,6 +221,15 @@ function normalizarHorario(message, schedulesDisponiveis) {
     return null;
 }
 
+function sobrouConteudoAlemDoNome(message, medNome) {
+    const semPontuacao = (s) => s.replace(/[^\w\s]/g, '').trim();
+    const restante = semPontuacao(normalizar(message))
+        .replace(semPontuacao(normalizar(medNome)), '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return restante.length > 0;
+}
+
 function isConfirmacao(message) {
     const msg = message.toLowerCase().trim();
     const termos = ['sim', 's', 'ok', 'pode', 'claro', 'confirmar', 'confirmo', 'vai', 'vamos', 'isso'];
@@ -361,6 +370,53 @@ async function executarAcao(user, firstName, ctx) {
     }
 }
 
+// ── HELPER: classifica a intenção da mensagem atual (via classificarIntencao)
+// e decide o próximo passo — usado pela entrada fresca em identif_intencao E
+// por qualquer outra etapa que precise reconfirmar se a intenção mudou.
+async function processarIntencaoOuEscalar({ user, firstName, message, medicationsAtivos, medicamentosComSchedule, medicamentosPausados, historicoConversa, context }) {
+    if (context.medicationId && isCancelamento(message)) {
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
+    }
+    const { acao, medicamentoMencionado, novoHorario } = await classificarIntencao(message, medicationsAtivos, historicoConversa);
+
+    if (medicationsAtivos.length === 0) {
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        return `Você não tem nenhum medicamento cadastrado ainda, ${firstName}. Quer cadastrar um agora?`;
+    }
+
+    // Rede de segurança do classificador interno — não decide mais sozinho se é
+    // "não suportado de verdade" ou "suportado por outro agente". Escala pro
+    // classificador central em vez de responder direto.
+    if (acao === 'nao_suportado') {
+        return { escalarParaRoteador: true };
+    }
+
+    // Intenção de parar sem pista temporal → perguntar se quer pausar ou encerrar
+    if (acao === 'esclarecer_pausar_encerrar') {
+        const med = medicamentoMencionado ? encontrarMedicamento(medicamentoMencionado, medicationsAtivos) : (context.medicationId ? medicationsAtivos.find(m => m.id === context.medicationId) : null);
+        const nomeExibir = med?.nome || medicamentoMencionado || context.medicationNome || 'esse medicamento';
+        await saveConversationState(user.id, {
+            state: 'configurando',
+            context: {
+                etapa: 'identif_intencao',
+                medicationId: med?.id || null,
+                medicationNome: nomeExibir,
+                schedulesAtivos: med ? (med.schedules || []).filter(s => s.ativo) : []
+            }
+        });
+        return `Entendido, ${firstName}! Sobre o *${nomeExibir}*, você quer:\n\n• *Pausar* os lembretes (temporário — pode retomar depois)\n• *Encerrar* o tratamento definitivamente\n\nO que prefere?`;
+    }
+
+    // Medicamento já identificado no contexto (vem de esclarecer_pausar_encerrar anterior ou de outro fluxo)
+    const medDoContexto = context.medicationId
+        ? medicationsAtivos.find(m => m.id === context.medicationId)
+        : null;
+    const med = medDoContexto
+        || (medicamentoMencionado ? encontrarMedicamento(medicamentoMencionado, medicationsAtivos) : null);
+    return await continuarComAcao({ user, firstName, acao, med, medicationsAtivos, medicamentosComSchedule, medicamentosPausados, novoHorario, message });
+}
+
 // ============================================================
 // HANDLER PRINCIPAL
 // ============================================================
@@ -378,47 +434,7 @@ export async function handleConfiguracao({ user, message, state, context, histor
 
     // ── ETAPA 1: Classificar intenção via Claude ─────────────────────────────
     if (etapa === 'identif_intencao') {
-        if (context.medicationId && isCancelamento(message)) {
-            await saveConversationState(user.id, { state: 'idle', context: {} });
-            return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
-        }
-        const { acao, medicamentoMencionado, novoHorario } = await classificarIntencao(message, medicationsAtivos, historicoConversa);
-
-        if (medicationsAtivos.length === 0) {
-            await saveConversationState(user.id, { state: 'idle', context: {} });
-            return `Você não tem nenhum medicamento cadastrado ainda, ${firstName}. Quer cadastrar um agora?`;
-        }
-
-        // Rede de segurança do classificador interno — não decide mais sozinho se é
-        // "não suportado de verdade" ou "suportado por outro agente". Escala pro
-        // classificador central em vez de responder direto.
-        if (acao === 'nao_suportado') {
-            return { escalarParaRoteador: true };
-        }
-
-        // Intenção de parar sem pista temporal → perguntar se quer pausar ou encerrar
-        if (acao === 'esclarecer_pausar_encerrar') {
-            const med = medicamentoMencionado ? encontrarMedicamento(medicamentoMencionado, medicationsAtivos) : null;
-            const nomeExibir = med?.nome || medicamentoMencionado || 'esse medicamento';
-            await saveConversationState(user.id, {
-                state: 'configurando',
-                context: {
-                    etapa: 'identif_intencao',
-                    medicationId: med?.id || null,
-                    medicationNome: nomeExibir,
-                    schedulesAtivos: med ? (med.schedules || []).filter(s => s.ativo) : []
-                }
-            });
-            return `Entendido, ${firstName}! Sobre o *${nomeExibir}*, você quer:\n\n• *Pausar* os lembretes (temporário — pode retomar depois)\n• *Encerrar* o tratamento definitivamente\n\nO que prefere?`;
-        }
-
-        // Medicamento já identificado no contexto (vem de esclarecer_pausar_encerrar anterior ou de outro fluxo)
-        const medDoContexto = context.medicationId
-            ? medicationsAtivos.find(m => m.id === context.medicationId)
-            : null;
-        const med = medDoContexto
-            || (medicamentoMencionado ? encontrarMedicamento(medicamentoMencionado, medicationsAtivos) : null);
-        return await continuarComAcao({ user, firstName, acao, med, medicationsAtivos, medicamentosComSchedule, medicamentosPausados, novoHorario, message });
+        return await processarIntencaoOuEscalar({ user, firstName, message, medicationsAtivos, medicamentosComSchedule, medicamentosPausados, historicoConversa, context });
     }
 
     // ── ETAPA 3: Usuário especifica qual medicamento ──────────────────────────
@@ -435,6 +451,18 @@ export async function handleConfiguracao({ user, message, state, context, histor
         }
 
         const schedulesAtivos = (med.schedules || []).filter(s => s.ativo);
+
+        // A mensagem trouxe mais do que só o nome do remédio? Pode ser mudança de
+        // intenção ("quero parar o Neosaldina" em vez de só "Neosaldina") — reaproveita
+        // o mesmo classificador/escalada de identif_intencao em vez de seguir cego
+        // com a ação que já estava fixada no contexto.
+        if (sobrouConteudoAlemDoNome(message, med.nome)) {
+            return await processarIntencaoOuEscalar({
+                user, firstName, message, medicationsAtivos, medicamentosComSchedule, medicamentosPausados, historicoConversa,
+                context: { etapa: 'identif_intencao', medicationId: med.id, medicationNome: med.nome, schedulesAtivos }
+            });
+        }
+
         const { acao, novoHorario } = context;
         return await continuarComAcao({ user, firstName, acao, med, medicationsAtivos, medicamentosComSchedule, medicamentosPausados, novoHorario, message, schedulesAtivos });
     }
