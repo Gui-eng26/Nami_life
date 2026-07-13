@@ -8,6 +8,7 @@ import {
     getEstoqueInfoParaAlerta,
     calcularAlertaEstoque
 } from '../database.js';
+import { buildAlertaEstoqueNaoInformado } from '../templates/estoqueTemplates.js';
 
 // ============================================================
 // MENSAGENS DE FOLLOW-UP
@@ -37,26 +38,6 @@ function buildFollowUpMessage(tentativa, reminder) {
 
     // Fallback seguro (não deveria ser chamado fora de tentativa 2 ou 3)
     return `💊 ${nome}, lembrete do *${remedio}*. Já tomou? Responda *SIM* ou *NÃO*`;
-}
-
-// ============================================================
-// MENSAGEM DE ALERTA DE ESTOQUE (caso nao_informado)
-// ============================================================
-
-function buildAlertaEstoqueNaoInformadoMessage(firstName, info) {
-    const { medNome, novoEstoque, diasRestantes } = info;
-
-    const prazo = diasRestantes === 0
-        ? 'está esgotado'
-        : diasRestantes === 1
-            ? 'dura mais 1 dia'
-            : `dura mais ${diasRestantes} dias`;
-
-    return (
-        `⚠️ ${firstName}, não recebi confirmação da sua dose do *${medNome}*.\n\n` +
-        `Seu estoque atual é de *${novoEstoque}* unidades — ${prazo}.\n` +
-        `Quando puder, me avise se tomou, e não esqueça de providenciar a recompra! 💊`
-    );
 }
 
 // ============================================================
@@ -148,7 +129,7 @@ export async function handleFollowUp({ doseLog, reminder }) {
                     });
                     if (deveAlertar) {
                         const firstName = reminder.user_name?.split(' ')[0] || 'você';
-                        const msg = buildAlertaEstoqueNaoInformadoMessage(firstName, estoqueInfo);
+                        const msg = buildAlertaEstoqueNaoInformado(firstName, estoqueInfo);
                         await sendTextMessage(reminder.phone, msg);
                         console.log(`📦 Alerta de estoque (nao_informado) enviado para ${reminder.phone} — ${estoqueInfo.medNome}`);
                     }

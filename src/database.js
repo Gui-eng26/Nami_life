@@ -1305,6 +1305,14 @@ export async function contarConfirmacoesHoje(medicationId) {
     return (data || []).length;
 }
 
+// Classifica o nível de urgência do estoque com base em unidades reais E dias de
+// cobertura — nunca infere "zerado" a partir de diasRestantes sozinho (BUG-065).
+export function classificarNivelEstoquePorDias({ novoEstoque, diasRestantes }) {
+    if (novoEstoque <= 0) return 'zerado';       // literalmente sem unidades
+    if (diasRestantes === 0) return 'urgente';   // sobra estoque, mas não fecha 1 dia
+    return 'ok';                                  // diasRestantes >= 1
+}
+
 // Decide se deve enviar alerta de estoque após confirmação
 // Retorna false se não deve alertar, ou true se deve
 export function calcularAlertaEstoque({ diasRestantes, tipo_tratamento, tratamento_dias, confirmacoesDoDia }) {

@@ -22,30 +22,9 @@ import {
     confirmarDoseRetroativa,
     reverterConfirmacao
 } from '../database.js';
+import { buildAlertaEstoquePosConfirmacao } from '../templates/estoqueTemplates.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-function buildAlertaEstoqueMessage(info) {
-    const { medNome, novoEstoque, diasRestantes } = info;
-
-    if (diasRestantes === 0) {
-        return (
-            `\n\n⚠️ *Atenção:* você acabou de tomar o último comprimido do *${medNome}* disponível. ` +
-            `Não esqueça de providenciar a recompra!\n` +
-            `Quando comprar, me avise: *"Comprei 30 comprimidos de ${medNome}"* 💊`
-        );
-    }
-
-    const prazo = diasRestantes === 1
-        ? 'mais *1 dia*'
-        : `mais *${diasRestantes} dias*`;
-
-    return (
-        `\n\n⚠️ *Lembrete de estoque:* você tem *${novoEstoque}* ${novoEstoque === 1 ? 'unidade' : 'unidades'} ` +
-        `do *${medNome}* — suficiente para ${prazo}. ` +
-        `Bom momento para planejar a recompra! 💊`
-    );
-}
 
 // Alerta pós-ajuste manual de estoque (MH-042) — reaproveita o mesmo limiar
 // crítico/baixo/ok já usado em relatorioEstoque, sem criar um segundo mecanismo.
@@ -364,7 +343,7 @@ async function processAction(action, user) {
                         confirmacoesDoDia
                     });
                     if (deveAlertar) {
-                        return { alertaEstoque: buildAlertaEstoqueMessage(estoqueInfo) };
+                        return { alertaEstoque: buildAlertaEstoquePosConfirmacao(estoqueInfo) };
                     }
                 }
             } catch (e) {
@@ -399,7 +378,7 @@ async function processAction(action, user) {
                         confirmacoesDoDia
                     });
                     if (deveAlertar) {
-                        return { alertaEstoque: buildAlertaEstoqueMessage(estoqueInfo) };
+                        return { alertaEstoque: buildAlertaEstoquePosConfirmacao(estoqueInfo) };
                     }
                 }
             } catch (e) {

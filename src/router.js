@@ -3,38 +3,13 @@ import { getConversationState, logAgentInteraction, getRecentDoses,
     getEstoqueInfoParaAlerta, contarConfirmacoesHoje, calcularAlertaEstoque,
     saveConversationState, getHistoricoRecente, registrarIntencaoNaoSuportada,
     getDosesRetroativas, confirmarDoseRetroativa, usuarioRespondeuDesde } from './database.js';
+import { buildAlertaEstoquePosConfirmacao } from './templates/estoqueTemplates.js';
 import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
 import { handleCadastro } from './agentes/cadastro.js';
 import { handleRelatorios, classificarIntencaoRelatorio, extrairPeriodo } from './agentes/relatorios.js';
 import { handleConfiguracao } from './agentes/configuracao.js';
 import { isCancelamento } from './nlp_helpers.js';
-
-// ============================================================
-// MENSAGEM DE ALERTA DE ESTOQUE PÓS-CONFIRMAÇÃO
-// ============================================================
-
-function buildAlertaEstoqueMessage(info) {
-    const { medNome, novoEstoque, diasRestantes } = info;
-
-    if (diasRestantes === 0) {
-        return (
-            `\n\n⚠️ *Atenção:* você acabou de tomar o último comprimido do *${medNome}* disponível. ` +
-            `Não esqueça de providenciar a recompra!\n` +
-            `Quando comprar, me avise: *"Comprei 30 comprimidos de ${medNome}"* 💊`
-        );
-    }
-
-    const prazo = diasRestantes === 1
-        ? 'mais *1 dia*'
-        : `mais *${diasRestantes} dias*`;
-
-    return (
-        `\n\n⚠️ *Lembrete de estoque:* você tem *${novoEstoque}* ${novoEstoque === 1 ? 'unidade' : 'unidades'} ` +
-        `do *${medNome}* — suficiente para ${prazo}. ` +
-        `Bom momento para planejar a recompra! 💊`
-    );
-}
 
 // ============================================================
 // IDEMPOTÊNCIA — descarta eventos duplicados da Z-API
@@ -126,7 +101,7 @@ async function tentarConfirmarRespostaTardia(user, message) {
                     tratamento_dias: estoqueInfo.tratamento_dias,
                     confirmacoesDoDia
                 });
-                if (deveAlertar) alertaSufixo += buildAlertaEstoqueMessage(estoqueInfo);
+                if (deveAlertar) alertaSufixo += buildAlertaEstoquePosConfirmacao(estoqueInfo);
             }
         } catch (e) {
             console.error('⚠️ Erro ao verificar alerta estoque (fast-path resposta tardia):', e.message);
@@ -448,7 +423,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                         tratamento_dias: estoqueInfo.tratamento_dias,
                         confirmacoesDoDia
                     });
-                    if (deveAlertar) alertaSufixo = buildAlertaEstoqueMessage(estoqueInfo);
+                    if (deveAlertar) alertaSufixo = buildAlertaEstoquePosConfirmacao(estoqueInfo);
                 }
             } catch (e) {
                 console.error('⚠️ Erro ao verificar alerta estoque (fast-path):', e.message);
