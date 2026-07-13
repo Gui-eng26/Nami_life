@@ -3,7 +3,7 @@
   "autoVerify": false,
   "configurations": [
     {
-      "name": "nami-backend",
+      "name": "Nami_life",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "port": 3000

@@ -71,7 +71,7 @@ Frases que mostram conexão com o que o usuário pediu, não seguir etapas de fo
 ## Estrutura de Arquivos
 
 ```
-nami-backend/
+Nami_life/
 ├── src/
 │   ├── index.js              → Entry point + webhook + proteção idempotência
 │   ├── agent.js               → Orquestrador — chama routeMessage
