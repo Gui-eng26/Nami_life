@@ -751,3 +751,30 @@ node src/index.js
 - **Railway:** produção com auto-deploy no git push. Logs exportados em UTC.
 - **Claude Code (VS Code):** implementação via briefings `.md`, sempre com texto literal embutido.
 
+
+<!-- ==================================================================== -->
+<!-- FIM DO CONTEXT.md ATUALIZADO — o que vem abaixo NÃO faz parte do    -->
+<!-- CONTEXT.md. São instruções para o Claude Code executar nesta sessão -->
+<!-- de encerramento (v19), via src/backlog.js — nunca SQL direto.      -->
+<!-- ==================================================================== -->
+
+# INSTRUÇÕES DE ENCERRAMENTO — Sessão v19
+
+## 1. Sobrescrever CONTEXT.md
+Substituir o conteúdo de `CONTEXT.md` na raiz do repositório por tudo que está ACIMA do
+separador `<!-- FIM DO CONTEXT.md ATUALIZADO -->`, exatamente como está (sem a seção de Backlog
+detalhada — ela permanece só o ponteiro de consulta ao Supabase, como já é hoje).
+
+## 2. Atualizações em `backlog_items`
+
+Nenhuma ação necessária nesta etapa de encerramento. BUG-065, MH-049 e MH-050 já foram
+registrados diretamente durante a implementação do `BRIEFING_BUG065.md`, mais cedo nesta mesma
+sessão (via `src/backlog.js`, não SQL direto) — já confirmados no Supabase com `status`,
+`causa_raiz` e `data_criacao` corretos antes deste encerramento. Não recriar nem duplicar.
+
+## 3. Commit e push
+
+Commitar a atualização do `CONTEXT.md` com a mensagem:
+`docs: encerramento sessão v19 (BUG-065, MH-049/050, higiene de nome de repositório)`
+
+e dar push para o `main`.
