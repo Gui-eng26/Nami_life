@@ -1,3 +1,15 @@
+# BRIEFING — Encerramento Sessão v20 (26/07/2026)
+
+> **Contrato de implementação para o Claude Code.**
+> Executar exatamente como descrito abaixo: (1) sobrescrever `CONTEXT.md` com o conteúdo
+> embutido neste arquivo, (2) aplicar as alterações em `backlog_items` via Supabase, (3)
+> git add/commit/push. Não improvisar além do escopo aqui definido.
+
+---
+
+## 1. CONTEXT.md — sobrescrever com o conteúdo abaixo (literal, entre os marcadores)
+
+<<<CONTEXT_MD_START>>>
 # 🌿 NAMI — Contexto do Projeto (v20 — Sessão de validação de backlog em produção: 9 bugs fechados com evidência real (BUG-032/033/035/059/060/062/063/064/065), MH-032 fechado (lembrete inicial), BUG-066 e MH-051 registrados — 26/07/2026)
 
 ---
@@ -851,3 +863,65 @@ node src/index.js
 - **Claude Code (VS Code):** implementação via briefings `.md`, sempre com texto literal embutido.
 
 
+<<<CONTEXT_MD_END>>>
+
+---
+
+## 2. Alterações em `backlog_items` (Supabase, projeto nputymewnwmnhrtpizzs)
+
+⚠️ Usar exclusivamente as funções de escrita do projeto
+(`registrarItemBacklog`/`atualizarStatusBacklogItem`, `src/backlog.js`), nunca SQL direto — ver
+princípio de engenharia #16 no CONTEXT.md. Se essas funções não expuserem um caminho de script
+para uso fora do runtime da aplicação, usar SQL direto aqui é aceitável como exceção
+explicitamente revisada (briefing de manutenção em lote), não como caminho padrão.
+
+### 2.1 Itens existentes → `status = 'resolvido'`
+
+Para cada um: `sessao_fechamento = 'v20'`, `data_fechamento = '2026-07-26'`.
+
+| tipo | numero | notas (campo `notas`) |
+|---|---|---|
+| BUG | 035 | Confirmado em produção: `agent: fast_path_resposta_tardia` recorrente em `agent_logs` 11/07–25/07, múltiplos usuários. |
+| BUG | 059 | Confirmado em produção: rótulos ontem/hoje/anteontem corretos em várias conversas reais 09/07–26/07, incluindo 2 dias retroativos simultâneos (13/07). |
+| BUG | 032 | Confirmado em produção: fluxo de encerramento sai limpo via "Não"/"Deixa pra lá" em 23/07 e 24/07, sem loop. |
+| BUG | 033 | Confirmado em produção junto com BUG-032 (mesma correção, 3 camadas em configuracao.js). |
+| BUG | 060 | Confirmado indiretamente: comportamento geral do configuracao.js pós-deploy (23-24/07) consistente, sem recorrência do padrão original de identif_medicamento ignorando mudança de intenção. |
+| BUG | 062 | Confirmado em produção 23/07: "Parar com o Cataflam" abre pausar/encerrar; "Quero encerrar dipirona" vai direto à confirmação. |
+| BUG | 063 | Confirmado em produção 26/07: "Mudar horário do Cataflam" → "Na vdd quero alterar o dipirona" trocou corretamente para Dipirona. |
+| BUG | 064 | Confirmado em produção 26/07: as 3 variações do checklist (lista de horários, pausar/encerrar, lista de medicamentos) reconhecem "Nenhum"/"Nada" corretamente. |
+| BUG | 065 | Confirmado em produção 13/07-25/07: alertas de estoque sempre com contagem real ("mais N unidade(s)") em cenário dosesPerDia>=2, nunca mais "zerado" com estoque positivo. |
+| MH | 032 | Fechado com escopo do lembrete inicial: agrupamento confirmado correto em produção (20,21,22,23,24,25/07). Follow-up agrupado tem falha intermitente confirmada, separada para BUG-066 (ver item novo abaixo) por disciplina de escopo. |
+
+### 2.2 Itens novos → `INSERT`
+
+**Item 1:**
+- tipo: `BUG`
+- numero: `066`
+- titulo: `Follow-up agrupado (MH-032) quebra em mensagens individuais por drift de timestamp entre doses do mesmo grupo`
+- descricao: `No follow-up de lembretes agrupados (2+ doses do mesmo usuário e horário), a mensagem deveria sempre sair unificada (ver MH-032). Confirmado com o export do WhatsApp do usuário que em 21/07, 22/07 e 24/07 o follow-up saiu agrupado corretamente, mas em 23/07 e 25/07 saiu como duas mensagens individuais separadas, com exatos 2 minutos de diferença entre elas (1 tick do cron de scheduler.js).`
+- causa_raiz: `HIPÓTESE (não confirmada 100% — faltam os valores exatos de ultima_tentativa_at nos logs do Railway). createDoseLog e updateDoseLogTentativa (database.js) calculam new Date().toISOString() independentemente a cada chamada, dentro de loops sequenciais que processam uma dose por vez do mesmo grupo — não existe timestamp único compartilhado entre as doses de um grupo. O filtro de follow-up (checkAndSendFollowUps, scheduler.js) usa >= rígido checado a cada 2 minutos (cron */2 * * * *). O drift de milissegundos entre as doses do grupo pode ocasionalmente colocá-las em ticks de cron diferentes, quebrando o agrupamento naquele ciclo especificamente — explica a intermitência, já que depende do alinhamento entre o instante exato em que o limiar de tempo se completa e os ticks do cron.`
+- status: `aberto`
+- prioridade: `baixa`
+- sessao_criacao: `v20`
+- data_criacao: `2026-07-26`
+
+**Item 2:**
+- tipo: `MH`
+- numero: `051`
+- titulo: `Bot não reconhece pergunta de esclarecimento do usuário quando nenhum medicamento foi identificado no fluxo de pausar/encerrar`
+- descricao: `Achado durante os testes de validação do BUG-064 (26/07), fora do escopo dos cenários testados. Sequência observada: "Parar lembrete" → bot pergunta pausar/encerrar sobre "esse medicamento" (nenhum remédio identificado ainda) → usuário responde "Qual medicamento?" tentando esclarecer → bot não entende a pergunta e repete a mesma pergunta de pausar/encerrar ("Parar" também repetiu). Só resolveu quando o usuário disse "Encerrar" diretamente.`
+- causa_raiz: `HIPÓTESE, baseada em uma única ocorrência — não investigada a fundo. Quando a ação já está clara ("parar"/"lembrete") mas nenhum medicamento foi citado nem está no contexto, o placeholder "esse medicamento" fica sem referente e o classificador não reconhece uma pergunta de esclarecimento do usuário como tal (é tratada como mais uma tentativa de responder à pergunta pausar/encerrar).`
+- status: `aberto`
+- prioridade: `baixa`
+- sessao_criacao: `v20`
+- data_criacao: `2026-07-26`
+
+---
+
+## 3. Checklist antes do commit
+
+- [ ] CONTEXT.md sobrescrito com o conteúdo entre os marcadores acima (íntegro, sem cortes)
+- [ ] 9 bugs + MH-032 atualizados para `resolvido` com `sessao_fechamento='v20'`, `data_fechamento='2026-07-26'` e as notas correspondentes
+- [ ] BUG-066 e MH-051 inseridos com os campos acima
+- [ ] Nenhuma mudança de código nesta sessão — commit é só de CONTEXT.md (git) + backlog (Supabase)
+- [ ] git commit message sugerida: `docs: encerramento sessão v20 (9 bugs + MH-032 validados e fechados, BUG-066 e MH-051 registrados)`
