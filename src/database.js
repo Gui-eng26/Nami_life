@@ -51,6 +51,14 @@ export async function updateUser(userId, fields) {
     if (error) throw new Error(`Erro ao atualizar usuário: ${error.message}`);
 }
 
+// MH-020: exclusão de conta a pedido explícito do usuário (LGPD).
+// Chama a função SQL atômica delete_user_account (ordem de deleção + transação
+// tudo-ou-nada). Único ponto de exclusão de conta no código (princípio 16).
+export async function excluirContaUsuario(userId) {
+    const { error } = await supabase.rpc('delete_user_account', { p_user_id: userId });
+    if (error) throw new Error(`Erro ao excluir conta: ${error.message}`);
+}
+
 // ============================================================
 // ESTADO DA CONVERSA
 // ============================================================

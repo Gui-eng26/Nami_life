@@ -9,7 +9,8 @@ import { handlePrincipal } from './agentes/principal.js';
 import { handleCadastro } from './agentes/cadastro.js';
 import { handleRelatorios, classificarIntencaoRelatorio, extrairPeriodo } from './agentes/relatorios.js';
 import { handleConfiguracao } from './agentes/configuracao.js';
-import { isCancelamento } from './nlp_helpers.js';
+import { handleExclusaoConta, confirmarIntencaoExclusaoConta } from './agentes/exclusaoConta.js';
+import { isCancelamento, pareceExclusaoConta } from './nlp_helpers.js';
 
 // ============================================================
 // IDEMPOTÊNCIA — descarta eventos duplicados da Z-API
@@ -455,6 +456,30 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                 mensagem_inicial: state?.context?.mensagem_inicial || message
             }
         });
+
+    // MH-020 — Confirmação pendente de exclusão de conta (trata o estado antes de tudo)
+    } else if (currentState === 'aguardando_confirmacao_exclusao') {
+        agentName = 'exclusao_conta';
+        console.log(`🗑️ Roteando para exclusão de conta (confirmação pendente) — ${user.phone}`);
+        const r = await handleExclusaoConta({ user, message, etapa: 'confirmar', historicoConversa });
+
+        if (r.contaExcluida) {
+            // Usuário não existe mais — RETORNA ANTES do logAgentInteraction final
+            // (inserir agent_logs com user_id apagado daria FK error).
+            return r.response;
+        }
+        response = r.response;
+
+    // MH-020 — Portão de detecção de pedido de exclusão de conta (único ponto de detecção).
+    // Roda para qualquer usuário onboarded, em qualquer estado -> precedência sobre todos os fluxos.
+    // Estágio 1 (barato, determinístico) curto-circuita o estágio 2 (LLM) quando não é candidato.
+    } else if (user.onboarded
+        && pareceExclusaoConta(message)
+        && await confirmarIntencaoExclusaoConta({ message, historicoConversa, currentState })) {
+        agentName = 'exclusao_conta';
+        console.log(`🗑️ Pedido de exclusão de conta detectado — ${user.phone}`);
+        const r = await handleExclusaoConta({ user, message, etapa: 'solicitar_confirmacao', historicoConversa });
+        response = r.response;
 
     // 2. Usuário concluiu onboarding agora — respondendo "por onde quer começar?"
     } else if (currentState === 'post_onboarding') {
