@@ -1,4 +1,4 @@
-# 🌿 NAMI — Contexto do Projeto (v20 — Sessão de validação de backlog em produção: 9 bugs fechados com evidência real (BUG-032/033/035/059/060/062/063/064/065), MH-032 fechado (lembrete inicial), BUG-066 e MH-051 registrados — 26/07/2026)
+# 🌿 NAMI — Contexto do Projeto (v21 — MH-020 implementado e VALIDADO em produção: exclusão de conta a pedido do usuário (LGPD), com detecção robusta, trava anti-alucinação no principal e exclusão atômica; MH-052 registrada (monitoramento de erros) — 26/07/2026)
 
 ---
 
@@ -692,6 +692,82 @@ fluxo, só gera 2-3 mensagens repetidas até o usuário achar o caminho.
 
 ---
 
+## Sessão v21 (26/07/2026) — MH-020: exclusão de conta (LGPD), implementada e validada em produção
+
+Primeiro item crítico para a expansão beta. A Nami ganhou a capacidade de **excluir a conta do
+usuário a pedido explícito dele**, exigida pela LGPD. O fluxo de recusa de LGPD durante o onboarding
+(recepcionista) foi mantido **intacto** — o escopo foi apenas a exclusão solicitada por usuário já
+onboarded. Briefings: `BRIEFING_MH020.md` (implementação) e `BRIEFING_MH020_FIX_DETECCAO.md` (correção).
+
+### Arquitetura entregue
+- **Função SQL atômica `delete_user_account(uuid)`** (migration `20260726000000_...`): apaga na ordem
+  correta `stock_movements` → `adesao_estado` → `users`. Necessária porque essas duas tabelas têm FK
+  `NO ACTION` e fariam um `DELETE FROM users` ingênuo **falhar** para qualquer usuário real. Transação
+  tudo-ou-nada: se falhar, rollback e nada é apagado. Wrapper único `excluirContaUsuario` em `database.js`.
+- **Detecção em 2 estágios** no fluxo: pré-filtro determinístico `pareceExclusaoConta` (nlp_helpers.js,
+  ação + objeto de CONTA, disjunto dos objetos de configuração) + confirmação semântica via LLM em
+  `agentes/exclusaoConta.js` (distingue exclusão de conta de "cancelar cadastro" de remédio, de excluir
+  um remédio/lembrete, de negação e de perguntas sobre dados).
+- **Novo estado `aguardando_confirmacao_exclusao`** + confirmação por palavra explícita (CONFIRMAR).
+  Sucesso apaga e responde SEM nome (não conhecemos mais o usuário); erro técnico não apaga nada e
+  direciona ao Guilherme.
+- **Seção `DADOS E PRIVACIDADE (LGPD)`** no `NAMI_SYSTEM_PROMPT` — a Nami agora responde com clareza a
+  perguntas sobre quais dados guarda, por quê, onde, e o direito de exclusão.
+
+### ⚠️ Decisão arquitetural — redundância INTENCIONAL de detecção de exclusão de conta (NÃO remover)
+A intenção de exclusão de conta é detectada por **dois caminhos que apontam para o MESMO handler**
+(`handleExclusaoConta`), de propósito. **Isto não é duplicação acidental — é defesa em profundidade
+para uma ação crítica e irreversível.** Os dois cobrem **alcances diferentes** e nenhum sozinho cobre
+tudo:
+1. **Portão early** (`pareceExclusaoConta` + `confirmarIntencaoExclusaoConta`), colocado ANTES de todos
+   os branches de estado no `routeMessage`. Papel exclusivo: dar **precedência dentro de fluxos que
+   NÃO passam pelo classificador central** — em especial `adding_med`/`cadastro`, que chama seu handler
+   direto e não escala para o roteador como o `configuracao` faz. Sem ele, um "quero excluir minha
+   conta" no meio de um cadastro seria engolido pelo agente do fluxo.
+2. **Categoria `excluir_conta` no classificador central** (`classificarIntencaoComContexto`). Papel:
+   detecção **robusta a typo/fraseado no caminho idle/geral e nas escaladas**. Sem ela, um typo em
+   estado idle vaza para o `principal` — que foi exatamente a falha crítica corrigida na v21 (falsa
+   confirmação de exclusão).
+
+**Regra para quem mexer nisso no futuro:** NÃO "desduplicar" removendo um dos dois caminhos achando
+que é redundância supérflua. Remover o portão early reabre a classe "pedido de exclusão engolido por
+fluxo mid-flow"; remover a categoria do classificador reabre a classe "typo/fraseado vaza para o
+principal e vira falsa exclusão". Se for consolidar, é obrigatório **preservar os dois alcances**
+(mid-flow + idle/geral). Isto NÃO contradiz o princípio 1 (que condena remendar o mesmo caso duas
+vezes): aqui são caminhos de código distintos protegendo alcances distintos de uma ação destrutiva.
+
+### Falha crítica encontrada na 1ª validação e corrigida (BRIEFING_MH020_FIX_DETECCAO)
+O 1º teste real expôs o **pior caso de LGPD**: com um typo ("descad**r**astar"), a mensagem escapou do
+pré-filtro determinístico e caiu no `principal`, que — ensinado pela nova seção LGPD — **encenou** a
+confirmação e **afirmou falso sucesso** ("sua conta foi excluída"), sem apagar nada. Duas causas raiz:
+(1) a capacidade `exclusao_conta` **não estava no inventário** do `classificarIntencaoComContexto`
+(violação do princípio 5 — corrigida registrando `excluir_conta` no classificador central e tratando o
+retorno nos 4 pontos que o consomem: `despacharEscalada`, `aguardando_periodo_adesao`,
+`aguardando_escolha_tratamento` e o `else` final); (2) o `principal` não tinha trava contra conduzir/
+afirmar exclusão (violação dos princípios 11/13 — corrigida com regra absoluta no prompt). Terceira
+melhoria (UX): no estado de confirmação, afirmativo ambíguo ("sim", "ok") **re-orienta** para escrever
+CONFIRMAR em vez de cancelar silenciosamente.
+
+### Validação end-to-end em produção (evidência real, não resumo do Claude Code)
+Cruzando `agent_logs` + export do WhatsApp + estado do banco, pós-deploy da correção:
+- Detecção robusta: "Quero me descadrastar" (o mesmo typo), "Quero sumir da Nami", "Não quero mais
+  conta na Nami", "Encerra meu cadastro", "Quero que apague meu cadastro" → todos `agent: exclusao_conta`.
+- Re-orientação: "Sim" no estado de confirmação → pediu CONFIRMAR, **sem apagar nem afirmar sucesso**.
+- Não-regressão: "Excluir losartana" e "Apagar o lembrete das 8" → continuaram indo para `configuracao`.
+- Exclusão real: baseline do usuário de teste (users 1, medications 1, schedules 2, dose_logs 2,
+  **stock_movements 4**, agent_logs 76, conversation_state 1, **adesao_estado 1**, intencoes 1) →
+  após CONFIRMAR, **todas as 10 tabelas zeraram**. Prova em produção de que a ordem da função atômica
+  cobre `stock_movements` e `adesao_estado` (o achado crítico). Escopo cirúrgico confirmado: só o
+  usuário-alvo caiu; "Teste 2" e o usuário do Guilherme intactos. "Olá" seguinte caiu no onboarding
+  (recepcionista) como usuário novo — o "volte quando quiser" funcionando.
+
+### Registrado para próxima sessão
+- **MH-052** (monitoramento/alerta estruturado de erros técnicos): hoje erros só vão para `console.error`
+  no Railway (reativo, sem alerta). Casos sensíveis como falha de exclusão deveriam gerar alerta proativo
+  ao Guilherme e distinguir erro transitório de persistente. Prioridade média.
+
+---
+
 ## Backlog (BUG/FIX/MH)
 
 A partir de 07/07/2026, o backlog completo vive na tabela `backlog_items`
@@ -773,6 +849,15 @@ Não é mais mantido neste arquivo. Consultar via Supabase MCP:
     nunca calculado de novo dentro de cada iteração. Deixar cada item calcular seu próprio "agora"
     introduz um drift de milissegundos que pode, em código sensível a limiares de tempo checados
     em ciclos (ex: cron), colocar itens do mesmo lote em ciclos diferentes silenciosamente.
+21. **Toda capacidade nova de roteamento precisa ser registrada no classificador central na MESMA
+    mudança (v21, MH-020 fix — reforço do princípio 5)** — ao criar uma capacidade acionada por um
+    portão determinístico próprio (ex: exclusão de conta), é obrigatório também adicioná-la ao
+    inventário do `classificarIntencaoComContexto`. Uma lista fixa de palavras/frases sempre deixa
+    escapar typo/fraseado novo; quando escapa, a mensagem cai no `principal`, que — se souber da
+    capacidade pelo system prompt mas não puder executá-la — pode ENCENAR o fluxo e AFIRMAR um
+    resultado falso (no MH-020, falsa confirmação de exclusão de dados, o pior caso de LGPD). Corolário:
+    o `principal` nunca deve conduzir nem afirmar ações críticas que pertencem a fluxos determinísticos
+    (reforço dos princípios 11/13 aplicado a exclusão de conta). Consequência intencional dessa regra: a detecção de exclusão de conta vive em DOIS caminhos (portão early + categoria no classificador central) apontando para o mesmo handler — redundância proposital que NÃO deve ser removida (ver "Decisão arquitetural — redundância INTENCIONAL" na seção da Sessão v21).
 
 ---
 
@@ -810,6 +895,8 @@ calculado dinamicamente a partir da data de entrada e da data atual da sessão �
 ### Ritual de encerramento de sessão
 1. Gerar relatório .docx e apresentar para download (upload manual no Drive)
 2. Gerar briefings/encerramento_vN.md com o CONTEXT.md atualizado para o Claude Code commitar
+3. Incluir no encerramento a lista de escritas em `backlog_items` (inserts/updates) — este chat é
+   READ-ONLY no Supabase; todas as escritas de backlog são responsabilidade do Claude Code.
 
 ⚠️ **Lição registrada (v13):** conferir que o nome do arquivo `encerramento_vN.md` bate com o
 número de versão do CONTEXT.md que ele gera *antes* de salvar.
@@ -845,9 +932,8 @@ node src/index.js
 
 - **GitHub:** `Gui-eng26/Nami_life` (público) — raw via `curl -s "https://raw.githubusercontent.com/Gui-eng26/Nami_life/main/[filepath]"`.
 - **Schema:** `supabase/migrations/` (baseline + mh032 + mh042 + adesao_tratamento).
-- **Google Drive:** pasta Desenvolvimento Nami, ID `17uNtuBHOHw41FBc0zxZjx_-kjTW7bRmN`. Último relatório: `Nami_Relatorio_v19.docx` (v20 não gerou relatório novo — sessão só de validação de backlog).
+- **Google Drive:** pasta Desenvolvimento Nami, ID `17uNtuBHOHw41FBc0zxZjx_-kjTW7bRmN`. Último relatório: `Nami_Relatorio_v21.docx` (v20 não gerou relatório — foi só validação de backlog).
 - **Supabase:** banco Brasil (São Paulo). `agent_logs` = histórico conversacional (também usado para saudação condicional, v15). `conversation_state` = estado operacional (sem 's').
 - **Railway:** produção com auto-deploy no git push. Logs exportados em UTC.
 - **Claude Code (VS Code):** implementação via briefings `.md`, sempre com texto literal embutido.
-
 
