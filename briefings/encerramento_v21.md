@@ -1,0 +1,1012 @@
+# Briefing de Encerramento — Sessão v21
+
+## Instruções para o Claude Code
+
+Você receberá este arquivo ao final da sessão. Execute os passos abaixo na ordem, sem perguntas.
+
+---
+
+## PASSO 1 — Sobrescrever o CONTEXT.md
+
+Substitua **todo o conteúdo** do arquivo `CONTEXT.md` na raiz do projeto pelo conteúdo entre as
+marcas abaixo (extraia exatamente o que está entre `<<<INICIO_CONTEXT_MD>>>` e `<<<FIM_CONTEXT_MD>>>`;
+não use cercas de código, pois o próprio CONTEXT.md contém blocos ```). Não preserve nada do arquivo
+anterior.
+
+<<<INICIO_CONTEXT_MD>>>
+# 🌿 NAMI — Contexto do Projeto (v21 — MH-020 implementado e VALIDADO em produção: exclusão de conta a pedido do usuário (LGPD), com detecção robusta, trava anti-alucinação no principal e exclusão atômica; MH-052 registrada (monitoramento de erros) — 26/07/2026)
+
+---
+
+## O que é a Nami
+
+A Nami é um agente de IA via WhatsApp que ajuda pessoas a seguirem seus tratamentos médicos. O problema central que resolve: **baixa adesão a tratamentos**, especialmente em pacientes com doenças crônicas (hipertensão, diabetes, etc.). Segundo a OMS, menos de 50% dos pacientes com doenças crônicas seguem corretamente suas prescrições.
+
+**Por que WhatsApp?**
+- Não precisa de novo app
+- É o canal mais usado pelo público em geral
+- Diminui a curva de aprendizado
+- Remove barreiras tecnológicas
+
+**Inspiração de produto:** Magie (https://magie.com.br) — assistente financeira 100% via WhatsApp.
+
+---
+
+## Persona central: Mariana
+
+38 anos, professora, dois filhos, gerencia dois tratamentos contínuos em horários diferentes. O problema dela não é falta de vontade — é esquecimento causado pela rotina corrida. Toda decisão de produto deve passar pelo filtro: "isso resolve o problema da Mariana?"
+
+**Insight de pesquisa importante:** o público idoso pode ser suficientemente auto-motivado. O público mais promissor são adultos em tratamento contínuo com rotina ocupada e cuidadores de familiares.
+
+---
+
+## Filosofia de produto — não negociável
+
+**A Nami nunca ignora o que o usuário disse.**
+Quando um usuário chega com uma mensagem rica ("preciso tomar nimesulida de 12 em 12 horas"), a Nami deve reagir a isso — não iniciar um script genérico como se a mensagem não existisse. Cada mensagem tem conteúdo próprio que merece resposta.
+
+**O fluxo serve o usuário, não o contrário.**
+O onboarding tem etapas necessárias (nome, LGPD), mas essas etapas devem ser apresentadas de forma que façam sentido para o objetivo do usuário. **Corolário:** o usuário nunca deve ficar preso em um fluxo. Todo fluxo precisa de saída de emergência.
+
+**Cálculo de dado de saúde não depende do LLM.**
+Aritmética que afeta segurança do tratamento — cálculo de horários de dose, contagem de estoque, cálculo de adesão e progresso de tratamento — deve ser feita em código determinístico, não por inferência do modelo.
+
+**Comunicação de resultado ao usuário também não depende do LLM (reforçado v14, aplicado à adesão em v15).**
+Não basta o cálculo em si ser determinístico — a MENSAGEM que informa o resultado ao usuário também precisa nascer de templates fixos, nunca de geração livre do LLM. Ver seção MH-042 Complemento (origem do princípio) e seção "Adesão ao Tratamento v15" (aplicação mais recente, incluindo a jornada de hábitos e o progresso de tratamento).
+
+**Status de dose nunca é alterado por timeout silencioso quando há ambiguidade reversível.**
+nao_tomado só é registrado mediante declaração explícita do usuário. Status terminais (confirmado, nao_informado) devem permitir correção retroativa quando o usuário traz nova informação.
+
+**Confirmação de dose pendente tem precedência sobre qualquer estado conversacional "esperando resposta" (estabelecido v15, BUG-057).**
+Nenhum estado de espera (ex: aguardando período de relatório, aguardando escolha de tratamento) pode sequestrar uma confirmação de dose real — a checagem de dose pendente deve rodar antes de qualquer lógica de estado. **Ainda não formalizado como princípio permanente da lista abaixo** — Guilherme quer refletir mais antes de generalizar a regra para todo estado futuro (risco de "regra em cima de regra"). Tratar caso a caso até decisão explícita.
+
+**Diferença entre Nami e bot genérico:**
+Frases que mostram conexão com o que o usuário pediu, não seguir etapas de forma seca e fria. Saudação repetitiva ("Olá, [Nome]!" a cada resposta) numa sequência de perguntas rápidas quebra essa sensação — ver saudação condicional na seção de Adesão ao Tratamento.
+
+---
+
+## Stack Tecnológica
+
+| Componente | Ferramenta |
+|---|---|
+| Canal | WhatsApp Business API via **Z-API** |
+| Backend | **Node.js** + Express |
+| IA | **Claude API** (claude-sonnet-4-6) |
+| Banco de dados | **Supabase** (PostgreSQL) — **projeto Brasil (São Paulo)** |
+| Scheduler | **node-cron** (lembretes automáticos + resumo de adesão) |
+| Hospedagem | **Railway** (produção ativa) |
+| Versionamento | **GitHub** — Gui-eng26/Nami_life (público) |
+
+**URL de produção:** `https://namilife-production.up.railway.app`
+**Webhook Z-API:** `POST /webhook/whatsapp` (aponta APENAS para o Railway)
+
+⚠️ **Banco migrado em 29/06/2026:** Oregon (US) → Brasil (São Paulo) por LGPD e latência.
+
+---
+
+## Estrutura de Arquivos
+
+```
+Nami_life/
+├── src/
+│   ├── index.js              → Entry point + webhook + proteção idempotência
+│   ├── agent.js               → Orquestrador — chama routeMessage
+│   ├── router.js               → Roteador central (classificador LLM retorna JSON {agente, subtipoRelatorio} — v15); temDosePendente() exclui nao_informado (v17, BUG-035); despacharEscalada() (v18) — função compartilhada que recebe o sinal { escalarParaRoteador: true } de qualquer agente e decide o próximo destino usando classificarIntencaoComContexto, preservando medicationId/medicationNome/schedulesAtivos quando o destino ainda é configuracao
+│   ├── database.js             → Todas as queries no Supabase; registrarMovimentoEstoque (MH-042) é o único ponto de escrita em estoque; calcularAdesao/calcularProgressoTratamento (v15); getHistoricoRecente() (v18) agora também seleciona estado_conversa/contexto_conversa de agent_logs, usado pelo classificador central pra resolver referências em mensagens futuras sem context vivo; classificarNivelEstoquePorDias() (v19, BUG-065) — classifica zerado/urgente/ok a partir de estoque real + dias de cobertura, nunca infere uma métrica a partir da outra
+│   ├── whatsapp.js              → Envio de mensagens e parse Z-API
+│   ├── scheduler.js             → Cron: lembretes + follow-ups + resumo de adesão (domingo 16h — mudou de segunda 08h na v15)
+│   ├── prompts.js               → System prompt do agente_principal
+│   ├── nlp_helpers.js           → isCancelamento (v18: regex apertado — "para" solto removido, exige "para de/com"/"parar"; vocabulário ampliado), encontrarMedicamento (agora também exportada como normalizar) — compartilhados entre agentes (evita duplicação, lição do BUG-036)
+│   ├── templates/
+│   │   ├── adesaoTemplates.js  → NOVO (v15): templates 100% determinísticos de adesão/progresso — espinha semanal (16) + mensal (12) + blocos aditivos (motivo/turno/tendência/marco) + progresso de tratamento (3 fases + estoque) + fluxo de período
+│   │   └── estoqueTemplates.js → NOVO (v19, BUG-065): buildAlertaEstoquePosConfirmacao + buildAlertaEstoqueNaoInformado — únicas funções de texto de alerta de estoque pós-confirmação/pós-lembrete; substituem 3 cópias divergentes que existiam em router.js, principal.js e lembrete.js desde o commit f967a0c (MH-026, 15/06)
+│   └── agentes/
+│       ├── recepcionista.js    → Onboarding de novos usuários (v3)
+│       ├── principal.js         → Conversa geral + confirmação + ciclo de vida da dose + UPDATE_STOCK (MH-042); perdeu o bloco ad-hoc de progresso de tratamento (v15, origem do BUG-055); calcularRotuloDia() + âncora "Agora é..." no context (v17, BUG-059)
+│       ├── cadastro.js          → Cadastro (cálculo determinístico + MH-038 duplicata no início)
+│       ├── lembrete.js          → Follow-up espaçado (30min/1h/30min)
+│       ├── relatorios.js        → 6 tipos de relatório determinísticos (v15: + progresso_tratamento), sem Camada 3 de reclassificação
+│       └── configuracao.js      → Pausar/reativar/encerrar/alterar horário. Reescrito na v18 com modelo de 3 camadas em todas as 12 etapas do state machine (parser determinístico → isCancelamentoGenuino → escalada ao roteador via despacharEscalada) — ver seção "Sessão v18" para detalhes. processarIntencaoOuEscalar() unifica a lógica de identif_intencao, reaproveitada por qualquer etapa que precise reconfirmar intenção (BUG-060)
+├── briefings/                   → Briefings de implementação (na raiz da pasta, sem subpastas)
+├── supabase/
+│   └── migrations/
+│       ├── 20260629000000_baseline.sql                  → Schema completo v10 + auditoria v11
+│       ├── 20260701000000_mh032_horario_agendado.sql     → Coluna horario_agendado (MH-032)
+│       ├── 20260706000000_mh042_stock_movements.sql      → Tabela stock_movements (MH-042), aplicada manualmente
+│       └── 20260707000000_adesao_tratamento.sql          → tratamento_fim populado + tabela adesao_estado (v15), aplicada manualmente
+├── CONTEXT.md                    → Este arquivo — ponto de partida de toda sessão
+└── package.json
+```
+
+---
+
+## Variáveis de Ambiente (.env)
+
+```env
+SUPABASE_URL=https://[PROJECT_ID].supabase.co   # SEM /rest/v1/ no final!
+SUPABASE_SERVICE_KEY=sb_secret_...
+ANTHROPIC_API_KEY=sk-ant-api03-...
+ZAPI_INSTANCE_ID=[ID da instância]
+ZAPI_TOKEN=[Token de integração]
+ZAPI_CLIENT_TOKEN=[Client-Token da aba Segurança na Z-API]
+PORT=3000
+```
+
+⚠️ `ZAPI_CLIENT_TOKEN` está em **Segurança** no painel Z-API — diferente do `ZAPI_TOKEN`.
+⚠️ `SUPABASE_URL` deve ser apenas a URL base.
+
+⚠️ **APRENDIZADO OPERACIONAL CRÍTICO (v12):** NUNCA deixar um servidor Node local rodando
+com o `.env de produção`. Recomendação: criar um `.env.local` apontando para um banco de teste.
+
+⚠️ **APRENDIZADO OPERACIONAL (v13):** o `origin` git local pode estar configurado para o nome
+antigo do repositório. Corrigir com:
+```
+git remote set-url origin https://github.com/Gui-eng26/Nami_life.git
+```
+⚠️ **Reforço (v17):** o mesmo redirect (`Gui-eng26/nami-backend` → `Gui-eng26/Nami_life`) ainda
+aparece como aviso do GitHub no push do Claude Code — o push funciona normalmente via redirect,
+não é bloqueante, mas ainda não foi corrigido na origem. Rodar o `git remote set-url` acima numa
+janela tranquila quando possível.
+
+✅ **Resolvido (v19):** `git remote set-url` executado, `origin` aponta direto para
+`Gui-eng26/Nami_life.git` — aviso de redirect não aparece mais. Nome também unificado em
+`package.json`/`package-lock.json` (`nami_life`, minúsculo — regra do npm) e `.claude/launch.json`
+(`Nami_life`). Histórico em `briefings/` mantido com o nome antigo de propósito (registro de
+época, nunca reescrever).
+
+⚠️ **APRENDIZADO OPERACIONAL (v19) — Preview do Claude Code Desktop (`.claude/launch.json`):**
+o Claude Code Desktop pode subir a Nami localmente via seu recurso de Preview (detecta o servidor
+e salva a config em `.claude/launch.json`). Confirmado em código que isso NÃO é uma sandbox
+isolada pra este projeto:
+1. `sendTextMessage` (`whatsapp.js`) chama a Z-API real de produção sempre — não existe modo mock.
+   Qualquer resposta gerada localmente tenta mandar mensagem de WhatsApp de verdade.
+2. `src/index.js` chama `startScheduler()` ao subir — rodar local em paralelo com o Railway de
+   produção liga um SEGUNDO processo de lembretes consultando a mesma tabela `dose_logs`, sem
+   nenhuma trava contra concorrência (mesma lacuna do BUG-034, ainda não implementado) — risco
+   real de lembrete duplicado pra usuários reais.
+3. `POST /webhook/whatsapp` não tem autenticação — aceita qualquer payload, o que é o que torna a
+   simulação tecnicamente possível, mas também confirma que não há barreira nenhuma contra uso
+   acidental.
+**Decisão (v19):** não usar o Preview pra simular conversas contra este projeto por enquanto.
+`autoVerify: false` setado em `launch.json` pra evitar auto-start silencioso após edições futuras
+do Claude Code. Reavaliar só depois de desenhar isolamento de ambiente (`.env.local` + mock de
+`sendTextMessage`) — não existe hoje.
+
+---
+
+## Banco de Dados — Supabase (PostgreSQL)
+
+### Schema versionado no repositório
+Baseline `20260629000000_baseline.sql` + `20260701000000_mh032_horario_agendado.sql` +
+`20260706000000_mh042_stock_movements.sql` + `20260707000000_adesao_tratamento.sql`.
+
+⚠️ **Migrations NÃO são aplicadas automaticamente.** Toda mudança de schema deve ser aplicada
+**manualmente** no SQL Editor do Supabase ANTES do deploy do código que a utiliza.
+
+### Tabelas principais
+
+**dose_logs** — sem mudança de schema na v15.
+```sql
+id, medication_id (FK), scheduled_at, reminder_sent, reminder_sent_at,
+taken_at, confirmed, response_raw,
+status (pendente/confirmado/nao_informado/nao_tomado/sem_estoque),
+tentativas, ultima_tentativa_at, caregiver_notified, caregiver_notified_at,
+zapi_message_id, revertido, revertido_at, revertido_de, revertido_motivo,
+horario_agendado (time, MH-032 — NULL em registros pré-migration)
+```
+⚠️ **`calcularAdesao` (v15) filtra por `scheduled_at`, nunca por `taken_at`** — isso atribui
+confirmações retroativas ao dia devido (não ao dia da confirmação) e exclui doses revertidas
+automaticamente, sem lógica extra.
+
+**medications**
+```sql
+id, user_id (FK), nome, dosagem, instrucoes, estoque_atual, estoque_minimo,
+forma_farmaceutica, tipo_tratamento, tratamento_dias, tratamento_fim, ativo, created_at
+```
+⚠️ `tratamento_fim` existia desde o baseline mas nunca era populada — **agora é a fonte de
+verdade do progresso de tratamento (v15)**, escrita em `saveMedication` e
+`reativarComAtualizacao`, sempre calculada a partir de **agora** (reativação reinicia o relógio
+do tratamento — decisão confirmada, rastreabilidade de prorrogação fica para o MH-043).
+⚠️ `estoque_atual` NUNCA deve ser escrito diretamente — sempre via `registrarMovimentoEstoque`.
+
+**adesao_estado (novo — v15)**
+```sql
+user_id (PK, FK), ultimo_fechamento_mensal_at, faixa_atual, percentual_ultimo_envio,
+semana_atual_na_faixa, melhor_faixa_atingida, updated_at
+```
+Estado de acompanhamento da jornada de adesão (faixa/semana, tendência, marco de celebração) —
+uma linha por usuário. `ultimo_fechamento_mensal_at` é resetado no momento do próprio fechamento
+mensal (bug de design pego antes da implementação: sem esse reset, todo envio seguinte seria
+classificado como mensal para sempre).
+
+**stock_movements** — sem mudança na v15. Ver v14 para detalhes completos.
+
+**conversation_state** (sem "s") — dois estados novos na v15: `aguardando_periodo_adesao` e
+`aguardando_escolha_tratamento`, ambos seguindo o mesmo padrão de precedência (dose pendente >
+cancelamento > resposta esperada > classificador central) estabelecido no BUG-057.
+
+**agent_logs** — fotografia diagnóstica imutável, nunca lida pelo fluxo operacional (exceto, na
+v15, para decidir a saudação condicional — ver seção de Adesão ao Tratamento).
+
+### ⚠️ Padrão crítico no Supabase JS SDK
+Filtros via join NÃO funcionam: `.eq('medications.user_id', userId)` retorna todos os registros.
+Sempre usar abordagem em duas etapas com `.in()`.
+
+---
+
+## Adesão ao Tratamento — Consolidação (v15)
+
+Trabalho da sessão inteira: unificou o cálculo de adesão (fragmentado em 2 funções divergentes +
+uma terceira via ad-hoc dentro do `principal.js`), eliminou geração livre de LLM na apresentação
+(raiz do BUG-031), e corrigiu uma fragilidade de roteamento que fazia perguntas de relatório
+caírem incorretamente no agente de conversa geral (BUG-055, era chamado de "BUG-037" durante a
+sessão até a correção de numeração — ver seção dedicada abaixo).
+
+### Cálculo
+
+- **`calcularAdesao(userId, dias)`** — substitui `getAdesaoPeriodo` e `getAdesaoPorMedicamento`
+  (removidas). Conta `dose_logs` reais filtrando por `scheduled_at`, não estimativa por
+  multiplicação. `porStatus` com 4 buckets (confirmado/nao_informado/nao_tomado/sem_estoque —
+  `sem_estoque` conta contra adesão, decisão de produto confirmada). Diagnóstico de padrão por
+  turno (manhã 05-11h / tarde 12-17h / noite 18-04h) só quando `dias >= 28` (fechamento mensal),
+  limiar 60%/mínimo 3 casos — constantes nomeadas, ajustáveis após dados reais dos testers.
+- **`calcularProgressoTratamento(userId)`** — novo, não existia formalmente antes (vivia como
+  cálculo ad-hoc dentro do contexto geral do `principal.js`, origem histórica: MH-028, 17/06).
+  Só para medicamentos com `tipo_tratamento != continuo` e `tratamento_dias` preenchido. Exclui
+  tratamentos com `tratamento_fim` já passado (comparado por data em UTC, nunca por
+  `diasRestantes`/`dosesRestantes` — esses zeram no próprio último dia, mesmo com dose ainda
+  pendente naquele dia; usar comparação de data evita excluir um tratamento no dia em que a
+  última dose ainda não foi tomada).
+
+### Apresentação — 100% determinística, sem geração livre do LLM
+
+Estrutura de **espinha dorsal + blocos aditivos** (evita multiplicar templates por combinação):
+- Espinha semanal: 4 faixas (100%/80-99%/50-79%/<50%) × 4 semanas de progressão (Hábitos
+  Atômicos), reset categórico ao mudar de faixa, repete semana 4 indefinidamente da 5ª em diante
+  (revisão de "jornada 2" fica para o MH-044, após dados reais).
+- Espinha mensal: 4 faixas × 3 variações, fechamento de 30 dias.
+- Blocos aditivos: motivo dominante (3, incluindo sem_estoque), turno (só mensal, só
+  nao_tomado/nao_informado), tendência (subiu/caiu/estável ±5pp + marco de celebração).
+- Progresso de tratamento: 3 fases (início/meio/reta final por `percentualDecorrido`) + bloco de
+  estoque (suficiente/insuficiente, com número exato de dias cobertos) + fallback para uso
+  contínuo + resumo compacto (2+ tratamentos, pedido genérico).
+- **Saudação condicional (v15):** "Olá, [Nome]!" só aparece se a última interação do usuário foi
+  há mais de 10 minutos (`agent_logs`); caso contrário omitida. Aplicado só nos templates sob
+  demanda (adesão, progresso de tratamento) — templates automáticos (semanal/mensal) mantêm
+  saudação fixa, sempre.
+- Textos revisados com apoio do Gemini para tom/formatação (mais espaçamento, emojis, calor) —
+  aprovados por Guilherme, incorporados literalmente nos briefings de implementação.
+
+### Chamadas
+
+- **Camada 3 eliminada** — `handleRelatorios` não reclassifica mais internamente; recebe
+  `subtipo` já resolvido por quem chama (Camada 1 fast-path ou Camada 2, o classificador central
+  `classificarIntencaoComContexto`, que agora retorna JSON `{agente, subtipoRelatorio}` em vez de
+  texto solto).
+- **6 tipos formais de relatório**: tomei_hoje, meus_remedios, estoque, proximo_remedio, adesao,
+  **progresso_tratamento** (novo).
+- Sob demanda de adesão: extrai período da mensagem (7/15/30); se ausente, pergunta; se inválido,
+  registra em `intencoes_nao_suportadas` (mecanismo já existente, reaproveitado) + recusa gentil.
+- Cron do resumo automático mudou de **segunda 08h para domingo 16h** (decisão de produto:
+  segunda de manhã é dia mais tumultuado). Decide semanal vs. fechamento mensal via
+  `adesao_estado.ultimo_fechamento_mensal_at` (28+ dias → mensal, com reset no momento do envio).
+- **Novos estados conversacionais com proteção contra beco sem saída**, mesmo padrão nos dois:
+  dose pendente (precedência total, zera o estado) > cancelamento explícito > resposta reconhecida
+  determinística > fallback para o classificador central (nunca lista de exclusão de palavras —
+  não escala, mesma lição do BUG-036/055).
+
+### Bugs encontrados e corrigidos durante a validação em produção desta sessão
+
+- **BUG-056** — `progresso_tratamento` não filtrava por medicamento mencionado, concatenava todos
+  os tratamentos com saudação repetida. Corrigido: filtro por nome (`encontrarMedicamento`,
+  extraída para `nlp_helpers.js`), resumo compacto para pedido genérico.
+- **BUG-056 (complemento)** — o atalho de "escolha reconhecida" batia só pelo nome do medicamento
+  aparecer na mensagem, sem confirmar o assunto — "qual estoque do Neosaldina" e "vou encerrar o
+  Cataflam" (ambos mencionando nomes de tratamentos pendentes) foram incorretamente tratados como
+  pedido de progresso. Corrigido: classificador central sempre consultado antes de tentar casar
+  nome, sem lista de exclusão de palavras.
+- **BUG-057** — estado `aguardando_periodo_adesao` bloqueava qualquer mensagem que não fosse
+  resposta de período, incluindo confirmações de dose reais (efeito grave: dose de Dipirona real
+  não registrada em produção, corrigida manualmente por Guilherme). Corrigido: dose pendente
+  verificada com precedência total, zera o estado por completo (sem deixar pergunta de período
+  pendente atrás). **Validado em produção**: cenário de dose durante `aguardando_escolha_tratamento`
+  confirmado com sucesso (Ômega 3 das 15h, log real). Cenário de dose durante
+  `aguardando_periodo_adesao` (o estado original do bug) ainda **pendente de validação** —
+  depende do próximo lembrete de dose coincidir com o estado ativo.
+- **Exclusão de tratamento finalizado** — Cataflam/Dipirona (0 dias restantes) continuavam
+  aparecendo no relatório de progresso com o template de "reta final". Corrigido via comparação
+  de data (`tratamento_fim >= hoje`, em UTC — cuidado de fuso identificado e corrigido pelo Claude
+  Code durante a implementação, já que comparação em horário local causaria exclusão indevida de
+  tratamentos terminando no próprio dia, dado o fuso America/Sao_Paulo UTC-3).
+
+### Achado — correção de numeração histórica de bugs (importante, não repetir)
+
+Durante esta sessão, foi descoberto que o CONTEXT.md apontava "próximo BUG livre: BUG-037", mas o
+repositório tem um lote histórico de briefings (`BUG-019` a `BUG-054`, commitados em bloco em
+17/06, com datas internas reais entre 12/06 e 23/06) nunca considerado por quem escreveu esse
+ponteiro. **Números BUG-032, BUG-033, BUG-034 e BUG-036 estão colididos** — usados tanto por bugs
+antigos já resolvidos (17/06) quanto pelos bugs atuais ainda abertos no backlog (ver lista abaixo,
+que usa o significado ATUAL desses números). Decisão: manter os briefings antigos como estão
+(órfãos de contexto, não reescrever), só corrigir o ponteiro daqui para frente. **MH não tem esse
+problema** — numeração MH-017 a MH-042 é consistente.
+
+Esse ponteiro fixo foi removido em 08/07/2026: a tabela `backlog_items` (índice único parcial em
+`(tipo, numero) WHERE status <> 'historico_substituido'`) já impede colisão de número
+independentemente de qualquer texto aqui. Para saber o próximo número livre, consultar:
+
+  SELECT tipo, MAX(numero) AS ultimo_usado
+  FROM backlog_items
+  WHERE status <> 'historico_substituido'
+  GROUP BY tipo;
+
+---
+
+## MH-042 — Correção Manual de Estoque + Auditoria Sistêmica (v14)
+
+*(sem alterações desde v14 — histórico preservado)*
+
+**Problema original:** a Nami só reconhecia recompra como linguagem de atualização de estoque;
+recontagem e perda não tinham gatilho algum.
+
+**Entregue (commit `55e25be`):**
+- Tabela `stock_movements`
+- `registrarMovimentoEstoque` — único ponto de escrita em `estoque_atual`, clamp em 0
+- Modos `soma`/`subtracao`/`set` em `UPDATE_STOCK`
+- Exclusão deliberada: "tomei X mas não avisei" nunca aciona `UPDATE_STOCK`
+
+**Complemento (commit `5e1dfdd`):** mensagem final sempre lida do banco após a ação real, nunca
+declarada pelo LLM antes de rodar.
+
+**Achado registrado, fora de escopo:** duas implementações de alerta de estoque distintas
+(`buildAlertaEstoqueAjusteMessage` vs. `buildAlertaEstoqueMessage`) — consolidação fica para
+quando o MH-029 for priorizado.
+
+**Validado por completo em v14.**
+
+**BUG-036** (achado em v14, ainda não implementado): "manter horários" não reconhecido como
+confirmação em `reativ_horarios`/`reativ_estoque` — três listas de termos de confirmação
+divergentes no `configuracao.js`. Solução sistêmica proposta: função única
+`confirmouManterComoEsta(message)`.
+
+---
+
+## Ciclo de Vida da Dose (v11 — validado v12)
+
+- Retroativa: janela de 2 dias, confirmação explícita obrigatória, `getDosesRetroativas`
+- Reversão: `tentativas<3` → volta a `pendente`; `tentativas≥3` → `nao_tomado`; estoque sempre +1
+- Scheduler e `ultima_tentativa_at` nunca resetam em reversão
+- Auditoria: `revertido/revertido_at/revertido_de/revertido_motivo`
+
+## MH-032 — Lembretes Agrupados por Horário (v12)
+Coluna `horario_agendado` em `dose_logs`; agrupa lembretes/follow-ups do mesmo horário exato.
+Ainda em validação (10 cenários em ambiente limpo) — não avançado nesta sessão.
+
+## Agente Lembrete — Follow-up Espaçado
+```
+Tentativa 1: horário agendado
+Tentativa 2: +30 minutos
+Tentativa 3: +1 hora
+Após tent. 3: +30min → nao_informado + notifica cuidadores
+```
+
+## Agente Relatórios — 6 tipos, todos determinísticos (atualizado v15)
+tomei_hoje, meus_remedios, estoque, proximo_remedio, adesao, progresso_tratamento. Adesão e
+progresso de tratamento deixaram de usar Claude para gerar texto — 100% templates fixos (v15).
+Estoque e os demais tipos permanecem query direta, sem mudança.
+
+---
+
+## Sessão v17 (08/07/2026) — BUG-035, BUG-057, MH-046, BUG-059
+
+### BUG-035 — Fast-path de resposta tardia ao esgotamento nunca era alcançado
+
+**Causa raiz confirmada:** `temDosePendente()` (`router.js`) excluía apenas os status
+`pausado` e `nao_tomado`, mas não `nao_informado` — então uma dose já esgotada
+(`nao_informado`) ainda satisfazia `temDosePendente()`, fazendo o roteador tratar um "Sim"
+tardio como confirmação direta (`agentName = 'principal'`) em vez de cair no fast-path
+dedicado (`tentarConfirmarRespostaTardia`, bloco 4b, que já existia e nunca era alcançado).
+Dentro do `handlePrincipal`, o filtro de `dosesPendentes` já excluía `nao_informado`
+corretamente — a divergência entre as duas definições de "dose pendente" era a causa raiz.
+Confirmado com `agent_logs` reais de dois usuários (Guilherme/Cataflam, Ivete/Betaistina):
+`agent: principal` no momento exato do "Sim" tardio, quando deveria ser
+`fast_path_resposta_tardia`.
+
+**Correção:** `temDosePendente()` agora também exclui `nao_informado`. Afeta os 3 pontos que a
+usam no `router.js` (idle, `aguardando_periodo_adesao`, `aguardando_escolha_tratamento`) — o
+que é o comportamento desejado (ver MH-046 abaixo sobre o que isso NÃO resolve sozinho).
+
+**Status:** corrigido, commitado e pushado, verificado direto no repositório. `em_validacao`
+no backlog — falta um ciclo real de esgotamento em produção mostrando
+`agent: fast_path_resposta_tardia` nos logs para fechar de vez.
+
+### BUG-057 — Validado em produção e fechado
+
+Os dois cenários de precedência (dose real chegando durante `aguardando_periodo_adesao` e
+durante `aguardando_escolha_tratamento`) foram confirmados com `agent_logs`/`dose_logs` reais
+de produção. **Status: resolvido.**
+
+### MH-046 — Registrado, não implementado (monitoramento)
+
+Estender `tentarConfirmarRespostaTardia` para dentro dos estados
+`aguardando_periodo_adesao`/`aguardando_escolha_tratamento` resolveria o roteamento de um "Sim"
+tardio nesses estados (hoje cai no classificador central e geralmente repete a pergunta de
+período/tratamento — UX subótima, sem prejuízo de dado de saúde). Não implementado porque
+`usuarioRespondeuDesde()` só verifica SE o usuário respondeu algo desde a última tentativa, não
+SE o bot fez uma pergunta nova nesse meio-tempo. **Risco identificado, não observado em
+produção ainda:** se o usuário entrar num desses estados de espera ANTES de uma dose (de outro
+remédio) esgotar, e a primeira resposta dele depois for algo tipo "sim"/"ok" (que bate em
+`detectarConfirmacaoDose`), o fast-path confirmaria a dose antiga silenciosamente e ignoraria a
+pergunta de período/tratamento em aberto. Decisão explícita desta sessão: não implementar sem
+evidência real desse cenário; monitorar via `agent_logs`.
+
+### BUG-059 — Rótulo de dia incorreto ("ontem"/"hoje") em confirmações retroativas
+
+**Causa raiz confirmada:** o Claude nunca recebia a data/hora atual como referência em nenhum
+lugar do contexto (`prompts.js`/`principal.js`) — o único campo calculado deterministicamente
+com essa natureza era "próxima dose (hoje|amanhã)". O `blocoRetroativo` entregava só a data
+numérica (`dd/mm`) sem rótulo relativo, forçando o Claude a adivinhar em texto livre se uma
+data era "hoje" ou "ontem" — e errava. Confirmado com dados reais de produção em dois usuários
+(Guilherme: doses do mesmo dia da mensagem rotuladas "ontem"; Julia: dose do mesmo dia rotulada
+"ontem", causando em cascata a frase "a dose de hoje está agendada para amanhã").
+
+**Correção (dois níveis, mesma causa raiz):**
+1. `calcularRotuloDia()` novo em `principal.js` — calcula hoje/ontem/anteontem
+   deterministicamente (mesmo princípio já usado em `calcularProximaDose`), aplicado ao
+   `blocoRetroativo`.
+2. Âncora explícita `"Agora é [data], [hora] (horário de Brasília)"` adicionada ao início do
+   `context` geral — rede de segurança sistêmica para qualquer outra menção livre a datas
+   relativas que o Claude venha a fazer (inclusive ao ler o JSON bruto de `recentDoses`).
+
+**Status:** corrigido, commitado e pushado, verificado direto no repositório. `em_validacao`
+no backlog — falta testar em produção com uma dose de hoje e uma dose retroativa real de 1-2
+dias antes de fechar.
+
+---
+
+## Sessão v18 (10/07/2026) — BUG-032/033, BUG-060, BUG-062/063/064, MH-047 registrado
+
+Sessão iniciada com objetivo de planejar a expansão beta (100 usuários em 4 semanas). Ao mapear
+riscos de abrir pra desconhecidos, a revisão de causa raiz revelou que o `configuracao.js` tinha
+becos sem saída estruturais — a sessão virou uma blindagem completa desse agente antes de
+qualquer trabalho de expansão. **O mecanismo de vagas/fila de espera e o aviso de beta continuam
+não desenhados** — retomar antes de abrir a campanha pra desconhecidos.
+
+### BUG-032 + BUG-033 — Encerramento/alteração de tratamento eram fluxos sem saída
+
+**Causa raiz confirmada:** de 12 etapas no state machine do `configuracao.js`, apenas 3
+(`confirm_acao`, `reativ_confirmar`, `pos_alteracao`) verificavam `isCancelamento()`. As outras 9
+(incluindo `identif_intencao` reentrando com medicamento já resolvido) repetiam a mesma pergunta
+indefinidamente se o usuário tentasse desistir com uma frase não reconhecida.
+
+**Correção — modelo de 3 camadas, aplicado às 12 etapas:**
+1. Parser determinístico da própria etapa (horário, medicamento, número, tipo de tratamento).
+2. `isCancelamento()` (lista fixa, apertada — "para" solto removido, exige "para de/com"/"parar";
+   vocabulário ampliado com deixa/sair/chega/não precisa mais).
+3. Escalada: `handleConfiguracao` retorna `{ escalarParaRoteador: true }` em vez de mensagem de
+   retry. `router.js` (`despacharEscalada`, novo) roda `classificarIntencaoComContexto` e decide
+   o destino, preservando `medicationId`/`medicationNome`/`schedulesAtivos` quando o destino ainda
+   é `configuracao` — nunca reinicia do zero.
+
+**Enriquecimento complementar (mecanismo separado, serve mensagens futuras sem contexto vivo):**
+`getHistoricoRecente()` agora seleciona `estado_conversa`/`contexto_conversa` de `agent_logs`;
+`classificarIntencaoComContexto` usa isso pra resolver referências ("ele"/"aquele remédio") em
+conversas que retomam um assunto depois de sair do fluxo.
+
+**Status:** implementado e commitado (commit `479dcb1`). 31/31 testes automatizados (cenários
+determinísticos) + validação manual real em produção confirmando escalada correta, retomada
+preservando contexto, e resposta de "não suportado" gerada pelo LLM em vez de string fixa.
+`em_validacao` no backlog — validação de ausência de vazamento de contexto entre conversas não
+relacionadas (cenário 5) segue como monitoramento contínuo, não bloqueante.
+
+### BUG-060 — `identif_medicamento` ignorava mudança de intenção quando o remédio era reconhecido
+
+**Causa raiz confirmada:** a etapa só rodava `encontrarMedicamento(message, ...)` e, se
+encontrasse o remédio, seguia cego com a `acao` que já estava fixada no contexto — "quero parar
+o Neosaldina" (mudança de assunto) era tratado só como confirmação de qual remédio.
+
+**Correção:** `sobrouConteudoAlemDoNome(message, medNome)` (reaproveita `normalizar()`, exportada
+de `nlp_helpers.js`, mais remoção de pontuação local) detecta se sobra conteúdo além do nome do
+remédio. Se sobrar, chama `processarIntencaoOuEscalar()` — o corpo de `identif_intencao` extraído
+pra função reaproveitável — em vez de seguir com a ação antiga.
+
+**Status:** implementado e commitado. Testes automatizados da função pura + validação manual real
+em produção (cenários de reconhecimento comum, pontuação, cancelamento combinado, escalada pra
+outro agente). `em_validacao` no backlog.
+
+### BUG-062, BUG-063, BUG-064 — encontrados validando o BUG-060 em produção
+
+Três problemas de interpretação de intenção, nenhum dead-end — descobertos cruzando testes reais
+no WhatsApp com `agent_logs` e `console.log` do Railway (evidência direta, não inferência, no
+caso do BUG-064).
+
+- **BUG-062** — "parar [remédio]" lido como cancelamento genérico em vez de encerrar tratamento,
+  porque `isCancelamento()` tem precedência cega mesmo quando um medicamento é citado junto.
+  Correção: `isCancelamentoGenuino(message, medicationsAtivos)` — só aceita cancelamento puro
+  quando nenhum medicamento é mencionado — aplicada em 8 pontos do arquivo (ver princípio 18).
+- **BUG-063** — medicamento preservado no `context` vencia sobre um remédio citado explicitamente
+  na mensagem atual (ex: usuário em fluxo do Cataflam diz "quero alterar dipirona" e a Nami
+  continua no Cataflam). Correção: prioridade reordenada — texto atual > contexto > palpite do
+  classificador (ver princípio 17). Validado com log real do Railway mostrando que o palpite do
+  classificador não era alucinação, e sim reflexo de um assunto que já não era mais o atual.
+- **BUG-064** — o classificador interno (`classificarIntencao`) não tem categoria pra "usuário
+  recusou a lista de opções oferecida" (ex: "Nenhum" em resposta a "qual desses horários?"),
+  então acaba reafirmando a ação em andamento e repetindo a pergunta. Correção: nova categoria
+  `recusa_opcoes_oferecidas` no prompt (generalizada pra qualquer lista — medicamentos, horários,
+  pausar/encerrar, contínuo/temporário), não uma palavra nova em `isCancelamento()` — decisão
+  deliberada pra não repetir o antipadrão do BUG-030/036 (ver princípio 14).
+
+**Status:** implementado e commitado. `em_validacao` no backlog — 17 cenários de teste específicos
+preparados (`CENARIOS_TESTE_BUG062_063_064.md`, entregue mas não commitado no repositório),
+aguardando execução em produção.
+
+### MH-047 — Registrado, não implementado (tom/voz do `configuracao.js`)
+
+Confirmado com `agent_logs` real: a mesma intenção do usuário gera texto com voz completamente
+diferente dependendo de qual agente responde — `principal.js` tem instrução de persona
+("linguagem simples, clara e carinhosa") em `prompts.js` e gera resposta via LLM;
+`configuracao.js` responde com strings fixas escritas sem esse filtro (mais formal, menos
+emoji, frases como "Qual medicamento você quer alterar o horário de?"). Decisão: reescrever as
+strings manualmente (não passar a resposta final por uma camada de reescrita via LLM — isso
+arriscaria alterar nome de remédio/horário/número no processo, o que fere os princípios 4/11 pra
+mensagens que afirmam fato de saúde já executado). Não iniciado nesta sessão — próximo item da
+fila.
+
+### BUG-061 — Registrado, causa raiz NÃO investigada (hipótese em aberto)
+
+Recadastro de medicamento após encerramento não avança depois da confirmação "Isso" — só
+evidência de print de produção, sem `agent_logs`/código investigado ainda. Não tratar como causa
+raiz confirmada até investigação própria.
+
+---
+
+## Sessão v19 (13/07/2026) — BUG-065, MH-049/050 registrados, higiene de nome de repositório
+
+Sessão iniciada a partir de um print de produção: alerta de estoque pós-confirmação afirmando
+"último comprimido"/estoque zerado quando o banco já mostrava 1 unidade real restante.
+
+### BUG-065 — Alerta de estoque pós-confirmação afirma "zerado" quando ainda há unidades
+
+**Causa raiz confirmada** (stock_movements, schedules, git blame — não hipótese): `diasRestantes
+= Math.floor(estoque_atual / dosesPerDia)` é uma métrica de dias de cobertura, correta em si.
+O bug estava em 3 funções de texto — `router.js` e `agentes/principal.js` (`buildAlertaEstoqueMessage`,
+cópias idênticas) e `agentes/lembrete.js` (`buildAlertaEstoqueNaoInformadoMessage`, mesma lógica)
+— que tratavam `diasRestantes === 0` como sinônimo de "estoque físico = 0". Isso só é verdade
+quando `dosesPerDia === 1`; com `dosesPerDia >= 2`, o floor pode zerar com estoque real positivo
+(reproduzido com Dipirona: 2x/dia, 1 unidade restante). As três cópias nasceram no mesmo commit
+`f967a0c` (MH-026, 15/06) — antes de o projeto adotar o padrão de módulo de templates
+compartilhado (que só surgiu na v15 com `adesaoTemplates.js`).
+
+**Correção:** `classificarNivelEstoquePorDias` (`database.js`, nova) classifica em 3 níveis —
+zerado (`novoEstoque <= 0`) / urgente (`diasRestantes === 0` mas `novoEstoque > 0`) / ok
+(`diasRestantes >= 1`) — e `templates/estoqueTemplates.js` (novo módulo) constrói o texto de cada
+um dos 3 call sites, substituindo as 3 cópias divergentes. Ver princípio 19 (novo).
+
+**Status:** implementado, commitado, deployado em produção. `em_validacao` no backlog — aguardando
+confirmação real via WhatsApp (idealmente com um medicamento `dosesPerDia >= 2` e estoque baixo).
+
+### MH-049, MH-050 — Registrados durante a investigação, não implementados
+
+- **MH-049:** `calcularAlertaEstoque` não trata `tipo_tratamento = 'temporario'` no limiar de
+  alerta — cai no padrão de 5 dias (igual `continuo`), não no limiar apertado de 1 dia do `agudo`
+  curto. Hipótese em aberto, não investigada — descoberta ao confirmar que o Dipirona do print
+  tinha esse `tipo_tratamento`.
+- **MH-050:** bloco "insuficiente" de `montarBlocoEstoque` (`adesaoTemplates.js`, relatório de
+  progresso de tratamento) nunca exibe a quantidade real de estoque, só dias — fica com fraseado
+  estranho quando `diasCobertos=0`. Relacionado ao mesmo tema do BUG-065, ponto de código
+  diferente, registrado separado por disciplina de escopo.
+
+**MH-029** (título antigo parecido, "Alerta de estoque incorreto para tratamento de tempo
+determinado", sem causa_raiz preenchida desde a criação) permanece separado — decisão pendente
+sobre se trata do mesmo tema; Guilherme optou por não fundir sem confirmação futura.
+
+### Higiene de repositório (paralela, não fazia parte do briefing de bug)
+
+`origin` git local ainda apontava pro nome antigo do repositório (`nami-backend`), gerando aviso
+de redirect do GitHub em praticamente todo push desde a v13 (reforçado v17, nunca corrigido antes
+de agora). Corrigido: `git remote set-url` + nome unificado em `package.json`/`package-lock.json`
+(`nami_life`) e `.claude/launch.json` (`Nami_life`) + raiz da árvore em `CONTEXT.md`. Histórico em
+`briefings/` mantido intocado de propósito.
+
+### Avaliação do recurso de Preview do Claude Code Desktop (`.claude/launch.json`)
+
+Guilherme perguntou sobre o potencial de usar esse recurso pra simular um "usuário de teste"
+conversando com a Nami. Investigação em código (não documentação genérica) confirmou riscos reais
+específicos deste projeto — ver nota operacional v19 na seção de Variáveis de Ambiente. Decisão:
+não perseguir agora; `autoVerify: false` setado pra não subir o servidor local sem ação explícita.
+
+## Sessão v20 (26/07/2026) — Validação de backlog em produção, MH-032 fechado, BUG-066 e MH-051 registrados
+
+Sessão dedicada inteiramente a **validar em produção** itens que já estavam implementados e
+aguardando confirmação (`em_validacao`) ou registrados sem investigação (`aberto`). Nenhuma
+mudança de código nesta sessão — só leitura de `agent_logs`/`dose_logs`/`stock_movements` via
+Supabase MCP, cruzada com commits reais do GitHub (para saber com precisão o que é "antes" e
+"depois" de cada deploy) e, ao final, com o export do WhatsApp do próprio Guilherme.
+
+### 9 bugs fechados com evidência real de produção
+
+Todos confirmados com ocorrências reais **posteriores ao deploy de cada correção** (não apenas
+"implementado e commitado"):
+
+- **BUG-035** (fast-path de resposta tardia): `agent: fast_path_resposta_tardia` aparece
+  repetidamente em `agent_logs` entre 11/07 e 25/07, múltiplos usuários.
+- **BUG-059** (rótulo ontem/hoje/anteontem): rótulos corretos confirmados em várias conversas reais
+  09/07–26/07, incluindo o cenário mais exigente (dois dias retroativos simultâneos, 13/07).
+- **BUG-032 + BUG-033** (fluxos de encerramento/alteração sem saída): 4 conversas reais completas
+  (23/07, 24/07) mostram saída limpa via "Não"/"Deixa pra lá"/"Não, era só aquele mesmo", sem loop.
+- **BUG-060** (mudança de intenção com remédio reconhecido): comportamento geral do
+  `configuracao.js` pós-deploy consistente, sem recorrência do padrão original.
+- **BUG-062** ("parar remédio" ≠ cancelamento cego): confirmado 23/07 — "Parar com o Cataflam" abre
+  pausar/encerrar corretamente; "Quero encerrar dipirona" vai direto à confirmação.
+- **BUG-063** (medicamento do contexto vs. citado explicitamente): confirmado 26/07 — "Mudar
+  horário do Cataflam" → "Na vdd quero alterar o dipirona" trocou corretamente para Dipirona.
+- **BUG-064** (recusa de lista de opções, "Nenhum"): confirmadas as 3 variações do checklist em
+  26/07 — lista de horários, pergunta pausar/encerrar, lista de medicamentos para encerrar.
+- **BUG-065** (alerta "zerado" com estoque real positivo): confirmado com várias ocorrências reais
+  13/07–25/07, sempre com contagem real exibida ("mais 1/2 unidade(s)") em cenário `dosesPerDia
+  >= 2`, nunca mais "zerado" com estoque positivo.
+
+### MH-032 — Lembretes agrupados por horário — fechado (escopo do lembrete inicial)
+
+Validado com evidência real: Guilherme já tem, diariamente, Vitamina C + Dipirona no mesmo
+horário (20:00) — cenário 1 do checklist original ocorrendo organicamente todo dia. Cruzando
+`dose_logs`/`stock_movements` com o export do WhatsApp:
+
+- **Lembrete inicial:** agrupado corretamente em todos os dias verificados (20, 21, 22, 23, 24,
+  25/07) — uma única mensagem listando os medicamentos do horário, formato Variação C.
+- **Follow-up agrupado:** comportamento **inconsistente** — agrupado em 21/07, 22/07, 24/07;
+  quebrou em 2 mensagens separadas (2 minutos de diferença entre elas, exatamente 1 tick do cron)
+  em 23/07 e 25/07. Vira o BUG-066 abaixo, separado por disciplina de escopo — MH-032 fecha só
+  com o lembrete inicial validado.
+
+### BUG-066 (novo, registrado nesta sessão) — Follow-up agrupado do MH-032 quebra intermitentemente
+
+**Causa raiz:** hipótese fundamentada em código + padrão de horário observado, **não confirmada
+100%** (faltam os valores exatos de `ultima_tentativa_at` nos logs do Railway para fechar com
+certeza). `createDoseLog` e `updateDoseLogTentativa` (`database.js`) calculam `new
+Date().toISOString()` independentemente a cada chamada, dentro de um loop sequencial que grava um
+`dose_log`/atualização por dose do grupo — não existe um timestamp único compartilhado entre as
+doses do mesmo grupo. O filtro de follow-up (`checkAndSendFollowUps`, `scheduler.js`) usa `>=`
+rígido checado a cada 2 minutos (granularidade do cron `*/2 * * * *`). O drift de milissegundos
+entre as doses do grupo pode ocasionalmente colocá-las em ticks de cron diferentes, quebrando o
+agrupamento naquele ciclo — o que explica a intermitência (depende do alinhamento entre o instante
+exato em que o limiar de tempo se completa e os ticks do cron, que varia dia a dia).
+
+**Correção proposta (não implementada ainda):** gerar um único timestamp compartilhado no início
+de `sendGroupedReminder`/`handleGroupedFollowUp` e passar esse mesmo valor para todas as
+chamadas de `createDoseLog`/`updateDoseLogTentativa` do grupo, eliminando o drift na raiz (garantia
+estrutural, não depende de sorte de alinhamento com o cron).
+
+**Evidência:** `dose_logs.zapi_message_id` NULL (assinatura de agrupado) em 20/07, 21/07, 22/07,
+24/07; preenchido com IDs reais distintos (assinatura de mensagens individuais) em 23/07 e 25/07.
+Confirmado com o texto literal das mensagens no export do WhatsApp: follow-up agrupado ("Ainda não
+vi sua confirmação dos remédios das 20:00: • Vitamina C • Dipirona") em 21/22/24; duas mensagens
+individuais 2 minutos apartadas em 23/25. Estoque descartado como causa (`stock_movements`
+confirma estoque confortável, 14-21 unidades, nos dias que quebraram).
+
+**Status:** aberto, causa raiz em nível de hipótese fundamentada — não implementar sem confirmar
+via logs do Railway (ou aceitar a hipótese e implementar a correção sistêmica proposta, que é
+segura independentemente da causa exata, já que elimina a fonte do drift).
+
+### MH-051 (novo, registrado nesta sessão) — Bot não reconhece pergunta de esclarecimento do
+usuário quando nenhum medicamento foi identificado no fluxo de pausar/encerrar
+
+Achado durante os testes do BUG-064 (26/07), fora do escopo dos cenários testados. Sequência
+observada: "Parar lembrete" → bot pergunta pausar/encerrar sobre "esse medicamento" (nenhum remédio
+identificado ainda) → usuário responde "Qual medicamento?" tentando esclarecer → bot não entende a
+pergunta e repete a mesma pergunta de pausar/encerrar ("Parar" também repetiu). Só resolveu quando
+o usuário disse "Encerrar" diretamente.
+
+**Causa raiz:** hipótese, baseada em uma única ocorrência — não investigada a fundo. Quando a ação
+já está clara mas nenhum medicamento foi citado nem está no contexto, o placeholder "esse
+medicamento" fica sem referente e o classificador não reconhece uma pergunta de esclarecimento do
+usuário como tal (é tratada como mais uma tentativa de responder à pergunta pausar/encerrar).
+
+**Status:** registrado, não investigado, não implementado. Prioridade baixa — não trava nenhum
+fluxo, só gera 2-3 mensagens repetidas até o usuário achar o caminho.
+
+---
+
+---
+
+## Sessão v21 (26/07/2026) — MH-020: exclusão de conta (LGPD), implementada e validada em produção
+
+Primeiro item crítico para a expansão beta. A Nami ganhou a capacidade de **excluir a conta do
+usuário a pedido explícito dele**, exigida pela LGPD. O fluxo de recusa de LGPD durante o onboarding
+(recepcionista) foi mantido **intacto** — o escopo foi apenas a exclusão solicitada por usuário já
+onboarded. Briefings: `BRIEFING_MH020.md` (implementação) e `BRIEFING_MH020_FIX_DETECCAO.md` (correção).
+
+### Arquitetura entregue
+- **Função SQL atômica `delete_user_account(uuid)`** (migration `20260726000000_...`): apaga na ordem
+  correta `stock_movements` → `adesao_estado` → `users`. Necessária porque essas duas tabelas têm FK
+  `NO ACTION` e fariam um `DELETE FROM users` ingênuo **falhar** para qualquer usuário real. Transação
+  tudo-ou-nada: se falhar, rollback e nada é apagado. Wrapper único `excluirContaUsuario` em `database.js`.
+- **Detecção em 2 estágios** no fluxo: pré-filtro determinístico `pareceExclusaoConta` (nlp_helpers.js,
+  ação + objeto de CONTA, disjunto dos objetos de configuração) + confirmação semântica via LLM em
+  `agentes/exclusaoConta.js` (distingue exclusão de conta de "cancelar cadastro" de remédio, de excluir
+  um remédio/lembrete, de negação e de perguntas sobre dados).
+- **Novo estado `aguardando_confirmacao_exclusao`** + confirmação por palavra explícita (CONFIRMAR).
+  Sucesso apaga e responde SEM nome (não conhecemos mais o usuário); erro técnico não apaga nada e
+  direciona ao Guilherme.
+- **Seção `DADOS E PRIVACIDADE (LGPD)`** no `NAMI_SYSTEM_PROMPT` — a Nami agora responde com clareza a
+  perguntas sobre quais dados guarda, por quê, onde, e o direito de exclusão.
+
+### ⚠️ Decisão arquitetural — redundância INTENCIONAL de detecção de exclusão de conta (NÃO remover)
+A intenção de exclusão de conta é detectada por **dois caminhos que apontam para o MESMO handler**
+(`handleExclusaoConta`), de propósito. **Isto não é duplicação acidental — é defesa em profundidade
+para uma ação crítica e irreversível.** Os dois cobrem **alcances diferentes** e nenhum sozinho cobre
+tudo:
+1. **Portão early** (`pareceExclusaoConta` + `confirmarIntencaoExclusaoConta`), colocado ANTES de todos
+   os branches de estado no `routeMessage`. Papel exclusivo: dar **precedência dentro de fluxos que
+   NÃO passam pelo classificador central** — em especial `adding_med`/`cadastro`, que chama seu handler
+   direto e não escala para o roteador como o `configuracao` faz. Sem ele, um "quero excluir minha
+   conta" no meio de um cadastro seria engolido pelo agente do fluxo.
+2. **Categoria `excluir_conta` no classificador central** (`classificarIntencaoComContexto`). Papel:
+   detecção **robusta a typo/fraseado no caminho idle/geral e nas escaladas**. Sem ela, um typo em
+   estado idle vaza para o `principal` — que foi exatamente a falha crítica corrigida na v21 (falsa
+   confirmação de exclusão).
+
+**Regra para quem mexer nisso no futuro:** NÃO "desduplicar" removendo um dos dois caminhos achando
+que é redundância supérflua. Remover o portão early reabre a classe "pedido de exclusão engolido por
+fluxo mid-flow"; remover a categoria do classificador reabre a classe "typo/fraseado vaza para o
+principal e vira falsa exclusão". Se for consolidar, é obrigatório **preservar os dois alcances**
+(mid-flow + idle/geral). Isto NÃO contradiz o princípio 1 (que condena remendar o mesmo caso duas
+vezes): aqui são caminhos de código distintos protegendo alcances distintos de uma ação destrutiva.
+
+### Falha crítica encontrada na 1ª validação e corrigida (BRIEFING_MH020_FIX_DETECCAO)
+O 1º teste real expôs o **pior caso de LGPD**: com um typo ("descad**r**astar"), a mensagem escapou do
+pré-filtro determinístico e caiu no `principal`, que — ensinado pela nova seção LGPD — **encenou** a
+confirmação e **afirmou falso sucesso** ("sua conta foi excluída"), sem apagar nada. Duas causas raiz:
+(1) a capacidade `exclusao_conta` **não estava no inventário** do `classificarIntencaoComContexto`
+(violação do princípio 5 — corrigida registrando `excluir_conta` no classificador central e tratando o
+retorno nos 4 pontos que o consomem: `despacharEscalada`, `aguardando_periodo_adesao`,
+`aguardando_escolha_tratamento` e o `else` final); (2) o `principal` não tinha trava contra conduzir/
+afirmar exclusão (violação dos princípios 11/13 — corrigida com regra absoluta no prompt). Terceira
+melhoria (UX): no estado de confirmação, afirmativo ambíguo ("sim", "ok") **re-orienta** para escrever
+CONFIRMAR em vez de cancelar silenciosamente.
+
+### Validação end-to-end em produção (evidência real, não resumo do Claude Code)
+Cruzando `agent_logs` + export do WhatsApp + estado do banco, pós-deploy da correção:
+- Detecção robusta: "Quero me descadrastar" (o mesmo typo), "Quero sumir da Nami", "Não quero mais
+  conta na Nami", "Encerra meu cadastro", "Quero que apague meu cadastro" → todos `agent: exclusao_conta`.
+- Re-orientação: "Sim" no estado de confirmação → pediu CONFIRMAR, **sem apagar nem afirmar sucesso**.
+- Não-regressão: "Excluir losartana" e "Apagar o lembrete das 8" → continuaram indo para `configuracao`.
+- Exclusão real: baseline do usuário de teste (users 1, medications 1, schedules 2, dose_logs 2,
+  **stock_movements 4**, agent_logs 76, conversation_state 1, **adesao_estado 1**, intencoes 1) →
+  após CONFIRMAR, **todas as 10 tabelas zeraram**. Prova em produção de que a ordem da função atômica
+  cobre `stock_movements` e `adesao_estado` (o achado crítico). Escopo cirúrgico confirmado: só o
+  usuário-alvo caiu; "Teste 2" e o usuário do Guilherme intactos. "Olá" seguinte caiu no onboarding
+  (recepcionista) como usuário novo — o "volte quando quiser" funcionando.
+
+### Registrado para próxima sessão
+- **MH-052** (monitoramento/alerta estruturado de erros técnicos): hoje erros só vão para `console.error`
+  no Railway (reativo, sem alerta). Casos sensíveis como falha de exclusão deveriam gerar alerta proativo
+  ao Guilherme e distinguir erro transitório de persistente. Prioridade média.
+
+---
+
+## Backlog (BUG/FIX/MH)
+
+A partir de 07/07/2026, o backlog completo vive na tabela `backlog_items`
+do Supabase (projeto Nami_Life Brazil, project_id nputymewnwmnhrtpizzs).
+Não é mais mantido neste arquivo. Consultar via Supabase MCP:
+
+  SELECT tipo, numero, titulo, status, prioridade, data_criacao
+  FROM backlog_items
+  WHERE status IN ('aberto', 'em_validacao')
+  ORDER BY prioridade, data_criacao;
+
+---
+
+## Princípios de Engenharia (formalizados v10, reforçados v11-v15)
+
+1. **Sistêmico vs. remendo** — resolver a classe inteira do problema, não só o caso que apareceu.
+2. **Baixo acoplamento, alta coesão** — arquitetura deve permitir manutenção e expansão futura.
+3. **Legibilidade** — outro desenvolvedor deve entender e conseguir manter o código.
+4. **Cálculos de saúde determinísticos** — aritmética de horários, status de dose, contagem de
+   estoque, cálculo de adesão e progresso de tratamento sempre em código.
+5. **Inventário do roteador sempre atual** — classificarIntencaoComContexto (router.js) atualizado
+   na mesma alteração que adicionar/remover capacidade.
+6. **Propagação de histórico sistêmica** — buscar histórico uma vez no roteador e propagar a todos
+   os agentes LLM; lembrete fica fora (determinístico puro).
+7. **Schema de banco como código** — toda alteração via migration numerada. Migrations são
+   aplicadas MANUALMENTE no Supabase.
+8. **Status terminais devem ter saída quando reversível** — nunca desenhar status clínico como
+   "sem volta" se há cenário de correção legítimo.
+9. **Scheduler nunca é resetado por correções retroativas** — o horário original do tratamento é
+   uma referência protegida.
+10. **Isolamento de ambiente** — nunca rodar servidor local com .env de produção.
+11. **Mensagem de resultado nunca antes da ação executar** — qualquer número que o usuário vê
+    sobre o resultado de uma ação relevante à saúde deve vir de leitura determinística do banco
+    feita DEPOIS que a ação real rodou — nunca do texto que o LLM escreveu antes.
+12. **Informativo de resultado e regra de alerta são funções separadas** — não fundir "o que
+    aconteceu" com "o que fazer a respeito" na mesma função, mesmo quando aparecem juntos.
+13. **Apresentação de dado de saúde também é determinística (v15, reforçado v17)** — o mesmo
+    raciocínio do princípio 4/11 se estende à camada de apresentação: mensagens de
+    adesão/progresso nascem de templates fixos aprovados previamente, nunca de geração livre do
+    LLM — elimina a raiz do BUG-031, não só o sintoma. **v17 estende isso a rótulos de data
+    relativa** (hoje/ontem/anteontem): o Claude não deve inferir esse cálculo sozinho — ver
+    BUG-059, `calcularRotuloDia()` e a âncora de data/hora atual no contexto geral.
+14. **Classificação semântica central, nunca lista de exclusão de palavras (v15)** — quando um
+    atalho determinístico precisa decidir "essa mensagem foge do padrão esperado?", a resposta
+    correta é consultar o classificador central (`classificarIntencaoComContexto`), não crescer
+    uma lista de palavras a excluir — não escala e sempre fica um passo atrás da próxima frase que
+    escapa (mesma lição do BUG-036, reaplicada no BUG-056 complemento).
+15. *(Em consideração, não formalizado)* **Confirmação de dose pendente tem precedência sobre
+    qualquer estado conversacional** — estabelecido no BUG-057, correto na prática, mas Guilherme
+    pediu para não generalizar como regra permanente ainda sem refletir mais sobre o risco de
+    acumular regras. Tratar caso a caso até decisão explícita numa sessão futura.
+16. **Escrita em tabela de auditoria/registro sempre via função única, nunca SQL direto (v16)** —
+    igual ao stock_movements (princípio já implícito no MH-042), backlog_items só é escrito pelo
+    código de produção através de src/backlog.js (registrarItemBacklog/atualizarStatusBacklogItem).
+    SQL direto (execute_sql) é aceitável apenas em briefings de correção/manutenção em lote
+    revisados explicitamente como exceção — nunca como caminho padrão de escrita.
+17. **Texto literal da mensagem atual > contexto preservado > inferência do classificador (v18,
+    BUG-063)** — quando um fluxo precisa resolver uma referência ambígua (ex: qual medicamento é
+    "ele"/o assunto atual), a ordem de confiança é: (1) o que a mensagem atual, como texto puro,
+    já resolve deterministicamente (ex: `encontrarMedicamento(message, ...)`); (2) o que já estava
+    preservado no `context` da conversa; (3) por último, o palpite de um classificador LLM que
+    recebe `historicoConversa` — esse palpite pode refletir um assunto que já não é mais o atual.
+    Nunca inverter essa ordem.
+18. **Cancelamento/desistência não tem precedência cega sobre um assunto citado explicitamente
+    (v18, BUG-062)** — palavras de desistência (ex: "parar", "cancela") podem coexistir com uma
+    intenção real quando citam um medicamento (ex: "parar a dipirona" = encerrar tratamento, não
+    desistir da operação). Uma checagem de cancelamento genérica deve primeiro confirmar que a
+    mensagem não cita nenhum medicamento conhecido antes de aceitar como desistência pura.
+19. **Uma métrica derivada nunca substitui a métrica bruta que ela resume (v19, BUG-065)** — quando
+    um cálculo converte um valor bruto relevante à saúde (ex: unidades de estoque) numa métrica
+    derivada mais conveniente pra decisão (ex: dias de cobertura, via divisão por doses/dia), o
+    texto apresentado ao usuário nunca pode inferir o valor bruto a partir da derivada. A mensagem
+    deve checar o valor bruto diretamente antes de qualquer afirmação categórica sobre ele (ex:
+    "zerado", "esgotado") — a derivada serve pra decidir a urgência, nunca pra descrever o fato.
+20. **Operação em lote precisa de UM timestamp compartilhado, nunca um por item (v20, hipótese do
+    BUG-066)** — quando uma função processa múltiplos itens do mesmo lote/grupo em loop (ex:
+    doses de um lembrete agrupado), qualquer `new Date()` usado como referência de tempo para esse
+    lote deve ser calculado UMA VEZ, fora do loop, e passado explicitamente para cada chamada —
+    nunca calculado de novo dentro de cada iteração. Deixar cada item calcular seu próprio "agora"
+    introduz um drift de milissegundos que pode, em código sensível a limiares de tempo checados
+    em ciclos (ex: cron), colocar itens do mesmo lote em ciclos diferentes silenciosamente.
+21. **Toda capacidade nova de roteamento precisa ser registrada no classificador central na MESMA
+    mudança (v21, MH-020 fix — reforço do princípio 5)** — ao criar uma capacidade acionada por um
+    portão determinístico próprio (ex: exclusão de conta), é obrigatório também adicioná-la ao
+    inventário do `classificarIntencaoComContexto`. Uma lista fixa de palavras/frases sempre deixa
+    escapar typo/fraseado novo; quando escapa, a mensagem cai no `principal`, que — se souber da
+    capacidade pelo system prompt mas não puder executá-la — pode ENCENAR o fluxo e AFIRMAR um
+    resultado falso (no MH-020, falsa confirmação de exclusão de dados, o pior caso de LGPD). Corolário:
+    o `principal` nunca deve conduzir nem afirmar ações críticas que pertencem a fluxos determinísticos
+    (reforço dos princípios 11/13 aplicado a exclusão de conta). Consequência intencional dessa regra: a detecção de exclusão de conta vive em DOIS caminhos (portão early + categoria no classificador central) apontando para o mesmo handler — redundância proposital que NÃO deve ser removida (ver "Decisão arquitetural — redundância INTENCIONAL" na seção da Sessão v21).
+
+---
+
+## Modo de Trabalho — Ritmo Estabelecido
+
+### Fluxo padrão de implementação
+```
+1. Identificar problema ou melhoria
+2. Analisar causa raiz com evidências (logs, código, dados) — nunca hipóteses não identificadas
+3. Gerar briefing em briefings/BRIEFING_[TEMA].md — sempre com texto literal completo embutido
+   (nunca referenciar material externo que o Claude Code não tem acesso — lição repetida 2x na v15)
+4. Guilherme salva o briefing e aciona o Claude Code
+5. Claude Code implementa → git add/commit/push
+6. Railway redeploy automático
+7. Verificar logs e testar no WhatsApp
+8. Ler o código real no GitHub para confirmar a implementação — nunca aceitar o resumo do Claude
+   Code sem verificação (lição repetida e reforçada na v15)
+Este chat = planejamento/análise/arquitetura. Claude Code (VS Code) = implementação.
+```
+
+### 🔔 Rito de abertura de sessão (formalizado v12)
+Quando o Guilherme disser frases como **"o que temos pra hoje"**, **"no que precisamos
+trabalhar"**, **"quais as prioridades"** (ou equivalentes), responder IMEDIATAMENTE com o quadro
+completo da fila de backlog, incluindo para cada item: ID, descrição breve, e **dias aguardando**
+calculado dinamicamente a partir da data de entrada e da data atual da sessão — nunca um número fixo.
+
+### Ritual de início de sessão
+1. Ler CONTEXT.md via `curl -s "https://raw.githubusercontent.com/Gui-eng26/Nami_life/main/CONTEXT.md"`
+2. Confirmar estado atual com Guilherme antes de começar
+3. Schema do banco: ler supabase/migrations/ no repositório
+4. Antes de atribuir qualquer ID novo de BUG/FIX/MH, consultar `backlog_items` no Supabase
+   (não mais `ls briefings/` — essa checagem manual foi substituída pela constraint do banco,
+   que rejeita fisicamente qualquer tentativa de reaproveitar um número ativo).
+
+### Ritual de encerramento de sessão
+1. Gerar relatório .docx e apresentar para download (upload manual no Drive)
+2. Gerar briefings/encerramento_vN.md com o CONTEXT.md atualizado para o Claude Code commitar
+3. Incluir no encerramento a lista de escritas em `backlog_items` (inserts/updates) — este chat é
+   READ-ONLY no Supabase; todas as escritas de backlog são responsabilidade do Claude Code.
+
+⚠️ **Lição registrada (v13):** conferir que o nome do arquivo `encerramento_vN.md` bate com o
+número de versão do CONTEXT.md que ele gera *antes* de salvar.
+
+### Filosofia de debugging — inegociável
+- **Nunca propor solução sem causa raiz confirmada.** Hipóteses devem ser identificadas como
+  hipóteses e testadas/eliminadas uma a uma.
+- **Analisar no contexto completo da Nami** — não o bug como fato isolado. Rever estrutura se
+  necessário (inclusive modelo de IA usado nas respostas).
+- **Evidências primeiro:** logs do Railway/Supabase (`agent_logs`), código atual, dados reais.
+- **Atenção a fuso horário:** timestamps podem estar em UTC; comparações de data devem ser
+  explícitas sobre qual fuso usam dos dois lados (lição reforçada v15, ver exclusão de tratamento
+  finalizado).
+- **Verificar implementação direto no repositório antes de assumir que está completa** —
+  afirmações de "tudo implementado" devem ser confirmadas lendo o código real.
+- **Briefings sempre com texto literal embutido, nunca por referência** — se o conteúdo (ex:
+  templates de mensagem) foi definido em conversa, colar o texto completo no arquivo do briefing.
+  O Claude Code só lê o que está no arquivo.
+
+---
+
+## Como Rodar Localmente
+
+```bash
+npm install
+node src/index.js
+```
+⚠️ Ver aviso sobre .env de produção acima. Preferir .env.local com banco de teste.
+
+---
+
+## Ferramentas e Recursos
+
+- **GitHub:** `Gui-eng26/Nami_life` (público) — raw via `curl -s "https://raw.githubusercontent.com/Gui-eng26/Nami_life/main/[filepath]"`.
+- **Schema:** `supabase/migrations/` (baseline + mh032 + mh042 + adesao_tratamento).
+- **Google Drive:** pasta Desenvolvimento Nami, ID `17uNtuBHOHw41FBc0zxZjx_-kjTW7bRmN`. Último relatório: `Nami_Relatorio_v21.docx` (v20 não gerou relatório — foi só validação de backlog).
+- **Supabase:** banco Brasil (São Paulo). `agent_logs` = histórico conversacional (também usado para saudação condicional, v15). `conversation_state` = estado operacional (sem 's').
+- **Railway:** produção com auto-deploy no git push. Logs exportados em UTC.
+- **Claude Code (VS Code):** implementação via briefings `.md`, sempre com texto literal embutido.
+
+
+<<<FIM_CONTEXT_MD>>>
+
+---
+
+## PASSO 2 — Escritas em `backlog_items` (Supabase)
+
+Todas as escritas de backlog são de sua responsabilidade (único ponto de escrita).
+
+### 2.1 — Atualizar MH-020 (fechar como resolvido)
+
+```
+UPDATE backlog_items
+SET status = 'resolvido',
+    sessao_fechamento = 'v21',
+    data_fechamento = '2026-07-26',
+    causa_raiz = 'Capacidade de exclusão de dados a pedido do usuário nunca existiu. Além disso, a cascata pura de FK falharia para usuários reais (adesao_estado e stock_movements são NO ACTION). Na 1a validação, um typo fez a mensagem escapar do pré-filtro determinístico e cair no principal, que encenou a exclusão e afirmou falso sucesso (pior caso LGPD) — causas: (1) exclusao_conta não estava no inventário do classificarIntencaoComContexto (violação do princípio 5); (2) principal sem trava contra conduzir/afirmar exclusão (violação dos princípios 11/13).',
+    notas = 'Resolvido com: função SQL atômica delete_user_account (ordem stock_movements -> adesao_estado -> users, transação tudo-ou-nada); excluirContaUsuario (database.js); pareceExclusaoConta (nlp_helpers.js); exclusaoConta.js (estágio 2 LLM + handler + 3 buckets na confirmação + re-orientação de afirmativo ambíguo); estado aguardando_confirmacao_exclusao; excluir_conta no inventário do classificarIntencaoComContexto + 4 call sites; regra absoluta anti-encenação no NAMI_SYSTEM_PROMPT; seção DADOS E PRIVACIDADE (LGPD). Detecção vive em DOIS caminhos intencionais (portão early + classificador central) apontando para o mesmo handler — redundância proposital documentada no CONTEXT v21 (NÃO remover). VALIDADO end-to-end em produção 26/07: detecção robusta a typo/fraseado, re-orientação no sim sem falsa exclusão, não-regressão de config, exclusão real das 10 tabelas (incl. stock_movements e adesao_estado) com escopo cirúrgico, recriação limpa no onboarding ao retornar. Onboarding/recusa LGPD mantidos intactos.'
+WHERE tipo = 'MH' AND numero = 20;
+```
+
+### 2.2 — Inserir MH-052 (novo item — monitoramento de erros)
+
+> Antes de inserir, confirme o próximo número livre de MH:
+> `SELECT MAX(numero) FROM backlog_items WHERE tipo = 'MH';`
+> O número planejado é **52**. Se já existir um MH-052, use o próximo livre e ajuste o campo `numero`.
+
+```
+INSERT INTO backlog_items (tipo, numero, titulo, descricao, causa_raiz, status, prioridade, sessao_criacao, data_criacao)
+VALUES (
+  'MH', 52,
+  'Monitoramento/alerta estruturado de erros técnicos (ex: falha de exclusão de conta)',
+  'Hoje erros só aparecem via console.error nos logs do Railway (reativo, sem alerta proativo). Casos sensíveis como falha de exclusão de conta (LGPD) deveriam gerar alerta proativo ao Guilherme e permitir distinguir erro transitório (retry resolve) de persistente (ex: migration não aplicada, FK nova sem cascata) para direcionar a mensagem certa ao usuário.',
+  'Não há caminho de registro/alerta estruturado de erros — só console.error nos logs do Railway.',
+  'aberto', 'media', 'v21', '2026-07-26'
+);
+```
+
+---
+
+## PASSO 3 — Commit e push
+
+```bash
+git add CONTEXT.md
+git commit -m "docs: CONTEXT.md atualizado — sessão v21 (26/07/2026) — MH-020 exclusão de conta LGPD validado + decisão de redundância intencional registrada"
+git push
+```
+
+(Os arquivos de código e os dois briefings do MH-020 já foram commitados durante a sessão; este
+commit é só do CONTEXT.md.)
+
+---
+
+## PASSO 4 — Confirmar
+
+Responda com o hash do commit, confirmação de que o CONTEXT.md foi sobrescrito, e confirmação de que
+os itens de backlog (MH-020 update + MH-052 insert) foram gravados. Não faça mais nada.
