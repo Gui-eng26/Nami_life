@@ -301,8 +301,10 @@ async function callClaude({ userMessage, image }) {
             }
         }
         console.error('❌ Claude não retornou JSON válido:', rawText);
+
+        const pareceJson = rawText.trim().startsWith('{');
         return {
-            message: rawText.length > 10 && rawText.length < 500
+            message: (!pareceJson && rawText.length > 10 && rawText.length < 500)
                 ? rawText
                 : 'Desculpe, não entendi bem. Pode repetir? 🌿',
             newState: 'idle',
