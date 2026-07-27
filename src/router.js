@@ -252,6 +252,12 @@ AGENTES E SUAS CAPACIDADES:
 - relatorios: consultar doses tomadas, adesão, estoque, próximos remédios, horários cadastrados, progresso do tratamento (dias restantes, % concluído)
 - configuracao: pausar, reativar, encerrar tratamento; alterar/remover/adicionar/redefinir horário de lembrete
 - principal: conversa geral, dúvidas, saudações, reações ("ok", "obrigado"), fechamentos, confirmação de doses, confirmação retroativa de doses (últimos 2 dias), reversão de confirmação por engano, correção/atualização de estoque (recompra, recontagem, perda)
+- excluir_conta: o usuário quer EXCLUIR A CONTA dele / apagar TODOS os dados dele da Nami / se
+  descadastrar por completo da Nami. Ex: "quero excluir minha conta", "apaga todos os meus dados",
+  "quero me descadastrar da Nami", "cancelar meu cadastro na Nami", "não quero mais usar a Nami,
+  pode apagar tudo". NÃO confundir com: excluir/remover UM remédio, lembrete ou horário (isso é
+  configuracao); nem com cancelar um cadastro de medicamento em andamento (isso NÃO é exclusão de
+  conta — geralmente é abortar o fluxo de cadastro).
 
 FUNCIONALIDADES QUE A NAMI AINDA NÃO TEM (classifique como "nao_suportado"):
 - alterar tempo/duração de tratamento
@@ -280,7 +286,7 @@ Se o agente escolhido for "relatorios", identifique também o subtipo do relató
 Para os demais agentes, "subtipoRelatorio" deve ser null.
 
 Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no formato exato:
-{"agente": "cadastro|relatorios|configuracao|principal|nao_suportado", "subtipoRelatorio": "tomei_hoje|meus_remedios|estoque|proximo_remedio|adesao|progresso_tratamento|null"}`;
+{"agente": "cadastro|relatorios|configuracao|principal|excluir_conta|nao_suportado", "subtipoRelatorio": "tomei_hoje|meus_remedios|estoque|proximo_remedio|adesao|progresso_tratamento|null"}`;
 
         const { default: Anthropic } = await import('@anthropic-ai/sdk');
         const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -292,7 +298,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         });
 
         const textoResposta = resposta.content[0]?.text?.trim() || '';
-        const agentesValidos = ['cadastro', 'relatorios', 'configuracao', 'principal', 'nao_suportado'];
+        const agentesValidos = ['cadastro', 'relatorios', 'configuracao', 'principal', 'excluir_conta', 'nao_suportado'];
         const subtiposValidos = ['tomei_hoje', 'meus_remedios', 'estoque', 'proximo_remedio', 'adesao', 'progresso_tratamento'];
 
         let parsed;
@@ -368,6 +374,11 @@ async function despacharEscalada({ user, message, image, contextoPreservado, his
                 agentName = 'principal';
                 response = await handlePrincipal({ user, message, image, historicoConversa });
             }
+        } else if (agenteSelecionado === 'excluir_conta') {
+            agentName = 'exclusao_conta';
+            console.log(`🗑️ [ESCALADA] Pedido de exclusão de conta — ${user.phone}`);
+            const r = await handleExclusaoConta({ user, message, etapa: 'solicitar_confirmacao', historicoConversa });
+            response = r.response;
         } else if (agenteSelecionado === 'nao_suportado') {
             agentName = 'principal';
             console.log(`🚧 [ESCALADA] Intenção não suportada — ${user.phone}`);
@@ -577,6 +588,11 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                     } else {
                         response = resultadoConfig;
                     }
+                } else if (agenteSelecionado === 'excluir_conta') {
+                    agentName = 'exclusao_conta';
+                    console.log(`🗑️ [CLASSIFICADOR] Pedido de exclusão de conta (saiu de aguardando_periodo_adesao) — ${user.phone}`);
+                    const r = await handleExclusaoConta({ user, message, etapa: 'solicitar_confirmacao', historicoConversa });
+                    response = r.response;
                 } else if (agenteSelecionado === 'nao_suportado') {
                     agentName = 'principal';
                     console.log(`🚧 [CLASSIFICADOR] Intenção não suportada (saiu de aguardando_periodo_adesao) — ${user.phone}`);
@@ -654,6 +670,11 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                     } else {
                         response = resultadoConfig;
                     }
+                } else if (agenteSelecionado === 'excluir_conta') {
+                    agentName = 'exclusao_conta';
+                    console.log(`🗑️ [CLASSIFICADOR] Pedido de exclusão de conta (saiu de aguardando_escolha_tratamento) — ${user.phone}`);
+                    const r = await handleExclusaoConta({ user, message, etapa: 'solicitar_confirmacao', historicoConversa });
+                    response = r.response;
                 } else if (agenteSelecionado === 'nao_suportado') {
                     agentName = 'principal';
                     console.log(`🚧 [CLASSIFICADOR] Intenção não suportada (saiu de aguardando_escolha_tratamento) — ${user.phone}`);
@@ -821,6 +842,11 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             } else {
                 response = resultadoConfig;
             }
+        } else if (agenteSelecionado === 'excluir_conta') {
+            agentName = 'exclusao_conta';
+            console.log(`🗑️ [CLASSIFICADOR] Pedido de exclusão de conta — ${user.phone}`);
+            const r = await handleExclusaoConta({ user, message, etapa: 'solicitar_confirmacao', historicoConversa });
+            response = r.response;
         } else if (agenteSelecionado === 'nao_suportado') {
             agentName = 'principal';
             console.log(`🚧 [CLASSIFICADOR] Intenção não suportada — ${user.phone}`);

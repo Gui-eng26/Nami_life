@@ -76,6 +76,17 @@ function confirmouExclusao(message) {
     return /\b(confirmar|confirmo|confirmado|excluir|exclua|exclua|apagar tudo|pode apagar|pode excluir)\b/.test(m);
 }
 
+// Afirmativo curto/ambíguo que NÃO é a palavra de confirmação — merece re-orientação,
+// não cancelamento silencioso (ex: "sim", "ok", "pode", "quero").
+function pareceAfirmativoAmbiguo(message) {
+    if (!message) return false;
+    const m = normalizar(message).trim();
+    const termos = ['sim', 's', 'ok', 'okay', 'pode', 'pode sim', 'quero', 'quero sim',
+        'isso', 'isso mesmo', 'claro', 'com certeza', 'aceito', 'positivo', 'uhum', 'aham',
+        'blz', 'beleza', 'yes', 'sim quero', 'sim pode'];
+    return termos.some(t => m === t || m.startsWith(t + ' '));
+}
+
 // ============================================================
 // HANDLER PRINCIPAL DO FLUXO
 // etapa 'solicitar_confirmacao' -> pede CONFIRMAR e salva estado
@@ -111,16 +122,28 @@ Se mudou de ideia, é só me dizer qualquer outra coisa que eu deixo tudo como e
         return { response, contaExcluida: false };
     }
 
-    // etapa === 'confirmar'
+    // etapa === 'confirmar' — 3 buckets:
+    // (1) palavra explícita CONFIRMAR -> executa | (2) afirmativo ambíguo -> re-orienta (mantém estado)
+    // (3) qualquer outra coisa (negação/desistência/outro assunto) -> cancela com segurança.
+
+    // Bucket 2: afirmativo ambíguo que NÃO é a palavra -> re-orienta, NÃO altera o estado.
+    if (!confirmouExclusao(message) && pareceAfirmativoAmbiguo(message)) {
+        console.log(`🗑️ [EXCLUSAO-CONTA] Afirmativo ambíguo ("${message}") — re-orientando para CONFIRMAR — ${user.phone}`);
+        const response =
+`${firstName}, como essa ação apaga *tudo* e não tem como voltar atrás, preciso que você escreva exatamente a palavra *CONFIRMAR* para eu seguir. 🌿
+
+Se mudou de ideia, é só me dizer qualquer outra coisa que eu deixo tudo como está. 💛`;
+        return { response, contaExcluida: false };
+    }
+
+    // Bucket 3: não é a palavra e não é afirmativo ambíguo -> cancela com segurança (saída de emergência).
     if (!confirmouExclusao(message)) {
-        // Não confirmou -> cancela com segurança, volta pra idle (saída de emergência).
         await saveConversationState(user.id, { state: 'idle', context: {} });
         console.log(`🗑️ [EXCLUSAO-CONTA] Exclusão NÃO confirmada — cancelada — ${user.phone}`);
-
         const response =
 `Que bom, ${firstName}! 😊 Não apaguei nada — seus dados e seus lembretes continuam todos aqui comigo.
 
-Se precisar de qualquer coisa, é só falar. 🌿`;
+Se precisava de outra coisa, é só me dizer. 🌿`;
         return { response, contaExcluida: false };
     }
 
