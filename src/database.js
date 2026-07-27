@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import 'dotenv/config';
 import fetch from 'node-fetch';
+import { registrarEvento } from './observabilidade.js';
 global.fetch = fetch;
 
 const supabase = createClient(
@@ -452,7 +453,17 @@ export async function updateDoseLogZapiMessageId(doseLogId, zapiMessageId) {
         .update({ zapi_message_id: zapiMessageId })
         .eq('id', doseLogId);
 
-    if (error) console.error(`⚠️ Erro ao atualizar zapi_message_id no dose_log: ${error.message}`);
+    if (error) {
+        console.error(`⚠️ Erro ao atualizar zapi_message_id no dose_log: ${error.message}`);
+        await registrarEvento({
+            tipo: 'erro_tecnico',
+            severidade: 'media',
+            agent: 'database',
+            origem: 'outro',
+            titulo: 'Falha ao atualizar zapi_message_id no dose_log',
+            payload: { message: error.message, doseLogId }
+        });
+    }
 }
 
 export async function getDoseLogByZapiMessageId(zapiMessageId) {
@@ -1371,7 +1382,7 @@ export function calcularProximaDose(schedulesAtivos, agora = new Date()) {
 // ============================================================
 
 export async function logAgentInteraction({ userId, agent, userMessage, agentResponse, estadoConversa = null, contextoConversa = null }) {
-    const { error } = await supabase
+    const { data, error } = await supabase
         .from('agent_logs')
         .insert({
             user_id: userId,
@@ -1380,9 +1391,24 @@ export async function logAgentInteraction({ userId, agent, userMessage, agentRes
             agent_response: agentResponse,
             estado_conversa: estadoConversa,
             contexto_conversa: contextoConversa
-        });
+        })
+        .select('id')
+        .single();
 
-    if (error) console.error(`Erro ao salvar log de agente: ${error.message}`);
+    if (error) {
+        console.error(`Erro ao salvar log de agente: ${error.message}`);
+        await registrarEvento({
+            tipo: 'erro_tecnico',
+            severidade: 'media',
+            userId,
+            agent,
+            origem: 'outro',
+            titulo: 'Falha ao salvar log de agente',
+            payload: { message: error.message }
+        });
+        return null;
+    }
+    return data?.id ?? null;
 }
 
 // Verifica se o usuário já respondeu qualquer coisa desde um timestamp de referência.

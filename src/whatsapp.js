@@ -1,5 +1,6 @@
 import axios from 'axios';
 import 'dotenv/config';
+import { registrarEvento } from './observabilidade.js';
 
 const ZAPI_URL = `https://api.z-api.io/instances/${process.env.ZAPI_INSTANCE_ID}/token/${process.env.ZAPI_TOKEN}`;
 
@@ -29,6 +30,14 @@ export async function sendTextMessage(phone, message) {
 
     } catch (error) {
         console.error(`❌ Erro Z-API:`, error.response?.status, error.response?.data || error.message);
+        await registrarEvento({
+            tipo: 'erro_tecnico',
+            severidade: 'media',
+            agent: 'whatsapp',
+            origem: 'outro',
+            titulo: 'Falha de envio Z-API (sendTextMessage)',
+            payload: { status: error.response?.status ?? null, message: error.response?.data || error.message }
+        });
         throw error;
     }
 }

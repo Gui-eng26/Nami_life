@@ -1,8 +1,9 @@
 import { getConversationState, logAgentInteraction, getRecentDoses,
     getDoseLogByZapiMessageId, confirmDoseByLogId,
     getEstoqueInfoParaAlerta, contarConfirmacoesHoje, calcularAlertaEstoque,
-    saveConversationState, getHistoricoRecente, registrarIntencaoNaoSuportada,
+    saveConversationState, getHistoricoRecente,
     getDosesRetroativas, confirmarDoseRetroativa, usuarioRespondeuDesde } from './database.js';
+import { registrarEvento, registrarFeedback } from './observabilidade.js';
 import { buildAlertaEstoquePosConfirmacao } from './templates/estoqueTemplates.js';
 import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
@@ -230,7 +231,7 @@ function detectarIntencaoCadastro(message) {
 // ============================================================
 
 async function classificarIntencaoComContexto({ message, currentState, historicoConversa }) {
-    const fallback = { agente: 'principal', subtipoRelatorio: null };
+    const fallback = { agente: 'principal', subtipoRelatorio: null, feedback: null };
 
     try {
         // Monta o histórico como texto legível para o LLM
@@ -267,6 +268,20 @@ FUNCIONALIDADES QUE A NAMI AINDA NÃO TEM (classifique como "nao_suportado"):
 - falar com médico, agendar consulta
 - exportar histórico em arquivo
 
+FEEDBACK SOBRE A NAMI (dimensão independente do agente — coexiste com qualquer roteamento):
+Avalie se a mensagem contém feedback do usuário SOBRE A NAMI (o assistente/a experiência), NÃO
+sobre o tratamento ou o remédio em si. Preencha "feedback" com um destes valores, ou null:
+- elogio: satisfação, gratidão afetuosa ou carinho com a Nami/o serviço
+  (ex: "adorei", "você me ajuda muito", "que assistente boa"). Um "ok"/"obrigado" isolado é
+  reação, NÃO elogio — só marque quando houver satisfação clara com a Nami.
+- critica: insatisfação, reclamação ou frustração com a Nami/a experiência
+  (ex: "isso é confuso", "cansei de confirmar toda hora", "você não me entende").
+- sugestao: proposta EXPLÍCITA de melhoria ou de algo novo para a Nami
+  (ex: "seria bom lembrete por voz", "vocês deviam mandar menos mensagens").
+- null: nenhum feedback explícito (a maioria das mensagens).
+NÃO marque feedback para comentário sobre o remédio/sintoma, nem para o simples uso de uma
+funcionalidade que não temos (isso já é "nao_suportado").
+
 ESTADO ATUAL: ${currentState}
 
 HISTÓRICO RECENTE:
@@ -286,14 +301,14 @@ Se o agente escolhido for "relatorios", identifique também o subtipo do relató
 Para os demais agentes, "subtipoRelatorio" deve ser null.
 
 Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no formato exato:
-{"agente": "cadastro|relatorios|configuracao|principal|excluir_conta|nao_suportado", "subtipoRelatorio": "tomei_hoje|meus_remedios|estoque|proximo_remedio|adesao|progresso_tratamento|null"}`;
+{"agente": "cadastro|relatorios|configuracao|principal|excluir_conta|nao_suportado", "subtipoRelatorio": "tomei_hoje|meus_remedios|estoque|proximo_remedio|adesao|progresso_tratamento|null", "feedback": "elogio|critica|sugestao|null"}`;
 
         const { default: Anthropic } = await import('@anthropic-ai/sdk');
         const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
         const resposta = await anthropic.messages.create({
             model: 'claude-sonnet-4-6',
-            max_tokens: 60,
+            max_tokens: 80,
             messages: [{ role: 'user', content: prompt }]
         });
 
@@ -311,6 +326,9 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
 
         const agente = String(parsed?.agente || '').trim().toLowerCase();
         const subtipoRelatorio = String(parsed?.subtipoRelatorio || '').trim().toLowerCase();
+        const feedbacksValidos = ['elogio', 'critica', 'sugestao'];
+        const feedbackRaw = String(parsed?.feedback || '').trim().toLowerCase();
+        const feedback = feedbacksValidos.includes(feedbackRaw) ? feedbackRaw : null;
 
         if (!agentesValidos.includes(agente)) {
             console.warn(`⚠️ [CLASSIFICADOR] Agente inesperado do LLM: "${agente}" — usando principal`);
@@ -319,11 +337,11 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
 
         if (agente === 'relatorios' && !subtiposValidos.includes(subtipoRelatorio)) {
             console.warn(`⚠️ [CLASSIFICADOR] Subtipo de relatório ausente/inválido: "${subtipoRelatorio}" — não reconhecido`);
-            return { agente: 'relatorios', subtipoRelatorio: null };
+            return { agente: 'relatorios', subtipoRelatorio: null, feedback };
         }
 
         console.log(`🧠 [CLASSIFICADOR] Intenção classificada como: ${agente}${subtipoRelatorio && agente === 'relatorios' ? ` (${subtipoRelatorio})` : ''} — mensagem: "${message}"`);
-        return { agente, subtipoRelatorio: agente === 'relatorios' ? subtipoRelatorio : null };
+        return { agente, subtipoRelatorio: agente === 'relatorios' ? subtipoRelatorio : null, feedback };
 
     } catch (error) {
         // Erro na chamada LLM — fallback seguro, não interrompe o usuário
@@ -338,12 +356,13 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
 // ============================================================
 
 async function despacharEscalada({ user, message, image, contextoPreservado, historicoConversa }) {
-    const { agente: agenteSelecionado, subtipoRelatorio } = await classificarIntencaoComContexto({
+    const { agente: agenteSelecionado, subtipoRelatorio, feedback } = await classificarIntencaoComContexto({
         message, currentState: 'configurando', historicoConversa
     });
 
     let agentName = agenteSelecionado;
     let response;
+    let intencaoNaoSuportadaDetectada = false;
 
     if (agenteSelecionado === 'configuracao') {
         console.log(`⚙️ [ESCALADA] Ainda é configuração — reentra preservando medicamento — ${user.phone}`);
@@ -382,7 +401,7 @@ async function despacharEscalada({ user, message, image, contextoPreservado, his
         } else if (agenteSelecionado === 'nao_suportado') {
             agentName = 'principal';
             console.log(`🚧 [ESCALADA] Intenção não suportada — ${user.phone}`);
-            await registrarIntencaoNaoSuportada(user.id, message);
+            intencaoNaoSuportadaDetectada = true;
             response = await handlePrincipal({ user, message, image, historicoConversa, intencaoNaoSuportada: true });
         } else {
             agentName = 'principal';
@@ -391,7 +410,7 @@ async function despacharEscalada({ user, message, image, contextoPreservado, his
         }
     }
 
-    return { agentName, response };
+    return { agentName, response, feedback, intencaoNaoSuportadaDetectada };
 }
 
 // ============================================================
@@ -453,6 +472,8 @@ export async function routeMessage({ user, message, image, messageId, referenceM
 
     let response;
     let agentName;
+    let feedbackDetectado = null;
+    let intencaoNaoSuportadaDetectada = false;
 
     // 1. Usuário ainda não fez onboarding → recepcionista
     if (!user.onboarded) {
@@ -546,9 +567,10 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             response = await handleRelatorios({ user, message, subtipo: 'adesao', state });
 
         } else {
-            const { agente: agenteSelecionado, subtipoRelatorio } = await classificarIntencaoComContexto({
+            const { agente: agenteSelecionado, subtipoRelatorio, feedback } = await classificarIntencaoComContexto({
                 message, currentState, historicoConversa
             });
+            feedbackDetectado = feedback ?? feedbackDetectado;
 
             if (agenteSelecionado === 'relatorios' && subtipoRelatorio === 'adesao') {
                 agentName = 'relatorios';
@@ -585,6 +607,8 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                         });
                         agentName = escalada.agentName;
                         response = escalada.response;
+                        feedbackDetectado = escalada.feedback ?? feedbackDetectado;
+                        if (escalada.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
                     } else {
                         response = resultadoConfig;
                     }
@@ -596,7 +620,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                 } else if (agenteSelecionado === 'nao_suportado') {
                     agentName = 'principal';
                     console.log(`🚧 [CLASSIFICADOR] Intenção não suportada (saiu de aguardando_periodo_adesao) — ${user.phone}`);
-                    await registrarIntencaoNaoSuportada(user.id, message);
+                    intencaoNaoSuportadaDetectada = true;
                     response = await handlePrincipal({ user, message, image, historicoConversa, intencaoNaoSuportada: true });
                 } else {
                     agentName = 'principal';
@@ -628,9 +652,10 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             response = `Sem problemas, ${firstName}! Se quiser ver de novo, é só me chamar 🌿`;
 
         } else {
-            const { agente: agenteSelecionado, subtipoRelatorio } = await classificarIntencaoComContexto({
+            const { agente: agenteSelecionado, subtipoRelatorio, feedback } = await classificarIntencaoComContexto({
                 message, currentState, historicoConversa
             });
+            feedbackDetectado = feedback ?? feedbackDetectado;
 
             if (agenteSelecionado === 'relatorios' && subtipoRelatorio === 'progresso_tratamento') {
                 agentName = 'relatorios';
@@ -667,6 +692,8 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                         });
                         agentName = escalada.agentName;
                         response = escalada.response;
+                        feedbackDetectado = escalada.feedback ?? feedbackDetectado;
+                        if (escalada.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
                     } else {
                         response = resultadoConfig;
                     }
@@ -678,7 +705,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                 } else if (agenteSelecionado === 'nao_suportado') {
                     agentName = 'principal';
                     console.log(`🚧 [CLASSIFICADOR] Intenção não suportada (saiu de aguardando_escolha_tratamento) — ${user.phone}`);
-                    await registrarIntencaoNaoSuportada(user.id, message);
+                    intencaoNaoSuportadaDetectada = true;
                     response = await handlePrincipal({ user, message, image, historicoConversa, intencaoNaoSuportada: true });
                 } else {
                     agentName = 'principal';
@@ -703,6 +730,8 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             });
             agentName = escalada.agentName;
             response = escalada.response;
+            feedbackDetectado = escalada.feedback ?? feedbackDetectado;
+            if (escalada.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
         } else {
             response = resultadoConfig;
         }
@@ -722,6 +751,8 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             });
             agentName = escalada.agentName;
             response = escalada.response;
+            feedbackDetectado = escalada.feedback ?? feedbackDetectado;
+            if (escalada.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
         } else {
             response = resultadoConfig;
         }
@@ -805,11 +836,12 @@ export async function routeMessage({ user, message, image, messageId, referenceM
 
     // 6. Demais casos → classificador LLM com contexto conversacional
     } else {
-        const { agente: agenteSelecionado, subtipoRelatorio } = await classificarIntencaoComContexto({
+        const { agente: agenteSelecionado, subtipoRelatorio, feedback } = await classificarIntencaoComContexto({
             message,
             currentState,
             historicoConversa
         });
+        feedbackDetectado = feedback ?? feedbackDetectado;
 
         agentName = agenteSelecionado;
 
@@ -839,6 +871,8 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                 });
                 agentName = escalada.agentName;
                 response = escalada.response;
+                feedbackDetectado = escalada.feedback ?? feedbackDetectado;
+                if (escalada.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
             } else {
                 response = resultadoConfig;
             }
@@ -850,7 +884,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         } else if (agenteSelecionado === 'nao_suportado') {
             agentName = 'principal';
             console.log(`🚧 [CLASSIFICADOR] Intenção não suportada — ${user.phone}`);
-            await registrarIntencaoNaoSuportada(user.id, message);
+            intencaoNaoSuportadaDetectada = true;
             response = await handlePrincipal({ user, message, image, historicoConversa, intencaoNaoSuportada: true });
         } else {
             // 'principal' — resposta geral ou intenção não identificada
@@ -860,7 +894,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         }
     }
 
-    await logAgentInteraction({
+    const agentLogId = await logAgentInteraction({
         userId: user.id,
         agent: agentName,
         userMessage: message,
@@ -868,6 +902,28 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         estadoConversa: currentState || null,
         contextoConversa: state?.context || null
     });
+
+    if (intencaoNaoSuportadaDetectada) {
+        await registrarEvento({
+            tipo: 'intencao_nao_suportada',
+            severidade: 'baixa',
+            userId: user.id,
+            agent: agentName,
+            origem: 'classificador_central',
+            agentLogId,
+            titulo: 'Intenção não suportada (classificador central)'
+        });
+    }
+
+    if (feedbackDetectado) {
+        await registrarFeedback({
+            userId: user.id,
+            categoria: feedbackDetectado,
+            origem: 'espontaneo',
+            texto: message,
+            agentLogId
+        });
+    }
 
     return response;
 }

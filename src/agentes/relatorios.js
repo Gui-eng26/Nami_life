@@ -8,9 +8,9 @@ import {
     getAdesaoEstado,
     upsertAdesaoEstado,
     saveConversationState,
-    registrarIntencaoNaoSuportada,
     precisaSaudacao
 } from '../database.js';
+import { registrarEvento } from '../observabilidade.js';
 import { sendTextMessage } from '../whatsapp.js';
 import { isCancelamento, encontrarMedicamento } from '../nlp_helpers.js';
 import {
@@ -293,7 +293,15 @@ async function relatorioAdesao({ user, message, state }) {
         await saveConversationState(user.id, { state: 'aguardando_periodo_adesao', context: {} });
 
         if (mencionaPeriodoInvalido(message)) {
-            await registrarIntencaoNaoSuportada(user.id, message);
+            await registrarEvento({
+                tipo: 'intencao_nao_suportada',
+                severidade: 'baixa',
+                userId: user.id,
+                agent: 'relatorios',
+                origem: 'classificador_central',
+                agentLogId: null,
+                titulo: 'Intenção não suportada (período de adesão inválido)'
+            });
             return comSaudacao(user.id, firstName, montarRecusaPeriodo());
         }
         return comSaudacao(user.id, firstName, montarPerguntaPeriodo());

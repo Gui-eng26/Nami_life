@@ -5,6 +5,7 @@ import { getPendingReminders, getPendingFollowUps, createDoseLog,
 import { sendTextMessage } from './whatsapp.js';
 import { handleFollowUp } from './agentes/lembrete.js';
 import { enviarResumoSemanal } from './agentes/relatorios.js';
+import { registrarEvento } from './observabilidade.js';
 
 // ============================================================
 // INICIA O SCHEDULER
@@ -31,6 +32,14 @@ export function startScheduler() {
             }
         } catch (error) {
             console.error('❌ Erro ao enviar resumos semanais:', error.message);
+            await registrarEvento({
+                tipo: 'erro_tecnico',
+                severidade: 'alta',
+                origem: 'scheduler',
+                agent: 'scheduler',
+                titulo: `Erro no scheduler: ${error.message?.split('\n')[0] ?? ''}`.slice(0, 200),
+                payload: { message: error.message, stack: error.stack, funcao: 'enviarResumosSemanais' }
+            });
         }
     }, { timezone: 'America/Sao_Paulo' });
 }
@@ -76,6 +85,14 @@ async function checkAndSendReminders() {
 
     } catch (error) {
         console.error('❌ Erro no scheduler:', error.message);
+        await registrarEvento({
+            tipo: 'erro_tecnico',
+            severidade: 'alta',
+            origem: 'scheduler',
+            agent: 'scheduler',
+            titulo: `Erro no scheduler: ${error.message?.split('\n')[0] ?? ''}`.slice(0, 200),
+            payload: { message: error.message, stack: error.stack, funcao: 'checkAndSendReminders' }
+        });
     }
 }
 
@@ -130,6 +147,14 @@ async function checkAndSendFollowUps() {
         }
     } catch (error) {
         console.error('❌ Erro nos follow-ups:', error.message);
+        await registrarEvento({
+            tipo: 'erro_tecnico',
+            severidade: 'alta',
+            origem: 'scheduler',
+            agent: 'scheduler',
+            titulo: `Erro no scheduler: ${error.message?.split('\n')[0] ?? ''}`.slice(0, 200),
+            payload: { message: error.message, stack: error.stack, funcao: 'checkAndSendFollowUps' }
+        });
     }
 }
 
@@ -187,6 +212,14 @@ async function sendGroupedReminder(grupo) {
         console.log(`✅ Lembrete agrupado (${grupo.length} doses: ${nomes}) enviado para ${primeiro.phone} — horário ${horario}`);
     } catch (error) {
         console.error(`❌ Erro ao enviar lembrete agrupado:`, error.message);
+        await registrarEvento({
+            tipo: 'erro_tecnico',
+            severidade: 'alta',
+            origem: 'scheduler',
+            agent: 'scheduler',
+            titulo: `Erro no scheduler: ${error.message?.split('\n')[0] ?? ''}`.slice(0, 200),
+            payload: { message: error.message, stack: error.stack, funcao: 'sendGroupedReminder' }
+        });
     }
 }
 
@@ -229,6 +262,14 @@ async function handleGroupedFollowUp(grupo) {
         console.log(`🔔 Follow-up agrupado tentativa ${tentativa} (${grupo.length} doses: ${nomes}) enviado para ${primeiro.phone}`);
     } catch (error) {
         console.error(`❌ Erro no follow-up agrupado:`, error.message);
+        await registrarEvento({
+            tipo: 'erro_tecnico',
+            severidade: 'alta',
+            origem: 'scheduler',
+            agent: 'scheduler',
+            titulo: `Erro no scheduler: ${error.message?.split('\n')[0] ?? ''}`.slice(0, 200),
+            payload: { message: error.message, stack: error.stack, funcao: 'handleGroupedFollowUp' }
+        });
     }
 }
 
@@ -298,6 +339,14 @@ async function sendReminder(reminder) {
 
     } catch (error) {
         console.error(`❌ Erro ao enviar lembrete para ${reminder.phone}:`, error.message);
+        await registrarEvento({
+            tipo: 'erro_tecnico',
+            severidade: 'alta',
+            origem: 'scheduler',
+            agent: 'scheduler',
+            titulo: `Erro no scheduler: ${error.message?.split('\n')[0] ?? ''}`.slice(0, 200),
+            payload: { message: error.message, stack: error.stack, funcao: 'sendReminder' }
+        });
     }
 }
 

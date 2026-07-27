@@ -1,11 +1,13 @@
 import 'dotenv/config';
-import { getOrCreateUser } from './database.js';
+import { getOrCreateUser, logAgentInteraction } from './database.js';
 import { sendTextMessage } from './whatsapp.js';
 import { routeMessage } from './router.js';
+import { registrarEvento } from './observabilidade.js';
 
 export async function handleIncomingMessage({ phone, text, audio, image, messageId, referenceMessageId }) {
+    let user;
     try {
-        const user = await getOrCreateUser(phone);
+        user = await getOrCreateUser(phone);
 
         if (audio && !text) {
             console.log(`🎵 Áudio recebido de ${phone} — ignorando sem alterar estado`);
@@ -22,6 +24,32 @@ export async function handleIncomingMessage({ phone, text, audio, image, message
     } catch (error) {
         console.error('❌ Erro no agente:', error.message);
         console.error('Stack:', error.stack);
+
+        try {
+            let agentLogId = null;
+            if (typeof user !== 'undefined' && user?.id) {
+                agentLogId = await logAgentInteraction({
+                    userId: user.id,
+                    agent: 'erro',
+                    userMessage: text,
+                    agentResponse: null,
+                    estadoConversa: 'erro'
+                });
+            }
+            await registrarEvento({
+                tipo: 'erro_tecnico',
+                severidade: 'alta',
+                userId: (typeof user !== 'undefined' && user?.id) ? user.id : null,
+                agent: 'agent',
+                origem: 'catch_global',
+                agentLogId,
+                titulo: `Exceção não tratada: ${error.message?.split('\n')[0] ?? 'desconhecida'}`.slice(0, 200),
+                payload: { message: error.message, stack: error.stack, estado: 'erro' }
+            });
+        } catch (obsError) {
+            console.error('[observabilidade] Falha ao capturar erro técnico:', obsError.message);
+        }
+
         try {
             await sendTextMessage(phone, 'Desculpe, tive um probleminha aqui. Pode repetir o que você disse? 🌿');
         } catch (sendError) {
