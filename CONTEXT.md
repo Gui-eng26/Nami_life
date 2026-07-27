@@ -1,4 +1,4 @@
-# 🌿 NAMI — Contexto do Projeto (v21 — MH-020 implementado e VALIDADO em produção: exclusão de conta a pedido do usuário (LGPD), com detecção robusta, trava anti-alucinação no principal e exclusão atômica; MH-052 registrada (monitoramento de erros) — 26/07/2026)
+# 🌿 NAMI — Contexto do Projeto (v22 — MH-053 implementada e em VALIDAÇÃO em produção: estrutura sistêmica de observabilidade — system_events + feedbacks + capturas in-line; MH-054 (juiz offline), MH-055 (captura proativa de adesão) e MH-056 (UX de fallbacks) registrados — 27/07/2026)
 
 ---
 
@@ -210,7 +210,44 @@ classificado como mensal para sempre).
 cancelamento > resposta esperada > classificador central) estabelecido no BUG-057.
 
 **agent_logs** — fotografia diagnóstica imutável, nunca lida pelo fluxo operacional (exceto, na
-v15, para decidir a saudação condicional — ver seção de Adesão ao Tratamento).
+v15, para decidir a saudação condicional — ver seção de Adesão ao Tratamento). **Desde a v22,
+`logAgentInteraction` retorna o `id` da linha inserida** (antes não retornava nada) — é a chave de
+correlação (`agent_log_id`) usada por `system_events`/`feedbacks` para amarrar um evento ao turno
+exato sem duplicar o texto do usuário em outro lugar.
+
+**system_events (novo — v22, MH-053)** — sinais automáticos que o sistema emite sobre si mesmo.
+```sql
+id, tipo (erro_tecnico/desvio_comportamental/intencao_nao_suportada), severidade (baixa/media/alta/critica),
+user_id (FK → users, ON DELETE SET NULL), agent, origem (catch_global/classificador_central/juiz_offline/scheduler/outro),
+agent_log_id (FK → agent_logs, ON DELETE SET NULL), titulo, payload (jsonb), fingerprint,
+status_triagem (novo/lido/arquivado/virou_backlog), backlog_ref, revisado_at, created_at
+```
+⚠️ **Invariante de LGPD — `system_events.payload` NUNCA guarda texto cru do usuário.** O texto vive
+só em `agent_logs` (que é `CASCADE` na exclusão de conta); `system_events` referencia por
+`agent_log_id`. Quando o usuário é excluído, `agent_logs` some e `system_events` fica com `user_id`/
+`agent_log_id` anulados (FK `SET NULL`) — anonimizado, sem precisar tocar em `delete_user_account`.
+`titulo` deve ser um resumo ESTÁVEL/templatizado (nunca a mensagem dinâmica) — é o que o
+`fingerprint` agrupa para distinguir erro transitório de persistente (consumido pelo MH-052).
+
+**feedbacks (novo — v22, MH-053)** — sinais explícitos do usuário (elogio/crítica/sugestão),
+ortogonais ao roteamento.
+```sql
+id, user_id (FK → users, ON DELETE SET NULL), categoria (elogio/critica/sugestao),
+origem (espontaneo/proativo_adesao/proativo_outro), texto, agent_log_id (FK → agent_logs, ON DELETE SET NULL),
+status_triagem (novo/lido/arquivado/virou_backlog), backlog_ref, revisado_at, created_at
+```
+⚠️ Ao contrário de `system_events`, aqui o `texto` do usuário é guardado DE PROPÓSITO — é o
+aprendizado de produto que deve sobreviver à exclusão de conta (anonimizado por `user_id` → NULL).
+
+Ponto único de escrita das duas tabelas: `src/observabilidade.js` (`registrarEvento`/
+`registrarFeedback`) — nunca insert direto em outro lugar (princípio 16). Ambas as funções são
+defensivas (try/catch interno, nunca lançam — ver princípio 23).
+
+**intencoes_nao_suportadas** — **descontinuada a partir da v22.** Mantida só como histórico (11
+linhas, última escrita 10/07/2026); nenhum código novo escreve nela. O não-suportado agora vira
+`system_events(tipo=intencao_nao_suportada)`. As 11 linhas antigas NÃO foram migradas de propósito
+(são `CASCADE`/texto cru; migrar para uma tabela `SET NULL` faria o texto sobreviver à exclusão —
+regressão de LGPD).
 
 ### ⚠️ Padrão crítico no Supabase JS SDK
 Filtros via join NÃO funcionam: `.eq('medications.user_id', userId)` retorna todos os registros.
@@ -768,6 +805,97 @@ Cruzando `agent_logs` + export do WhatsApp + estado do banco, pós-deploy da cor
 
 ---
 
+## Sessão v22 (27/07/2026) — MH-053: estrutura sistêmica de observabilidade
+
+Motivação: com poucos usuários (família/conhecidos), Guilherme acompanha cada interação de perto.
+Isso deixa de ser viável na expansão beta (~100 usuários desconhecidos). Objetivo: dar à Nami
+mecanismos sistêmicos para capturar (a) falha técnica, (b) desvio comportamental, (c) feedback
+explícito (elogio/crítica/sugestão) e (d) intenção não suportada — alimentando um dashboard futuro
+(MH-9) e um alerta proativo (MH-52). Trabalho fundido às melhorias MH-48 e MH-52 já registradas.
+
+### Diagnóstico que precedeu o desenho
+Leitura de código (não de documentação) revelou três coisas: (1) `agent_logs` já é escrito no fim de
+`routeMessage` para TODO turno concluído, de qualquer agente/estado — é sistêmico por acidente, mas
+guarda transcrição, não telemetria de sucesso/falha; (2) `intencoes_nao_suportadas` só era escrita em
+5 pontos (4 em `router.js`, 1 em `relatorios.js`) — `cadastro`, `recepcionista`, `configuracao` nunca
+escreviam nela, e o resultado no banco era só 11 linhas, paradas desde 10/07; (3) os templates de
+adesão (`adesaoTemplates.js`) já pedem sugestão explícita ao usuário num momento proativo, e a
+resposta do usuário era descartada sem registro. Não havia nenhuma captura de feedback.
+
+### Decisão central — backbone híbrido
+Duas tabelas: `system_events` (sinais automáticos: erro/desvio/não-suportado) + `feedbacks` (sinais
+do usuário: elogio/crítica/sugestão), cada uma com um envelope de triagem compartilhado
+(`status_triagem`/`backlog_ref`) que conecta observação → item de backlog. Rejeitada a alternativa de
+tabela especializada por sinal — reproduziria o mesmo mecanismo de apodrecimento que already matou
+`intencoes_nao_suportadas` (cada capacidade nova = tabela+função+query novas, fácil de esquecer).
+
+### Cobertura sem refatorar cada agente — a "viga" da sessão
+Decisão explícita de NÃO adicionar escalada de observabilidade em cada agente (`cadastro` e
+`recepcionista` continuam sem escalar — risco de regressão em agentes LLM-driven, e o padrão
+"cada agente lembra de chamar" é a causa raiz do apodrecimento acima). Cobertura garantida por DUAS
+camadas complementares, exaustivas por construção:
+1. **Turno concluído** → tem linha em `agent_logs` (universal) → sinais semânticos extraídos
+   PÓS-FATO, por leitura de `agent_logs` — cobre automaticamente todo agente presente e futuro, sem
+   tocar em nenhum. Esta é a camada do juiz offline (MH-54, ainda não implementado).
+2. **Turno que crasha** → a exceção sobe ANTES do log final, então não há linha em `agent_logs` —
+   por isso capturado IN-LINE, no `catch` único de `agent.js`.
+`{turnos concluídos} ∪ {turnos que crasham}` = todo turno, sem depender de nenhum agente cooperar.
+
+⚠️ **Scheduler é entrypoint paralelo, fora do funil** — não passa por `agent.js`/`routeMessage`. Cada
+função dele (`checkAndSendReminders`, `sendGroupedReminder` etc.) já tinha try/catch próprio;
+recebeu hookup próprio de `registrarEvento(origem='scheduler')`. É onde a classe de erro do BUG-066
+(follow-up agrupado) passa a ficar visível fora do Railway.
+
+### LGPD — anonimização via FK, sem tocar em `delete_user_account`
+`system_events.user_id` e `feedbacks.user_id` são `ON DELETE SET NULL` (verificado: `agent_logs.user_id`
+já era `CASCADE`). Consequência: quando `delete_user_account` roda seu `DELETE FROM users`, as duas
+tabelas novas se anonimizam sozinhas — **nenhuma linha nova na função da v21**, risco de regressão
+próximo de zero. Invariante que sustenta isso: `system_events` nunca guarda texto cru (fica em
+`agent_logs`, referenciado por `agent_log_id`); `feedbacks.texto` é guardado de propósito (aprendizado
+que deve sobreviver, anonimizado). Teste de não-regressão rodado em produção: usuário de teste com 1
+`feedbacks` + 1 `system_events` → exclusão não falhou, as duas linhas sobreviveram com `user_id = NULL`,
+`agent_logs` do usuário zerou.
+
+### Feedback como dimensão ORTOGONAL do classificador — não um novo agente
+Cuidado explícito com o princípio 5: feedback não é destino de roteamento (uma mensagem pode pedir um
+relatório E elogiar; um pedido de feature inexistente pode ser `nao_suportado` E `sugestao`). Tratar
+feedback como novo valor de `agente` forçaria um falso ou/ou e perderia sinal. Solução: o classificador
+central (`classificarIntencaoComContexto`) ganhou um TERCEIRO campo de retorno, `feedback`
+(elogio/critica/sugestao/null), paralelo ao `agente` — que manteve seus 6 valores originais intactos
+(zero mudança no roteamento). `max_tokens` subiu de 60 para 80 para acomodar o campo extra.
+
+### Validado em produção (código real lido no GitHub após push, não resumo do Claude Code)
+Migration aplicada (FKs confirmadas `SET NULL`); `src/observabilidade.js` criado como ponto único de
+escrita, funções defensivas (nunca lançam — novo princípio 23); `agent.js` captura erro técnico no
+catch global; `router.js` propaga `agent_log_id` e a dimensão de `feedback` por todos os 4 pontos que
+chamam o classificador, inclusive `despacharEscalada`; `relatorios.js`, `scheduler.js` (6 pontos) e
+`whatsapp.js` instrumentados. `node --check` OK nos 7 arquivos tocados.
+
+⚠️ **Não testado ponta a ponta via WhatsApp/Z-API** (ambiente de implementação sem acesso ao
+webhook ao vivo) — por isso MH-053 ficou em `em_validacao`, não `resolvido`. Antes de fechar o item,
+testar manualmente: forçar erro técnico real, enviar elogio/crítica/sugestão, enviar intenção
+claramente não suportada, e observar/forçar erro no scheduler — conferindo as linhas resultantes em
+`system_events`/`feedbacks`.
+
+### Registrado para próximas sessões (Guilherme quer retomar nesta ordem)
+- **MH-54** — Juiz offline (LLM-as-judge): leitura pós-fato de `agent_logs` (em lote, fora do caminho
+  quente) para detectar desvios comportamentais e não-suportados invisíveis às capturas in-line — ex:
+  parser rejeitando resposta válida 3× seguidas, ou perda completa de contexto (\"seis\" no meio de um
+  cadastro faz a Nami perguntar de novo o nome do medicamento). Evidenciado por uma conversa de teste
+  real anexada nesta sessão. Design intencionalmente adiado para sessão dedicada — é peça estrutural
+  (dá cobertura universal) e não deve ser apressado.
+- **MH-55** — Captura proativa de feedback no relatório de adesão: os templates de adesão (linhas
+  ~33/34 de `adesaoTemplates.js`) já pedem sugestão explícita e a resposta hoje é descartada. Exige
+  um flag de "pergunta proativa em aberto" (scheduler grava, router lê) → tem implicação de
+  comportamento de produto que Guilherme quer amadurecer antes de desenhar.
+- **MH-56** — Melhorar UX dos fallbacks de erro técnico ("tive um probleminha") e de não-entendimento
+  ("não entendi") — hoje fazem o usuário redigitar e a mensagem original se perde. Prioridade baixa
+  agora, mas reavaliar quando o beta escalar (atrito pesa mais com usuários desconhecidos). Nota: a
+  MH-053 já captura a mensagem que causou a falha no `catch` global — uma versão futura do fallback
+  poderia reaproveitar esse texto em vez de pedir para redigitar.
+
+---
+
 ## Backlog (BUG/FIX/MH)
 
 A partir de 07/07/2026, o backlog completo vive na tabela `backlog_items`
@@ -858,6 +986,19 @@ Não é mais mantido neste arquivo. Consultar via Supabase MCP:
     resultado falso (no MH-020, falsa confirmação de exclusão de dados, o pior caso de LGPD). Corolário:
     o `principal` nunca deve conduzir nem afirmar ações críticas que pertencem a fluxos determinísticos
     (reforço dos princípios 11/13 aplicado a exclusão de conta). Consequência intencional dessa regra: a detecção de exclusão de conta vive em DOIS caminhos (portão early + categoria no classificador central) apontando para o mesmo handler — redundância proposital que NÃO deve ser removida (ver "Decisão arquitetural — redundância INTENCIONAL" na seção da Sessão v21).
+22. **Dimensão ortogonal no classificador central não deve virar novo valor do eixo de roteamento
+    (v22, MH-053)** — quando um sinal novo a capturar (ex: feedback explícito do usuário) pode
+    coexistir com qualquer agente escolhido (ex: um elogio dentro de um pedido de relatório), a
+    resposta correta é adicionar um CAMPO PARALELO ao retorno do classificador (`{ agente,
+    subtipoRelatorio, feedback }`), nunca expandir o enum de `agente`. Forçar num único eixo cria um
+    falso ou/ou (o sinal ortogonal só é capturado quando "ganha" do roteamento) e aumenta o risco de
+    misclassificação do eixo principal — o oposto do que o princípio 5 protege.
+23. **Escrita de observabilidade nunca pode lançar exceção (v22, MH-053)** — funções que registram
+    eventos/feedback (`registrarEvento`/`registrarFeedback` em `observabilidade.js`) são sempre
+    defensivas (try/catch interno, fallback a `console.error`). Muitas vezes essas funções são
+    chamadas de DENTRO de um catch que já capturou uma falha real; se a escrita de observabilidade
+    também lançar, a exceção escapa do catch e impede até o fallback ao usuário — o ato de observar
+    não pode piorar a experiência que estava sendo observada.
 
 ---
 
@@ -936,4 +1077,3 @@ node src/index.js
 - **Supabase:** banco Brasil (São Paulo). `agent_logs` = histórico conversacional (também usado para saudação condicional, v15). `conversation_state` = estado operacional (sem 's').
 - **Railway:** produção com auto-deploy no git push. Logs exportados em UTC.
 - **Claude Code (VS Code):** implementação via briefings `.md`, sempre com texto literal embutido.
-
