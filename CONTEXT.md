@@ -1,4 +1,5 @@
-# 🌿 NAMI — Contexto do Projeto (v23 — FECHADA: MH-055 descartado como superseded (captura proativa de feedback no relatório de adesão — absorvido pelo MH-053; resíduo pertence ao MH-057). Sessão de decisão pura, sem código/schema/template — 27/07/2026)
+# 🌿 NAMI — Contexto do Projeto (v24 — FECHADA: MH-054 Juiz Offline implementado e calibrado
+(8/8 detecção, 8/8 categoria, convergência de fingerprint validada); BUG-069 registrado — 28/07/2026)
 
 ---
 
@@ -78,7 +79,12 @@ Nami_life/
 │   ├── router.js               → Roteador central (classificador LLM retorna JSON {agente, subtipoRelatorio} — v15); temDosePendente() exclui nao_informado (v17, BUG-035); despacharEscalada() (v18) — função compartilhada que recebe o sinal { escalarParaRoteador: true } de qualquer agente e decide o próximo destino usando classificarIntencaoComContexto, preservando medicationId/medicationNome/schedulesAtivos quando o destino ainda é configuracao
 │   ├── database.js             → Todas as queries no Supabase; registrarMovimentoEstoque (MH-042) é o único ponto de escrita em estoque; calcularAdesao/calcularProgressoTratamento (v15); getHistoricoRecente() (v18) agora também seleciona estado_conversa/contexto_conversa de agent_logs, usado pelo classificador central pra resolver referências em mensagens futuras sem context vivo; classificarNivelEstoquePorDias() (v19, BUG-065) — classifica zerado/urgente/ok a partir de estoque real + dias de cobertura, nunca infere uma métrica a partir da outra
 │   ├── whatsapp.js              → Envio de mensagens e parse Z-API
-│   ├── scheduler.js             → Cron: lembretes + follow-ups + resumo de adesão (domingo 16h — mudou de segunda 08h na v15)
+│   ├── scheduler.js             → Cron: lembretes + follow-ups + resumo de adesão (domingo 16h — mudou de segunda 08h na v15) + juiz offline (03:00 BRT, v24)
+│   ├── juizOffline.js  → Juiz Offline (MH-054, v24) — varredura diária de agent_logs agrupada em
+│   │                     episódios (user_id + gap 30min), enriquecida com system_events e dose_logs;
+│   │                     LLM classifica em taxonomia canônica de sintoma com precedência; severidade
+│   │                     derivada por tabela; emite system_events(origem='juiz_offline').
+│   │                     payload NUNCA contém texto do usuário — só agent_log_ids.
 │   ├── prompts.js               → System prompt do agente_principal
 │   ├── nlp_helpers.js           → isCancelamento (v18: regex apertado — "para" solto removido, exige "para de/com"/"parar"; vocabulário ampliado), encontrarMedicamento (agora também exportada como normalizar) — compartilhados entre agentes (evita duplicação, lição do BUG-036)
 │   ├── templates/
@@ -1049,6 +1055,21 @@ Não é mais mantido neste arquivo. Consultar via Supabase MCP:
     chamadas de DENTRO de um catch que já capturou uma falha real; se a escrita de observabilidade
     também lançar, a exceção escapa do catch e impede até o fallback ao usuário — o ato de observar
     não pode piorar a experiência que estava sendo observada.
+24. **`agent_logs` registra a resposta PRETENDIDA, não a ENTREGUE (v24, MH-054).**
+    `logAgentInteraction` roda dentro de `routeMessage`, antes de `sendTextMessage`. Quando a entrega
+    falha, o log fica congelado na intenção enquanto o usuário recebe a mensagem de erro do catch
+    global. Nenhuma análise sobre `agent_logs` pode afirmar o que o usuário viu sem cruzar com
+    `system_events` na mesma janela. Custou um diagnóstico errado na v24 antes de ser descoberto.
+25. **Identidade de agrupamento nunca depende de geração livre de LLM (v24, MH-054).**
+    Extensão do princípio 4 (cálculo de saúde determinístico) ao domínio da observabilidade. Pedir a
+    um LLM que gere identificador estável por texto livre não funciona por construção. Detecção pode
+    ser aberta e contextual; etiquetagem que alimenta `fingerprint` tem que ser canônica e fechada,
+    com categoria `outro` como saída para o que não foi antecipado.
+26. **Taxonomia de observabilidade classifica sintoma, nunca causa (v24, MH-054).**
+    Categorizar por causa provável exige que o LLM infira causa — justamente o que ele não faz com
+    confiabilidade, e que é trabalho humano com evidência de código. Categorias de causa também
+    refragmentam o agrupamento: dois episódios com o mesmo sintoma e causas diferentes receberiam
+    fingerprints distintos.
 
 ---
 

@@ -6,6 +6,7 @@ import { sendTextMessage } from './whatsapp.js';
 import { handleFollowUp } from './agentes/lembrete.js';
 import { enviarResumoSemanal } from './agentes/relatorios.js';
 import { registrarEvento } from './observabilidade.js';
+import { executarJuizOffline } from './juizOffline.js';
 
 // ============================================================
 // INICIA O SCHEDULER
@@ -41,6 +42,12 @@ export function startScheduler() {
                 payload: { message: error.message, stack: error.stack, funcao: 'enviarResumosSemanais' }
             });
         }
+    }, { timezone: 'America/Sao_Paulo' });
+
+    // Juiz offline (MH-054) — varre os episódios do dia anterior — 03:00 BRT
+    cron.schedule('0 3 * * *', async () => {
+        console.log('⚖️ Rodando juiz offline...');
+        await executarJuizOffline();
     }, { timezone: 'America/Sao_Paulo' });
 }
 
