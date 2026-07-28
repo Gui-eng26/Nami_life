@@ -1,4 +1,4 @@
-# 🌿 NAMI — Contexto do Projeto (v22 — FECHADA: MH-053 (observabilidade), BUG-67 (JSON vazando no estoque) e BUG-68 (Nami mencionando "o sistema") resolvidos e validados de ponta a ponta via WhatsApp; MH-054, MH-055, MH-056 e MH-057 registrados para sessões futuras — 27/07/2026)
+# 🌿 NAMI — Contexto do Projeto (v23 — FECHADA: MH-055 descartado como superseded (captura proativa de feedback no relatório de adesão — absorvido pelo MH-053; resíduo pertence ao MH-057). Sessão de decisão pura, sem código/schema/template — 27/07/2026)
 
 ---
 
