@@ -1,4 +1,4 @@
-# 🌿 NAMI — Contexto do Projeto (v22 — MH-053 implementada e em VALIDAÇÃO em produção: estrutura sistêmica de observabilidade — system_events + feedbacks + capturas in-line; MH-054 (juiz offline), MH-055 (captura proativa de adesão) e MH-056 (UX de fallbacks) registrados — 27/07/2026)
+# 🌿 NAMI — Contexto do Projeto (v22 — FECHADA: MH-053 (observabilidade), BUG-67 (JSON vazando no estoque) e BUG-68 (Nami mencionando "o sistema") resolvidos e validados de ponta a ponta via WhatsApp; MH-054, MH-055, MH-056 e MH-057 registrados para sessões futuras — 27/07/2026)
 
 ---
 
@@ -871,11 +871,53 @@ catch global; `router.js` propaga `agent_log_id` e a dimensão de `feedback` por
 chamam o classificador, inclusive `despacharEscalada`; `relatorios.js`, `scheduler.js` (6 pontos) e
 `whatsapp.js` instrumentados. `node --check` OK nos 7 arquivos tocados.
 
-⚠️ **Não testado ponta a ponta via WhatsApp/Z-API** (ambiente de implementação sem acesso ao
-webhook ao vivo) — por isso MH-053 ficou em `em_validacao`, não `resolvido`. Antes de fechar o item,
-testar manualmente: forçar erro técnico real, enviar elogio/crítica/sugestão, enviar intenção
-claramente não suportada, e observar/forçar erro no scheduler — conferindo as linhas resultantes em
-`system_events`/`feedbacks`.
+⚠️ **Não testado ponta a ponta via WhatsApp/Z-API na implementação inicial** (ambiente de
+implementação sem acesso ao webhook ao vivo) — por isso MH-053 ficou primeiro em `em_validacao`.
+
+### Validação de ponta a ponta via WhatsApp (concluída no mesmo dia) — MH-053 → resolvido
+Guilherme executou os 6 cenários diretos no WhatsApp e o chat de planejamento conferiu cada um
+direto no Supabase: feedback `elogio`, `critica` e `sugestao` (3 mensagens, 3 linhas em
+`feedbacks` com `origem='espontaneo'`); intenção não suportada (`system_events`); e o teste mais
+importante — uma mensagem de coocorrência ("seria ótimo se vocês também registrassem minha
+pressão") gerou **as duas linhas no mesmo segundo**, `system_events(intencao_nao_suportada)` **e**
+`feedbacks(sugestao)`, confirmando que a dimensão ortogonal de feedback no classificador central
+funciona como desenhado — sem regressão no roteamento normal (dose/estoque/pausar continuaram
+indo para os agentes certos). MH-053 fechado como `resolvido`.
+
+### Dois efeitos colaterais descobertos durante o teste (não são falhas do MH-053 em si)
+
+**BUG-67 — JSON malformado vazava cru ao usuário no fluxo de estoque.** Em `principal.js`,
+`callClaude()` tenta `JSON.parse` e um regex de fallback; quando os dois falham, uma rede de
+segurança decidia se expunha o `rawText` cru **só pelo tamanho** (`10 < length < 500`). No cenário
+real (`UPDATE_STOCK` sem quantidade informada), o Claude gerou exemplos com aspas retas não
+escapadas dentro do JSON ("Comprei mais 30", "Tenho 20 no total", "Perdi 5"), quebrando a sintaxe;
+o texto resultante (417 caracteres) caiu na faixa aceita e vazou o JSON inteiro (chaves, `newState`,
+`context`, `actions`) como mensagem do WhatsApp. Confirmado que `cadastro.js` tem o mesmo padrão de
+parse mas NUNCA expõe `rawText` — o risco era isolado em `principal.js`. Corrigido trocando o
+critério de tamanho por critério de **forma**: texto que começa com `{` nunca é exposto cru,
+independente do tamanho. Resolvido.
+
+**BUG-68 — Nami mencionava "o sistema" como entidade separada dela mesma.** Ao responder a uma
+crítica sobre a frequência de confirmações, a Nami ofereceu ajuda dizendo "...é só me dizer assim
+que **o sistema** já entende!" — quebra de personagem (pra usuário não existe sistema, existe só a
+Nami). Causa raiz confirmada: a justificativa de uma regra nova do prompt (adicionada nesta mesma
+sessão, ver Opção A abaixo) usava linguagem de bastidor a poucas linhas do exemplo de resposta ao
+usuário, e o modelo ecoou essa frase na saída real. Avaliação de risco feita com Guilherme antes de
+corrigir: das 4 ocorrências de "o sistema" no prompt, só essa tinha causa raiz **confirmada**; as
+outras 3 (handoff de exclusão de conta, handoff de cadastro, handoff de configuração) são
+instruções antigas, já em produção há sessões, sem nenhum vazamento jamais observado — decisão
+deliberada de NÃO mexer nelas (mesmo padrão de decisão do MH-046 na v17: não adicionar rigor a
+risco hipotético sem evidência de produção). Correção aplicada: (1) nova regra absoluta permanente
+no topo do prompt proibindo qualquer menção a "o sistema" como entidade separada da Nami, cobrindo
+as 3 ocorrências antigas por regra geral; (2) reescrita pontual só da frase com causa confirmada.
+Validado por teste real no WhatsApp — resposta correta, sem menção a "sistema", cancelamento
+("Não precisa") funcionando normalmente. Resolvido.
+
+### Achado sobre a "Opção A" (restrição de pergunta sim/não do principal, ver MH-057 abaixo)
+Durante o mesmo teste, confirmou-se que o ajuste de prompt da Opção A (Nami nunca mais pergunta
+"quer que eu faça isso?" para ações de outro agente, e em vez disso diz a frase exata que o
+usuário pode enviar) funciona corretamente em produção — testado com "Pausar os lembretes do
+omega 3" → fluxo de configuração conduzido normalmente até a confirmação.
 
 ### Registrado para próximas sessões (Guilherme quer retomar nesta ordem)
 - **MH-54** — Juiz offline (LLM-as-judge): leitura pós-fato de `agent_logs` (em lote, fora do caminho
@@ -893,6 +935,14 @@ claramente não suportada, e observar/forçar erro no scheduler — conferindo a
   agora, mas reavaliar quando o beta escalar (atrito pesa mais com usuários desconhecidos). Nota: a
   MH-053 já captura a mensagem que causou a falha no `catch` global — uma versão futura do fallback
   poderia reaproveitar esse texto em vez de pedir para redigitar.
+- **MH-57** — Rastrear ofertas espontâneas do principal como estado (Opção B, complemento à Opção A
+  já aplicada): hoje uma pergunta sim/não do principal não gera nenhum estado estruturado —
+  `newState` continua `idle`, `context` continua `{}` — então uma resposta ambígua de 1 palavra
+  ("quero", "sim") a uma pergunta feita pelo próprio bot não tem como ser interpretada corretamente
+  por nenhum classificador downstream. Desenho provável: novo tipo de `context` (ex.
+  `{ ofertaPendente: '...', medicationId }`) populado pelo principal quando oferece uma ação de
+  outro agente, e checagem de precedência no router (mesmo padrão já usado para dose pendente/
+  cancelamento). Maior complexidade — decisão de arquitetura para sessão dedicada.
 
 ---
 
