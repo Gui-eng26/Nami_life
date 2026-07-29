@@ -75,6 +75,25 @@ export function molduraPadrao({ nome, rotuloData, resumo }) {
     return { abertura, fechamento };
 }
 
+// Cabeçalho de data (N-1, v25): a data resolvida precisa aparecer na mensagem de forma
+// determinística. O LLM está proibido de citar datas na moldura (regra 1 do PROMPT_MOLDURA),
+// então sem este cabeçalho a data simplesmente não aparecia — e "quarta-feira" é ambíguo
+// entre 15/07 e 29/07. Também é o que permite ao usuário corrigir o dia ("não, o outro domingo").
+// Omitido para "hoje": redundante e deixa a mensagem pesada.
+export function montarCabecalhoData(dataISO, rotuloData) {
+    if (rotuloData === 'hoje') return null;
+
+    const [ano, mes, dia] = dataISO.split('-').map(Number);
+    const dataCurta = `${String(dia).padStart(2, '0')}/${String(mes).padStart(2, '0')}`;
+
+    // rotularData já devolve "domingo (26/07)" para dias além de anteontem — nesse caso a data
+    // já está no rótulo e não deve ser repetida.
+    if (rotuloData.includes(dataCurta)) return `📅 ${rotuloData}`;
+
+    // "ontem" / "anteontem" — acrescenta a data para não deixar dúvida
+    return `📅 ${rotuloData} (${dataCurta})`;
+}
+
 export const TEXTO_FORA_DA_JANELA =
     `Consigo olhar seus registros dos últimos 30 dias. 🌿\nPara um período mais antigo que isso, ainda não tenho como buscar.`;
 

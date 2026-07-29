@@ -1093,7 +1093,8 @@ export async function getEstoque(userId) {
         .from('medications')
         .select('id, nome, estoque_atual, estoque_minimo, forma_farmaceutica')
         .eq('user_id', userId)
-        .eq('ativo', true);
+        .eq('ativo', true)
+        .order('nome', { ascending: true });   // N-4 (v25): ordem era instável entre chamadas
     return data || [];
 }
 
@@ -1106,8 +1107,18 @@ export async function getProximosMedicamentos(userId) {
     }); // "HH:MM"
 
     const medications = await getUserMedications(userId);
-    const dosesHoje = await getDosesHoje(userId);
-    const tomadosIds = dosesHoje.tomadas.map(d => d.medication_id);
+
+    // N-2 (v25): usa getDosesDoDia em vez de getDosesHoje. Três defeitos corrigidos de uma vez:
+    // (a) getDosesHoje filtrava por taken_at, então confirmação retroativa de ontem marcava
+    //     doses de hoje como tomadas (mesma raiz do BUG-70);
+    // (b) a confirmação era resolvida por medicamento, não por dose/horário;
+    // (c) o relatório contradizia o balanco_do_dia sobre o mesmo dado.
+    // A chave de casamento é medicationId + horario.
+    const dosesHoje = await getDosesDoDia(userId, hojeBRT());
+    const confirmadasPorDose = new Set(
+        dosesHoje.filter(d => d.status === 'confirmado')
+                 .map(d => `${d.medicationId}|${d.horario}`)
+    );
 
     const passados = [];
     const agoraList = [];
@@ -1116,7 +1127,7 @@ export async function getProximosMedicamentos(userId) {
     for (const med of medications) {
         for (const schedule of (med.schedules || []).filter(s => s.ativo)) {
             const horario = schedule.horario.substring(0, 5);
-            const confirmado = tomadosIds.includes(med.id);
+            const confirmado = confirmadasPorDose.has(`${med.id}|${horario}`);
             const diff = _minutesDiff(horaAtual, horario);
 
             if (diff < -120) {
@@ -1124,7 +1135,7 @@ export async function getProximosMedicamentos(userId) {
             } else if (diff >= -120 && diff <= 30) {
                 agoraList.push({ nome: med.nome, horario, confirmado });
             } else {
-                proximos.push({ nome: med.nome, horario });
+                proximos.push({ nome: med.nome, horario, confirmado });
             }
         }
     }

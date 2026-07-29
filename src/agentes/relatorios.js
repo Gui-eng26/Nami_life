@@ -33,7 +33,7 @@ import {
 } from '../templates/adesaoTemplates.js';
 import { resolverDataReferencia, validarJanela, rotularData, diasAtras, hojeBRT, extrairExpressaoData } from '../dataReferencia.js';
 import {
-    montarBlocoFactual, resumirSituacao, molduraPadrao,
+    montarBlocoFactual, resumirSituacao, molduraPadrao, montarCabecalhoData,
     TEXTO_FORA_DA_JANELA, TEXTO_DATA_FUTURA, TEXTO_DATA_NAO_RECONHECIDA
 } from '../templates/balancoTemplates.js';
 import Anthropic from '@anthropic-ai/sdk';
@@ -215,7 +215,10 @@ async function relatorioBalancoDoDia({ user, message, params }) {
         nome: firstName, rotuloData, resumo, med, podeConfirmarRetroativo
     });
 
+    const cabecalhoData = montarCabecalhoData(dataISO, rotuloData);
+
     const partes = [moldura.abertura];
+    if (cabecalhoData) partes.push(cabecalhoData);
     if (blocoFactual) partes.push(blocoFactual);
     if (moldura.fechamento) partes.push(moldura.fechamento);
 
@@ -380,15 +383,36 @@ async function relatorioProximoRemedio({ user, message, params }) {
     });
 
     const linhaPassado = m => `${m.confirmado ? '✅' : '⚠️'} *${m.nome}* (${m.horario}) — ${m.confirmado ? 'já registrado' : 'não registrado'}`;
-    const linhaAgora = m => `💊 *${m.nome}* (${m.horario}) — está na hora de tomar!`;
-    const linhaProximo = m => `🔜 *${m.nome}* — próximo às ${m.horario}`;
+    // N-2 (v25): a linha "agora" ignorava m.confirmado e anunciava dose já confirmada como
+    // pendente, contradizendo o balanco_do_dia.
+    const linhaAgora = m => m.confirmado
+        ? `✅ *${m.nome}* (${m.horario}) — já registrado`
+        : `💊 *${m.nome}* (${m.horario}) — está na hora de tomar!`;
+    const linhaProximo = m => m.confirmado
+        ? `✅ *${m.nome}* (${m.horario}) — já registrado`
+        : `🔜 *${m.nome}* — próximo às ${m.horario}`;
 
-    // Sem medicamento nomeado: comportamento atual, lista completa.
+    // Sem medicamento nomeado: mostra o que ainda importa.
+    // N-3 (v25): "quais minhas próximas doses?" devolvia o dia inteiro, incluindo doses já
+    // registradas. Passado já confirmado é ruído aqui; passado NÃO confirmado permanece,
+    // porque é pendência real.
     if (!med) {
-        let msg = `⏰ Seus remédios de hoje, ${firstName}:\n\n`;
-        for (const m of passados) msg += linhaPassado(m) + '\n';
-        for (const m of agora) msg += linhaAgora(m) + '\n';
-        for (const m of proximos) msg += linhaProximo(m) + '\n';
+        const passadosPendentes = passados.filter(m => !m.confirmado);
+        const agoraRelevantes = agora.filter(m => !m.confirmado);
+        const proximosRelevantes = proximos.filter(m => !m.confirmado);
+
+        if (passadosPendentes.length === 0 && agoraRelevantes.length === 0 && proximosRelevantes.length === 0) {
+            return `Tudo em ordem por hoje, ${firstName}! Você já registrou todas as doses do dia. ✅`;
+        }
+
+        let msg = `⏰ Seus próximos remédios, ${firstName}:\n\n`;
+        for (const m of agoraRelevantes) msg += linhaAgora(m) + '\n';
+        for (const m of proximosRelevantes) msg += linhaProximo(m) + '\n';
+
+        if (passadosPendentes.length > 0) {
+            msg += `\nAinda sem confirmação de hoje:\n\n`;
+            for (const m of passadosPendentes) msg += linhaPassado(m) + '\n';
+        }
         return msg.trim();
     }
 
