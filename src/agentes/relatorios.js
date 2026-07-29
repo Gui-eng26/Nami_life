@@ -315,15 +315,28 @@ async function relatorioMeusRemedios(user) {
         return `Você ainda não tem remédios cadastrados, ${firstName}. Quer cadastrar agora? 💊`;
     }
 
+    // A-2 (v25): ordem alfabética. Feita AQUI e não em getUserMedications de propósito —
+    // aquela função tem sete consumidores e reordenar na origem mudaria o comportamento
+    // de quem não pediu. localeCompare com 'pt-BR' para acentuação correta (Ômega).
+    const ordenados = [...medications].sort((a, b) =>
+        String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR')
+    );
+
     let msg = `💊 Seus remédios cadastrados, ${firstName}:\n\n`;
 
-    medications.forEach((med, i) => {
+    ordenados.forEach((med, i) => {
         const horariosAtivos = (med.schedules || []).filter(s => s.ativo);
+        // A-2 (v25): horários também ordenados — antes saíam na ordem do banco ("21:00 e 09:00").
         const horarios = horariosAtivos.length > 0
-            ? horariosAtivos.map(s => s.horario.substring(0, 5)).join(' e ')
+            ? horariosAtivos
+                .map(s => s.horario.substring(0, 5))
+                .sort((x, y) => x.localeCompare(y))
+                .join(' e ')
             : 'sem horário cadastrado';
         const forma = med.forma_farmaceutica || 'comprimido';
-        msg += `${i + 1}. *${med.nome}* — ${med.dosagem} (${forma})\n`;
+        // A-4 (v25): dosagem nula era exibida literalmente como "null".
+        const dosagem = med.dosagem || 'dosagem não informada';
+        msg += `${i + 1}. *${med.nome}* — ${dosagem} (${forma})\n`;
         msg += `   ⏰ ${horarios}\n\n`;
     });
 

@@ -135,9 +135,19 @@ export function extrairExpressaoData(message) {
     const mDia = msg.match(/\bdia\s+(\d{1,2})\b/);
     if (mDia) return mDia[1];
 
-    // 3. Dia da semana (chaves de DIAS_SEMANA, com fronteira de palavra)
+    // 3. Dia da semana — com número adjacente, o número ganha (é mais específico).
+    //    A-3 (v25): "Não, o outro domingo, 19" resolvia para o domingo mais recente porque
+    //    "domingo" era capturado e o "19" solto era ignorado (número solto só conta com
+    //    prefixo "dia", proteção contra horário/quantidade de comprimidos). Aceitamos o
+    //    número apenas quando ele está adjacente ao nome do dia — a proteção original
+    //    continua valendo para número solto em qualquer outra posição da frase.
     for (const nome of Object.keys(DIAS_SEMANA)) {
-        if (new RegExp(`(^|\\s)${nome}(\\s|$|[.,!?])`, 'i').test(msg)) return nome;
+        if (!new RegExp(`(^|\\s)${nome}(\\s|$|[.,!?])`, 'i').test(msg)) continue;
+
+        const mAdjacente = msg.match(new RegExp(`${nome}[,\\s]+(?:dia\\s+)?(\\d{1,2})\\b`, 'i'));
+        if (mAdjacente) return mAdjacente[1];
+
+        return nome;
     }
 
     // 4. Palavras relativas — anteontem antes de ontem (contém "ontem" como substring)

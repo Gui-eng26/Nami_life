@@ -1094,7 +1094,12 @@ export async function getEstoque(userId) {
         .select('id, nome, estoque_atual, estoque_minimo, forma_farmaceutica')
         .eq('user_id', userId)
         .eq('ativo', true)
-        .order('nome', { ascending: true });   // N-4 (v25): ordem era instável entre chamadas
+        // A-1 (v25): ordem por unidades crescente — o que está acabando aparece primeiro.
+        // Substitui a ordem alfabética do briefing anterior. Aproximação consciente:
+        // a ordem correta é por DIAS DE COBERTURA (estoque ÷ doses por dia), tratada no MH-60.
+        // Desempate por nome para manter a ordem estável entre chamadas (motivo do N-4).
+        .order('estoque_atual', { ascending: true })
+        .order('nome', { ascending: true });
     return data || [];
 }
 
