@@ -12,23 +12,29 @@ const ICONE = {
     nao_informado: '⏳',
     nao_tomado: '❌',
     sem_estoque: '📦',
-    pendente: '🔜'
+    pendente: '❓',
+    agendado: '🔜'
 };
 
-const DESCRICAO = {
-    confirmado: 'confirmado',
-    nao_informado: 'sem confirmação',
-    nao_tomado: 'não tomado',
-    sem_estoque: 'sem estoque',
-    pendente: 'ainda não chegou o horário'
-};
+// 'pendente' = lembrete JÁ enviado, aguardando resposta do usuário (não é dose futura).
+// 'agendado' = status sintético para dose do dia que ainda não tem linha em dose_logs.
+function descrever(d) {
+    switch (d.status) {
+        case 'confirmado': return 'confirmado';
+        case 'nao_informado': return 'sem confirmação';
+        case 'nao_tomado': return 'não tomado';
+        case 'sem_estoque': return 'sem estoque';
+        case 'pendente': return 'aguardando sua confirmação';
+        case 'agendado': return d.horarioJaPassou ? 'sem registro ainda' : 'ainda não chegou o horário';
+        default: return d.status;
+    }
+}
 
 export function montarBlocoFactual(doses) {
     return doses.map(d => {
         const icone = ICONE[d.status] || '•';
-        const desc = DESCRICAO[d.status] || d.status;
         const sufixo = d.confirmadaRetroativamente ? ' (confirmado depois)' : '';
-        return `${icone} *${d.nome}* — ${d.horario} — ${desc}${sufixo}`;
+        return `${icone} *${d.nome}* — ${d.horario} — ${descrever(d)}${sufixo}`;
     }).join('\n');
 }
 
@@ -36,19 +42,22 @@ export function montarBlocoFactual(doses) {
 export function resumirSituacao(doses) {
     const total = doses.length;
     const confirmadas = doses.filter(d => d.status === 'confirmado').length;
-    const pendentesFuturas = doses.filter(d => d.status === 'pendente').length;
+    const aguardandoConfirmacao = doses.filter(d => d.status === 'pendente').length;
+    const aindaNaoChegaram = doses.filter(d => d.status === 'agendado' && !d.horarioJaPassou).length;
     const faltantes = doses.filter(d =>
         d.status === 'nao_informado' || d.status === 'nao_tomado' || d.status === 'sem_estoque'
     ).length;
+    const semRegistro = doses.filter(d => d.status === 'agendado' && d.horarioJaPassou).length;
 
     let cenario;
     if (total === 0) cenario = 'sem_doses';
-    else if (faltantes === 0 && pendentesFuturas === 0) cenario = 'tudo_confirmado';
-    else if (confirmadas === 0 && pendentesFuturas === total) cenario = 'nada_chegou_ainda';
+    else if (confirmadas === total) cenario = 'tudo_confirmado';
+    else if (confirmadas === 0 && aindaNaoChegaram === total) cenario = 'nada_chegou_ainda';
     else if (confirmadas === 0) cenario = 'nada_confirmado';
     else cenario = 'parcial';
 
-    return { total, confirmadas, faltantes, pendentesFuturas, cenario };
+    return { total, confirmadas, faltantes, aguardandoConfirmacao,
+             aindaNaoChegaram, semRegistro, cenario };
 }
 
 // Moldura padrão — usada quando a chamada ao LLM falha (fallback defensivo).

@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import 'dotenv/config';
 import fetch from 'node-fetch';
 import { registrarEvento } from './observabilidade.js';
-import { janelaDiaBRT } from './dataReferencia.js';
+import { janelaDiaBRT, hojeBRT } from './dataReferencia.js';
 global.fetch = fetch;
 
 const supabase = createClient(
@@ -1023,7 +1023,7 @@ export async function getDosesDoDia(userId, dataISO, medicationId = null) {
         return [];
     }
 
-    return (data || []).map(d => ({
+    const doses = (data || []).map(d => ({
         id: d.id,
         medicationId: d.medication_id,
         nome: medNomeMap[d.medication_id] || 'medicamento',
@@ -1036,11 +1036,50 @@ export async function getDosesDoDia(userId, dataISO, medicationId = null) {
         status: d.status,
         confirmado: d.confirmed === true,
         takenAt: d.taken_at,
-        // Confirmação retroativa: confirmada em dia diferente do dia devido
         confirmadaRetroativamente: d.confirmed === true && d.taken_at
             ? new Date(d.taken_at).toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' }) !== dataISO
-            : false
+            : false,
+        horarioJaPassou: true
     }));
+
+    // A linha em dose_logs só nasce quando o scheduler envia o lembrete (~2 min antes do
+    // horário). Doses futuras do dia de hoje, portanto, ainda não existem no banco (C-2, v25).
+    // Complementamos com os horários cadastrados que ainda não têm linha.
+    // Apenas para HOJE: em dias passados não há como saber quais horários estavam vigentes.
+    if (dataISO !== hojeBRT()) return doses;
+
+    const { data: schedules } = await supabase
+        .from('schedules')
+        .select('medication_id, horario')
+        .in('medication_id', medicationIds)
+        .eq('ativo', true);
+
+    const agoraHHMM = new Date().toLocaleTimeString('pt-BR', {
+        hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo'
+    });
+
+    const jaTemLinha = new Set(doses.map(d => `${d.medicationId}|${d.horario}`));
+
+    for (const s of (schedules || [])) {
+        const horario = String(s.horario).substring(0, 5);
+        const chave = `${s.medication_id}|${horario}`;
+        if (jaTemLinha.has(chave)) continue;
+
+        doses.push({
+            id: null,
+            medicationId: s.medication_id,
+            nome: medNomeMap[s.medication_id] || 'medicamento',
+            horario,
+            scheduledAt: null,
+            status: 'agendado',           // status sintético — não existe em dose_logs
+            confirmado: false,
+            takenAt: null,
+            confirmadaRetroativamente: false,
+            horarioJaPassou: horario <= agoraHHMM
+        });
+    }
+
+    return doses.sort((a, b) => a.horario.localeCompare(b.horario));
 }
 
 // Medicamentos ativos — alias semântico para getUserMedications

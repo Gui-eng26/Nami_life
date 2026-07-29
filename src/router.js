@@ -251,6 +251,32 @@ function detectarIntencaoCadastro(message) {
 // CLASSIFICADOR LLM — contexto conversacional para o else final
 // ============================================================
 
+// Extrai JSON de resposta de LLM tolerando cercas markdown e texto ao redor.
+// Mesma proteção que juizOffline.js já usa — replicada aqui após o C-3 (v25):
+// o classificador falhava em 29% das chamadas porque o modelo devolvia ```json ... ```
+// e o fallback silencioso mandava tudo para o principal.
+function extrairJSON(texto) {
+    if (!texto) return null;
+    let limpo = String(texto).trim();
+
+    // Remove cercas markdown (```json ... ``` ou ``` ... ```)
+    limpo = limpo.replace(/^```[a-z]*\s*/i, '').replace(/\s*```$/, '').trim();
+
+    // Se ainda houver texto ao redor, isola o primeiro objeto JSON
+    if (!limpo.startsWith('{')) {
+        const inicio = limpo.indexOf('{');
+        const fim = limpo.lastIndexOf('}');
+        if (inicio === -1 || fim === -1 || fim <= inicio) return null;
+        limpo = limpo.slice(inicio, fim + 1);
+    }
+
+    try {
+        return JSON.parse(limpo);
+    } catch {
+        return null;
+    }
+}
+
 async function classificarIntencaoComContexto({ message, currentState, historicoConversa }) {
     const fallback = { agente: 'principal', subtipoRelatorio: null, params: { medicamento: null, expressaoData: null }, feedback: null };
 
@@ -333,7 +359,8 @@ Preencha também "params" com o que a mensagem disser (ou null quando não disse
 
 Para os demais agentes, "subtipoRelatorio" e "params" devem ser null.
 
-Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no formato exato:
+Responda APENAS com um JSON válido — sem bloco de código markdown, sem \`\`\` e sem nenhum texto
+antes ou depois. Comece a resposta diretamente com "{". Formato exato:
 {"agente": "cadastro|relatorios|configuracao|principal|excluir_conta|nao_suportado", "subtipoRelatorio": "balanco_do_dia|meus_remedios|estoque|proximo_remedio|adesao|progresso_tratamento|null", "params": {"medicamento": "texto ou null", "expressaoData": "texto ou null"}, "feedback": "elogio|critica|sugestao|null"}`;
 
         const { default: Anthropic } = await import('@anthropic-ai/sdk');
@@ -341,7 +368,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
 
         const resposta = await anthropic.messages.create({
             model: 'claude-sonnet-4-6',
-            max_tokens: 160,
+            max_tokens: 250,
             messages: [{ role: 'user', content: prompt }]
         });
 
@@ -350,11 +377,24 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         const subtiposValidos = ['balanco_do_dia', 'meus_remedios', 'estoque',
                                  'proximo_remedio', 'adesao', 'progresso_tratamento'];
 
-        let parsed;
-        try {
-            parsed = JSON.parse(textoResposta);
-        } catch {
+        let parsed = extrairJSON(textoResposta);
+
+        if (!parsed) {
             console.warn(`⚠️ [CLASSIFICADOR] Resposta não-JSON do LLM: "${textoResposta}" — usando principal`);
+            // Falha de parse degradava o roteamento silenciosamente (C-3, v25).
+            // Registrar em system_events dá visibilidade sem depender de leitura de log.
+            await registrarEvento({
+                tipo: 'erro_tecnico',
+                severidade: 'media',
+                origem: 'router',
+                agent: 'classificador',
+                titulo: 'Falha de parse na resposta do classificador central',
+                payload: {
+                    funcao: 'classificarIntencaoComContexto',
+                    resposta_bruta: String(textoResposta).slice(0, 500),
+                    mensagem_usuario: String(message).slice(0, 200)
+                }
+            });
             return fallback;
         }
 

@@ -118,3 +118,32 @@ export function janelaDiaBRT(dataISO) {
         fim: new Date(`${dataISO}T23:59:59.999-03:00`).toISOString()
     };
 }
+
+// Extrai a expressão de data do texto da mensagem, deterministicamente.
+// Princípio 17: o texto literal resolve primeiro; o params do classificador é fallback.
+// Ordem de precedência: data explícita > "dia N" > dia da semana > palavra relativa.
+// Números soltos NÃO são aceitos (evita confundir com horário ou quantidade de comprimidos) —
+// só contam quando precedidos de "dia".
+export function extrairExpressaoData(message) {
+    const msg = String(message || '').toLowerCase();
+
+    // 1. Data explícita: dd/mm ou dd/mm/aaaa
+    const mData = msg.match(/\b(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/);
+    if (mData) return mData[1];
+
+    // 2. "dia 19", "no dia 19"
+    const mDia = msg.match(/\bdia\s+(\d{1,2})\b/);
+    if (mDia) return mDia[1];
+
+    // 3. Dia da semana (chaves de DIAS_SEMANA, com fronteira de palavra)
+    for (const nome of Object.keys(DIAS_SEMANA)) {
+        if (new RegExp(`(^|\\s)${nome}(\\s|$|[.,!?])`, 'i').test(msg)) return nome;
+    }
+
+    // 4. Palavras relativas — anteontem antes de ontem (contém "ontem" como substring)
+    if (/(^|\s)anteontem(\s|$|[.,!?])/i.test(msg)) return 'anteontem';
+    if (/(^|\s)ontem(\s|$|[.,!?])/i.test(msg)) return 'ontem';
+    if (/(^|\s)hoje(\s|$|[.,!?])/i.test(msg)) return 'hoje';
+
+    return null;
+}

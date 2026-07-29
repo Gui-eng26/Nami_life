@@ -31,7 +31,7 @@ import {
     montarPerguntaPeriodo,
     montarRecusaPeriodo
 } from '../templates/adesaoTemplates.js';
-import { resolverDataReferencia, validarJanela, rotularData, diasAtras, hojeBRT } from '../dataReferencia.js';
+import { resolverDataReferencia, validarJanela, rotularData, diasAtras, hojeBRT, extrairExpressaoData } from '../dataReferencia.js';
 import {
     montarBlocoFactual, resumirSituacao, molduraPadrao,
     TEXTO_FORA_DA_JANELA, TEXTO_DATA_FUTURA, TEXTO_DATA_NAO_RECONHECIDA
@@ -185,7 +185,10 @@ async function resolverMedicamento({ userId, message, medicamentoParam }) {
 async function relatorioBalancoDoDia({ user, message, params }) {
     const firstName = user.name?.split(' ')[0] || 'você';
 
-    const { dataISO, erro } = resolverDataReferencia(params.expressaoData);
+    // Princípio 17: texto da mensagem primeiro; params do classificador como fallback.
+    // Necessário porque a Camada 1 não produz params (C-1, v25).
+    const expressao = extrairExpressaoData(message) || params.expressaoData;
+    const { dataISO, erro } = resolverDataReferencia(expressao);
     if (erro === 'futuro') return comSaudacao(user.id, firstName, TEXTO_DATA_FUTURA);
     if (erro) return comSaudacao(user.id, firstName, TEXTO_DATA_NAO_RECONHECIDA);
 
@@ -242,6 +245,12 @@ Sobre o CENÁRIO recebido:
 - parcial: reconheça o que foi feito e aponte com gentileza o que ficou em aberto.
 - sem_doses: informe que não há registro para esse dia, sem alarme.
 
+Sobre os números recebidos:
+- "aguardandoConfirmacao": doses cujo horário já passou e que ainda esperam a resposta do usuário.
+- "aindaNaoChegaram": doses do dia cujo horário ainda não chegou — não são atraso, não cobre.
+- "semRegistro": doses cujo horário passou sem registro. Não afirme que o usuário não tomou;
+  trate como pendência de confirmação.
+
 Se "podeConfirmarRetroativo" for true E houver doses faltantes, o FECHAMENTO deve convidar o
 usuário a avisar caso tenha tomado e esquecido de confirmar — dizendo que você registra e ajusta
 o estoque para ele.
@@ -261,7 +270,9 @@ async function gerarMoldura({ nome, rotuloData, resumo, med, podeConfirmarRetroa
         totalDoses: resumo.total,
         confirmadas: resumo.confirmadas,
         faltantes: resumo.faltantes,
-        aindaNaoChegaram: resumo.pendentesFuturas,
+        aguardandoConfirmacao: resumo.aguardandoConfirmacao,
+        aindaNaoChegaram: resumo.aindaNaoChegaram,
+        semRegistro: resumo.semRegistro,
         podeConfirmarRetroativo
     });
 
