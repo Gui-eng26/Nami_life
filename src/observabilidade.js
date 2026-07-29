@@ -48,3 +48,30 @@ export async function registrarFeedback({
         console.error(`[observabilidade] Exceção ao registrar feedback: ${e.message}`);
     }
 }
+
+// status: 'sucesso' | 'falha_parcial' | 'falha_total'
+// Ponto ÚNICO de escrita em juiz_offline_execucoes (MH-58) — nunca insert direto em outro lugar.
+export async function registrarExecucaoJuizOffline({
+    dataAvaliada, turnosTotais = null, episodiosTotais = null,
+    episodiosPuladosIdempotencia = 0, episodiosAvaliados = 0,
+    episodiosFalhaJulgamento = 0, turnosAvaliados = 0, eventosRegistrados = 0,
+    status, erroResumo = null
+}) {
+    try {
+        const { error } = await supabase.from('juiz_offline_execucoes').insert({
+            data_avaliada: dataAvaliada,
+            turnos_totais: turnosTotais,
+            episodios_totais: episodiosTotais,
+            episodios_pulados_idempotencia: episodiosPuladosIdempotencia,
+            episodios_avaliados: episodiosAvaliados,
+            episodios_falha_julgamento: episodiosFalhaJulgamento,
+            turnos_avaliados: turnosAvaliados,
+            eventos_registrados: eventosRegistrados,
+            status,
+            erro_resumo: erroResumo
+        });
+        if (error) console.error(`[observabilidade] Falha ao registrar execução do juiz offline: ${error.message}`);
+    } catch (e) {
+        console.error(`[observabilidade] Exceção ao registrar execução do juiz offline: ${e.message}`);
+    }
+}

@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
 import 'dotenv/config';
-import { registrarEvento } from './observabilidade.js';
+import { registrarEvento, registrarExecucaoJuizOffline } from './observabilidade.js';
 
 const supabase = createClient(
     process.env.SUPABASE_URL,
@@ -306,21 +306,44 @@ function formatarEpisodioParaPrompt(episodio) {
 // ============================================================
 
 export async function executarJuizOffline() {
+    const { dataInicio, dataFim } = getJanelaDiaAnterior();
+    const dataAvaliada = dataInicio.slice(0, 10); // YYYY-MM-DD, para a coluna data_avaliada
+
+    let turnosTotais = null;
+    let episodiosTotais = null;
+    let episodiosPuladosIdempotencia = 0;
+    let episodiosAvaliados = 0;
+    let episodiosFalhaJulgamento = 0;
+    let turnosAvaliados = 0;
+    let eventosRegistrados = 0;
+
     try {
-        const { dataInicio, dataFim } = getJanelaDiaAnterior();
         console.log(`⚖️ Juiz offline — janela ${dataInicio} a ${dataFim}`);
 
         const episodios = await coletarEpisodios({ dataInicio, dataFim });
+        episodiosTotais = episodios.length;
+        turnosTotais = episodios.reduce((soma, ep) => soma + ep.turnos.length, 0);
         console.log(`⚖️ ${episodios.length} episódio(s) coletado(s)`);
 
         for (const episodio of episodios) {
-            if (await episodioJaProcessado(episodio.primeiroLogId)) continue;
+            if (await episodioJaProcessado(episodio.primeiroLogId)) {
+                episodiosPuladosIdempotencia++;
+                continue;
+            }
 
             const enriquecido = await enriquecerEpisodio(episodio);
             const julgamento = await julgarEpisodio(enriquecido);
             await sleep(PAUSA_ENTRE_JULGAMENTOS_MS);
 
-            if (!julgamento?.desvio) continue;
+            if (julgamento === null) {
+                episodiosFalhaJulgamento++;
+                continue;
+            }
+
+            episodiosAvaliados++;
+            turnosAvaliados += episodio.turnos.length;
+
+            if (!julgamento.desvio) continue;
 
             console.log(
                 `⚖️ Desvio — categoria: ${julgamento.categoria} — ` +
@@ -343,9 +366,18 @@ export async function executarJuizOffline() {
                     agent_log_ids: episodio.turnos.map(t => t.id)
                 }
             });
+            eventosRegistrados++;
         }
+
+        await registrarExecucaoJuizOffline({
+            dataAvaliada, turnosTotais, episodiosTotais,
+            episodiosPuladosIdempotencia, episodiosAvaliados,
+            episodiosFalhaJulgamento, turnosAvaliados, eventosRegistrados,
+            status: 'sucesso'
+        });
     } catch (error) {
         console.error('❌ Erro no juiz offline:', error.message);
+
         await registrarEvento({
             tipo: 'erro_tecnico',
             severidade: 'alta',
@@ -353,6 +385,14 @@ export async function executarJuizOffline() {
             agent: 'juiz_offline',
             titulo: `Erro no juiz offline: ${error.message?.split('\n')[0] ?? ''}`.slice(0, 200),
             payload: { message: error.message, stack: error.stack, funcao: 'executarJuizOffline' }
+        });
+
+        await registrarExecucaoJuizOffline({
+            dataAvaliada, turnosTotais, episodiosTotais,
+            episodiosPuladosIdempotencia, episodiosAvaliados,
+            episodiosFalhaJulgamento, turnosAvaliados, eventosRegistrados,
+            status: episodiosTotais === null ? 'falha_total' : 'falha_parcial',
+            erroResumo: error.message?.split('\n')[0]?.slice(0, 200) ?? null
         });
     }
 }
