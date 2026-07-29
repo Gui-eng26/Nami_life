@@ -122,9 +122,29 @@ async function tentarConfirmarRespostaTardia(user, message) {
 // DETECÇÃO DE CONFIRMAÇÃO DE DOSE
 // ============================================================
 
+// Verifica se uma palavra aparece de forma independente no texto
+// (não como parte de outra palavra — ex: "voltar" não deve bater em "voltaren")
+function contemPalavraLivre(texto, palavra) {
+    if (palavra.includes(' ')) return texto.includes(palavra); // frases: match direto
+    return new RegExp(`(^|\\s)${palavra}(\\s|$|[.,!?])`).test(texto);
+}
+
+// Aberturas interrogativas — uma pergunta nunca é confirmação de dose, mesmo sem "?".
+// Ex: "como tá meu estoque" (sem interrogação) não pode virar confirmação.
+const ABERTURAS_INTERROGATIVAS = [
+    'como', 'qual', 'quais', 'quanto', 'quantos', 'quantas',
+    'quando', 'quem', 'onde', 'cade', 'cadê', 'sera', 'será',
+    'o que', 'oq', 'porque', 'por que'
+];
+
 function detectarConfirmacaoDose(message) {
     if (!message) return false;
     const msg = message.toLowerCase().trim();
+
+    // GUARDA DE INTERROGATIVA (v25) — pergunta não é confirmação.
+    // Duas formas: pontuação final e abertura interrogativa (usuário nem sempre usa "?").
+    if (msg.endsWith('?')) return false;
+    if (ABERTURAS_INTERROGATIVAS.some(a => msg.startsWith(a + ' '))) return false;
 
     // PRIMEIRO: negação explícita invalida qualquer confirmação
     // Prioridade à negação — falso negativo é recuperável via follow-up;
@@ -136,13 +156,21 @@ function detectarConfirmacaoDose(message) {
         'ainda não tomei', 'ainda nao tomei',
         'não tomou', 'nao tomou',
         'não consigo tomar', 'nao consigo tomar',
-        'não consigo', 'nao consigo'
+        'não consigo'
     ];
     if (negacoes.some(n => msg.includes(n))) return false;
 
-    const termos = ['sim', 'tomei', 'já tomei', 'pode', 'ok', 'claro',
-        'feito', 'tá', 'foi', 'tomei sim', 'já tomei sim'];
-    return termos.some(t => msg.includes(t));
+    // Termos enxutos (v25): 'tá', 'foi', 'pode', 'ok', 'claro' e 'feito' foram REMOVIDOS.
+    // Medição em todo o histórico de agent_logs: zero confirmações reais dependiam deles;
+    // só geravam falso positivo ('tá' casava dentro de "está"). Se o usuário responder com
+    // uma dessas palavras, a mensagem cai no classificador central e chega ao principal,
+    // cujo NAMI_SYSTEM_PROMPT já trata todas elas como CONFIRM_DOSE (regra de máxima
+    // prioridade) — a dose continua sendo confirmada, com uma chamada de LLM a mais.
+    const termos = ['sim', 'tomei', 'já tomei', 'ja tomei', 'tomei sim', 'já tomei sim'];
+
+    // contemPalavraLivre (word boundary) em vez de includes — impede que um termo case
+    // dentro de outra palavra. Mesma função já usada por detectarIntencaoConfiguracao.
+    return termos.some(t => contemPalavraLivre(msg, t));
 }
 
 // ============================================================
@@ -160,13 +188,6 @@ function isAffirmativeSimple(message) {
 // ============================================================
 // DETECÇÃO DE INTENÇÃO DE CONFIGURAÇÃO
 // ============================================================
-
-// Verifica se uma palavra aparece de forma independente no texto
-// (não como parte de outra palavra — ex: "voltar" não deve bater em "voltaren")
-function contemPalavraLivre(texto, palavra) {
-    if (palavra.includes(' ')) return texto.includes(palavra); // frases: match direto
-    return new RegExp(`(^|\\s)${palavra}(\\s|$|[.,!?])`).test(texto);
-}
 
 function detectarIntencaoConfiguracao(message) {
     if (!message) return false;
@@ -231,7 +252,7 @@ function detectarIntencaoCadastro(message) {
 // ============================================================
 
 async function classificarIntencaoComContexto({ message, currentState, historicoConversa }) {
-    const fallback = { agente: 'principal', subtipoRelatorio: null, feedback: null };
+    const fallback = { agente: 'principal', subtipoRelatorio: null, params: { medicamento: null, expressaoData: null }, feedback: null };
 
     try {
         // Monta o histórico como texto legível para o LLM
@@ -250,7 +271,8 @@ Identifique para qual agente a mensagem deve ir, considerando o contexto da conv
 
 AGENTES E SUAS CAPACIDADES:
 - cadastro: cadastrar novo medicamento, iniciar novo tratamento
-- relatorios: consultar doses tomadas, adesão, estoque, próximos remédios, horários cadastrados, progresso do tratamento (dias restantes, % concluído)
+- relatorios: consultar o que foi tomado ou faltou em um dia (hoje, ontem ou dia nomeado),
+  doses tomadas, adesão, estoque, próximos remédios, horários cadastrados, progresso do tratamento
 - configuracao: pausar, reativar, encerrar tratamento; alterar/remover/adicionar/redefinir horário de lembrete
 - principal: conversa geral, dúvidas, saudações, reações ("ok", "obrigado"), fechamentos, confirmação de doses, confirmação retroativa de doses (últimos 2 dias), reversão de confirmação por engano, correção/atualização de estoque (recompra, recontagem, perda)
 - excluir_conta: o usuário quer EXCLUIR A CONTA dele / apagar TODOS os dados dele da Nami / se
@@ -291,30 +313,42 @@ MENSAGEM ATUAL: "${message}"
 
 Se o agente escolhido for "relatorios", identifique também o subtipo do relatório em
 "subtipoRelatorio", escolhendo exatamente um destes valores:
-- tomei_hoje: perguntar se já tomou os remédios hoje
-- meus_remedios: listar medicamentos cadastrados
+- balanco_do_dia: o que foi tomado / o que faltou / o que ficou pendente em um dia
+  (hoje, ontem, ou um dia nomeado). Use este subtipo para perguntas como "tomei meus
+  remédios hoje?", "faltou algum remédio ontem?", "esqueci de tomar alguma coisa?",
+  "ficou alguma dose pendente?", "pulei algum remédio no domingo?"
+- meus_remedios: listar medicamentos cadastrados e seus horários
 - estoque: consultar quantidade em estoque
 - proximo_remedio: qual remédio tomar agora/a seguir
-- adesao: taxa de adesão ao tratamento (histórico de doses tomadas x esperadas)
+- adesao: taxa de adesão agregada de um período (7, 15 ou 30 dias). Use SOMENTE quando o
+  usuário pedir explicitamente um percentual, uma taxa, ou um resumo de vários dias.
+  Pergunta sobre UM dia específico é sempre balanco_do_dia, nunca adesao.
 - progresso_tratamento: quantos dias/doses faltam para o tratamento acabar
 
-Para os demais agentes, "subtipoRelatorio" deve ser null.
+Preencha também "params" com o que a mensagem disser (ou null quando não disser):
+- "medicamento": o nome do medicamento citado, exatamente como o usuário escreveu.
+- "expressaoData": a expressão de tempo usada, SEM converter para data. Valores possíveis:
+  "hoje", "ontem", "anteontem", um dia da semana ("domingo", "segunda"...), ou um número/data
+  como aparece na mensagem ("19", "19/07"). NUNCA calcule a data — apenas copie a expressão.
+
+Para os demais agentes, "subtipoRelatorio" e "params" devem ser null.
 
 Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no formato exato:
-{"agente": "cadastro|relatorios|configuracao|principal|excluir_conta|nao_suportado", "subtipoRelatorio": "tomei_hoje|meus_remedios|estoque|proximo_remedio|adesao|progresso_tratamento|null", "feedback": "elogio|critica|sugestao|null"}`;
+{"agente": "cadastro|relatorios|configuracao|principal|excluir_conta|nao_suportado", "subtipoRelatorio": "balanco_do_dia|meus_remedios|estoque|proximo_remedio|adesao|progresso_tratamento|null", "params": {"medicamento": "texto ou null", "expressaoData": "texto ou null"}, "feedback": "elogio|critica|sugestao|null"}`;
 
         const { default: Anthropic } = await import('@anthropic-ai/sdk');
         const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
         const resposta = await anthropic.messages.create({
             model: 'claude-sonnet-4-6',
-            max_tokens: 80,
+            max_tokens: 160,
             messages: [{ role: 'user', content: prompt }]
         });
 
         const textoResposta = resposta.content[0]?.text?.trim() || '';
         const agentesValidos = ['cadastro', 'relatorios', 'configuracao', 'principal', 'excluir_conta', 'nao_suportado'];
-        const subtiposValidos = ['tomei_hoje', 'meus_remedios', 'estoque', 'proximo_remedio', 'adesao', 'progresso_tratamento'];
+        const subtiposValidos = ['balanco_do_dia', 'meus_remedios', 'estoque',
+                                 'proximo_remedio', 'adesao', 'progresso_tratamento'];
 
         let parsed;
         try {
@@ -330,6 +364,14 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         const feedbackRaw = String(parsed?.feedback || '').trim().toLowerCase();
         const feedback = feedbacksValidos.includes(feedbackRaw) ? feedbackRaw : null;
 
+        const paramsRaw = parsed?.params || {};
+        const params = {
+            medicamento: typeof paramsRaw.medicamento === 'string' && paramsRaw.medicamento.trim()
+                ? paramsRaw.medicamento.trim() : null,
+            expressaoData: typeof paramsRaw.expressaoData === 'string' && paramsRaw.expressaoData.trim()
+                ? paramsRaw.expressaoData.trim() : null
+        };
+
         if (!agentesValidos.includes(agente)) {
             console.warn(`⚠️ [CLASSIFICADOR] Agente inesperado do LLM: "${agente}" — usando principal`);
             return fallback;
@@ -337,11 +379,11 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
 
         if (agente === 'relatorios' && !subtiposValidos.includes(subtipoRelatorio)) {
             console.warn(`⚠️ [CLASSIFICADOR] Subtipo de relatório ausente/inválido: "${subtipoRelatorio}" — não reconhecido`);
-            return { agente: 'relatorios', subtipoRelatorio: null, feedback };
+            return { agente: 'relatorios', subtipoRelatorio: null, params, feedback };
         }
 
-        console.log(`🧠 [CLASSIFICADOR] Intenção classificada como: ${agente}${subtipoRelatorio && agente === 'relatorios' ? ` (${subtipoRelatorio})` : ''} — mensagem: "${message}"`);
-        return { agente, subtipoRelatorio: agente === 'relatorios' ? subtipoRelatorio : null, feedback };
+        console.log(`🧠 [CLASSIFICADOR] Intenção classificada como: ${agente}${subtipoRelatorio && agente === 'relatorios' ? ` (${subtipoRelatorio})` : ''} — params: ${JSON.stringify(params)} — mensagem: "${message}"`);
+        return { agente, subtipoRelatorio: agente === 'relatorios' ? subtipoRelatorio : null, params, feedback };
 
     } catch (error) {
         // Erro na chamada LLM — fallback seguro, não interrompe o usuário
@@ -351,12 +393,34 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
 }
 
 // ============================================================
+// DESPACHO DE RELATÓRIO (v25) — ponto ÚNICO de chamada de handleRelatorios.
+// Encapsula os três passos que os 8 call sites anteriores repetiam:
+// chamar o handler → devolver a resposta → cair no principal quando não reconhecido.
+// NÃO gerencia estado conversacional de propósito: decidir se um fluxo terminou é
+// responsabilidade do branch que chama, não do despacho (evita acoplamento).
+// ============================================================
+async function despacharRelatorio({ user, message, image, historicoConversa,
+                                    subtipo, params, state }) {
+    const response = await handleRelatorios({ user, message, subtipo, params, state });
+
+    if (response) {
+        return { agentName: 'relatorios', response };
+    }
+
+    console.log(`🤖 Relatorios não reconheceu (subtipo: ${subtipo}), caindo no principal — ${user.phone}`);
+    return {
+        agentName: 'principal',
+        response: await handlePrincipal({ user, message, image, historicoConversa })
+    };
+}
+
+// ============================================================
 // DESPACHO DE ESCALADA — usado quando um agente devolve
 // { escalarParaRoteador: true } em vez de uma resposta de texto
 // ============================================================
 
 async function despacharEscalada({ user, message, image, contextoPreservado, historicoConversa }) {
-    const { agente: agenteSelecionado, subtipoRelatorio, feedback } = await classificarIntencaoComContexto({
+    const { agente: agenteSelecionado, subtipoRelatorio, params, feedback } = await classificarIntencaoComContexto({
         message, currentState: 'configurando', historicoConversa
     });
 
@@ -388,11 +452,10 @@ async function despacharEscalada({ user, message, image, contextoPreservado, his
             });
         } else if (agenteSelecionado === 'relatorios') {
             console.log(`📊 [ESCALADA] Roteando para relatorios (${subtipoRelatorio}) — ${user.phone}`);
-            response = await handleRelatorios({ user, message, subtipo: subtipoRelatorio, state: idleState });
-            if (!response) {
-                agentName = 'principal';
-                response = await handlePrincipal({ user, message, image, historicoConversa });
-            }
+            const r = await despacharRelatorio({ user, message, image, historicoConversa,
+                                                 subtipo: subtipoRelatorio, params, state: idleState });
+            agentName = r.agentName;
+            response = r.response;
         } else if (agenteSelecionado === 'excluir_conta') {
             agentName = 'exclusao_conta';
             console.log(`🗑️ [ESCALADA] Pedido de exclusão de conta — ${user.phone}`);
@@ -489,7 +552,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             }
         });
 
-    // MH-020 — Confirmação pendente de exclusão de conta (trata o estado antes de tudo)
+    // 2. MH-020 — Confirmação pendente de exclusão de conta (trata o estado antes de tudo)
     } else if (currentState === 'aguardando_confirmacao_exclusao') {
         agentName = 'exclusao_conta';
         console.log(`🗑️ Roteando para exclusão de conta (confirmação pendente) — ${user.phone}`);
@@ -502,7 +565,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         }
         response = r.response;
 
-    // MH-020 — Portão de detecção de pedido de exclusão de conta (único ponto de detecção).
+    // 3. MH-020 — Portão de detecção de pedido de exclusão de conta (único ponto de detecção).
     // Roda para qualquer usuário onboarded, em qualquer estado -> precedência sobre todos os fluxos.
     // Estágio 1 (barato, determinístico) curto-circuita o estágio 2 (LLM) quando não é candidato.
     } else if (user.onboarded
@@ -513,7 +576,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         const r = await handleExclusaoConta({ user, message, etapa: 'solicitar_confirmacao', historicoConversa });
         response = r.response;
 
-    // 2. Usuário concluiu onboarding agora — respondendo "por onde quer começar?"
+    // 4. Usuário concluiu onboarding agora — respondendo "por onde quer começar?"
     } else if (currentState === 'post_onboarding') {
         if (detectarIntencaoCadastro(message) || isAffirmativeSimple(message)) {
             agentName = 'cadastro';
@@ -542,7 +605,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             }
         }
 
-    // 2b. Usuário no meio do fluxo de seleção de período do relatório de adesão
+    // 5. Usuário no meio do fluxo de seleção de período do relatório de adesão
     // BUG-057: esse estado travava TODA mensagem seguinte (inclusive confirmação de
     // dose real) como se fosse resposta de período. Ordem de checagem abaixo dá
     // precedência a dose > cancelamento > período válido > classificador central.
@@ -564,10 +627,13 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         } else if (extrairPeriodo(message)) {
             agentName = 'relatorios';
             console.log(`📊 Roteando para relatorios (aguardando período de adesão) — ${user.phone}`);
-            response = await handleRelatorios({ user, message, subtipo: 'adesao', state });
+            const r = await despacharRelatorio({ user, message, image, historicoConversa,
+                                                 subtipo: 'adesao', params: { medicamento: null, expressaoData: null }, state });
+            agentName = r.agentName;
+            response = r.response;
 
         } else {
-            const { agente: agenteSelecionado, subtipoRelatorio, feedback } = await classificarIntencaoComContexto({
+            const { agente: agenteSelecionado, subtipoRelatorio, params, feedback } = await classificarIntencaoComContexto({
                 message, currentState, historicoConversa
             });
             feedbackDetectado = feedback ?? feedbackDetectado;
@@ -575,7 +641,10 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             if (agenteSelecionado === 'relatorios' && subtipoRelatorio === 'adesao') {
                 agentName = 'relatorios';
                 console.log(`📊 [CLASSIFICADOR] Ainda sobre adesão, sem período reconhecível — ${user.phone}`);
-                response = await handleRelatorios({ user, message, subtipo: 'adesao', state });
+                const r = await despacharRelatorio({ user, message, image, historicoConversa,
+                                                     subtipo: 'adesao', params, state });
+                agentName = r.agentName;
+                response = r.response;
             } else {
                 await saveConversationState(user.id, { state: 'idle', context: {} });
                 agentName = agenteSelecionado;
@@ -589,11 +658,10 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                     });
                 } else if (agenteSelecionado === 'relatorios') {
                     console.log(`📊 [CLASSIFICADOR] Roteando para relatorios (${subtipoRelatorio}, saiu de aguardando_periodo_adesao) — ${user.phone}`);
-                    response = await handleRelatorios({ user, message, subtipo: subtipoRelatorio, state: idleState });
-                    if (!response) {
-                        agentName = 'principal';
-                        response = await handlePrincipal({ user, message, image, historicoConversa });
-                    }
+                    const r = await despacharRelatorio({ user, message, image, historicoConversa,
+                                                         subtipo: subtipoRelatorio, params, state: idleState });
+                    agentName = r.agentName;
+                    response = r.response;
                 } else if (agenteSelecionado === 'configuracao') {
                     console.log(`⚙️ [CLASSIFICADOR] Roteando para configuracao (saiu de aguardando_periodo_adesao) — ${user.phone}`);
                     const resultadoConfig = await handleConfiguracao({
@@ -630,7 +698,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             }
         }
 
-    // 2c. Usuário no meio da escolha de qual tratamento ver o progresso (2+ ativos, BUG-056)
+    // 6. Usuário no meio da escolha de qual tratamento ver o progresso (2+ ativos, BUG-056)
     // Mesma precedência do BUG-057: dose > cancelamento > classificador central.
     // BUG-056 (complemento): decidir por nome de medicamento antes de confirmar o assunto
     // gerava falso-positivo (ex: "qual estoque do Neosaldina?" virava progresso). O
@@ -652,7 +720,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             response = `Sem problemas, ${firstName}! Se quiser ver de novo, é só me chamar 🌿`;
 
         } else {
-            const { agente: agenteSelecionado, subtipoRelatorio, feedback } = await classificarIntencaoComContexto({
+            const { agente: agenteSelecionado, subtipoRelatorio, params, feedback } = await classificarIntencaoComContexto({
                 message, currentState, historicoConversa
             });
             feedbackDetectado = feedback ?? feedbackDetectado;
@@ -660,7 +728,10 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             if (agenteSelecionado === 'relatorios' && subtipoRelatorio === 'progresso_tratamento') {
                 agentName = 'relatorios';
                 console.log(`📊 [CLASSIFICADOR] Ainda sobre progresso, sem nome reconhecível — ${user.phone}`);
-                response = await handleRelatorios({ user, message, subtipo: 'progresso_tratamento', state });
+                const r = await despacharRelatorio({ user, message, image, historicoConversa,
+                                                     subtipo: 'progresso_tratamento', params, state });
+                agentName = r.agentName;
+                response = r.response;
             } else {
                 await saveConversationState(user.id, { state: 'idle', context: {} });
                 agentName = agenteSelecionado;
@@ -674,11 +745,10 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                     });
                 } else if (agenteSelecionado === 'relatorios') {
                     console.log(`📊 [CLASSIFICADOR] Roteando para relatorios (${subtipoRelatorio}, saiu de aguardando_escolha_tratamento) — ${user.phone}`);
-                    response = await handleRelatorios({ user, message, subtipo: subtipoRelatorio, state: idleState });
-                    if (!response) {
-                        agentName = 'principal';
-                        response = await handlePrincipal({ user, message, image, historicoConversa });
-                    }
+                    const r = await despacharRelatorio({ user, message, image, historicoConversa,
+                                                         subtipo: subtipoRelatorio, params, state: idleState });
+                    agentName = r.agentName;
+                    response = r.response;
                 } else if (agenteSelecionado === 'configuracao') {
                     console.log(`⚙️ [CLASSIFICADOR] Roteando para configuracao (saiu de aguardando_escolha_tratamento) — ${user.phone}`);
                     const resultadoConfig = await handleConfiguracao({
@@ -715,7 +785,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             }
         }
 
-    // 3. Usuário no meio de um fluxo de configuração
+    // 7. Usuário no meio de um fluxo de configuração
     } else if (currentState === 'configurando') {
         agentName = 'configuracao';
         console.log(`⚙️ Roteando para configuração (estado configurando) — ${user.phone}`);
@@ -736,7 +806,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             response = resultadoConfig;
         }
 
-    // 3b. Usuário em idle com intenção de configuração detectada
+    // 8. Usuário em idle com intenção de configuração detectada
     } else if (currentState === 'idle' && detectarIntencaoConfiguracao(message)) {
         agentName = 'configuracao';
         console.log(`⚙️ Roteando para configuração (intenção detectada) — ${user.phone}`);
@@ -757,7 +827,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             response = resultadoConfig;
         }
 
-    // 4. Usuário já está em fluxo de cadastro → agente_cadastro
+    // 9. Usuário já está em fluxo de cadastro → agente_cadastro
     } else if (currentState === 'adding_med') {
         agentName = 'cadastro';
         console.log(`💊 Roteando para cadastro (estado adding_med) — ${user.phone}`);
@@ -769,7 +839,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             context: state?.context || {}
         });
 
-    // Handler para estado fantasma criado pelo agente_principal
+    // 10. Handler para estado fantasma criado pelo agente_principal
     // Redireciona para o fluxo estruturado do agente_cadastro
     } else if (currentState === 'cadastrando_medicamento') {
         agentName = 'cadastro';
@@ -782,7 +852,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             context: { etapa: 'cad_nome' }  // reinicia do zero de forma estruturada
         });
 
-    // 4. Usuário idle com intenção explícita de cadastro → agente_cadastro
+    // 11. Usuário idle com intenção explícita de cadastro → agente_cadastro
     } else if (currentState === 'idle' && detectarIntencaoCadastro(message)) {
         agentName = 'cadastro';
         console.log(`💊 Roteando para cadastro (intenção detectada) — ${user.phone}`);
@@ -794,7 +864,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             context: { etapa: 'cad_nome' }
         });
 
-    // 4. PRIORIDADE: confirmação de dose — só intercepta se mensagem É confirmação E há dose real pendente
+    // 12. PRIORIDADE: confirmação de dose — só intercepta se mensagem É confirmação E há dose real pendente
     } else if (currentState === 'idle'
         && detectarConfirmacaoDose(message)
         && await temDosePendente(user.id)) {
@@ -802,7 +872,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         console.log(`💊 Confirmação de dose detectada, roteando para principal — ${user.phone}`);
         response = await handlePrincipal({ user, message, image, historicoConversa });
 
-    // 4b. Resposta tardia ao esgotamento (BUG-035) — fast-path determinístico,
+    // 13. Resposta tardia ao esgotamento (BUG-035) — fast-path determinístico,
     // distinto do fast-path por referenceMessageId (BUG-029, ainda quebrado)
     } else if (currentState === 'idle'
         && detectarConfirmacaoDose(message)
@@ -818,25 +888,19 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             response = await handlePrincipal({ user, message, image, historicoConversa });
         }
 
-    // 5. Usuário idle com intenção de relatório → agente_relatorios
+    // 14. Usuário idle com intenção de relatório → agente_relatorios
     } else if (currentState === 'idle' && classificarIntencaoRelatorio(message)) {
         const subtipo = classificarIntencaoRelatorio(message);
         agentName = 'relatorios';
         console.log(`📊 Roteando para relatorios (${subtipo}) — ${user.phone}`);
-        const resultado = await handleRelatorios({ user, message, subtipo, state });
+        const r = await despacharRelatorio({ user, message, image, historicoConversa,
+                                             subtipo, params: { medicamento: null, expressaoData: null }, state });
+        agentName = r.agentName;
+        response = r.response;
 
-        if (resultado) {
-            response = resultado;
-        } else {
-            // Classificador não reconheceu na execução — cai no principal
-            agentName = 'principal';
-            console.log(`🤖 Relatorios não reconheceu, caindo no principal — ${user.phone}`);
-            response = await handlePrincipal({ user, message, image, historicoConversa });
-        }
-
-    // 6. Demais casos → classificador LLM com contexto conversacional
+    // 15. Demais casos → classificador LLM com contexto conversacional
     } else {
-        const { agente: agenteSelecionado, subtipoRelatorio, feedback } = await classificarIntencaoComContexto({
+        const { agente: agenteSelecionado, subtipoRelatorio, params, feedback } = await classificarIntencaoComContexto({
             message,
             currentState,
             historicoConversa
@@ -853,11 +917,10 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             });
         } else if (agenteSelecionado === 'relatorios') {
             console.log(`📊 [CLASSIFICADOR] Roteando para relatorios (${subtipoRelatorio}) — ${user.phone}`);
-            response = await handleRelatorios({ user, message, subtipo: subtipoRelatorio, state });
-            if (!response) {
-                agentName = 'principal';
-                response = await handlePrincipal({ user, message, image, historicoConversa });
-            }
+            const r = await despacharRelatorio({ user, message, image, historicoConversa,
+                                                 subtipo: subtipoRelatorio, params, state });
+            agentName = r.agentName;
+            response = r.response;
         } else if (agenteSelecionado === 'configuracao') {
             console.log(`⚙️ [CLASSIFICADOR] Roteando para configuracao — ${user.phone}`);
             const resultadoConfig = await handleConfiguracao({

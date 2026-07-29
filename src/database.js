@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import 'dotenv/config';
 import fetch from 'node-fetch';
 import { registrarEvento } from './observabilidade.js';
+import { janelaDiaBRT } from './dataReferencia.js';
 global.fetch = fetch;
 
 const supabase = createClient(
@@ -987,6 +988,59 @@ export async function getDosesHoje(userId) {
     }
 
     return { tomadas: tomadasFiltradas, pendentes };
+}
+
+// ============================================================
+// BALANÇO DO DIA (v25) — doses de um dia, filtradas por scheduled_at (dia DEVIDO).
+// Substitui getDosesHoje no fluxo de relatório. NUNCA filtra por taken_at: uma dose
+// de ontem confirmada hoje pertence a ONTEM (mesma regra já aplicada em calcularAdesao
+// desde a v15). Sem janela fixa de dias e sem corte de registros.
+// ============================================================
+export async function getDosesDoDia(userId, dataISO, medicationId = null) {
+    const { inicio, fim } = janelaDiaBRT(dataISO);
+
+    const { data: meds } = await supabase
+        .from('medications')
+        .select('id, nome')
+        .eq('user_id', userId)
+        .eq('ativo', true);
+
+    if (!meds || meds.length === 0) return [];
+
+    const medNomeMap = Object.fromEntries(meds.map(m => [m.id, m.nome]));
+    const medicationIds = medicationId ? [medicationId] : meds.map(m => m.id);
+
+    const { data, error } = await supabase
+        .from('dose_logs')
+        .select('id, medication_id, scheduled_at, horario_agendado, status, confirmed, taken_at, reminder_sent')
+        .in('medication_id', medicationIds)
+        .gte('scheduled_at', inicio)
+        .lte('scheduled_at', fim)
+        .order('scheduled_at', { ascending: true });
+
+    if (error) {
+        console.error('Erro ao buscar doses do dia:', error.message);
+        return [];
+    }
+
+    return (data || []).map(d => ({
+        id: d.id,
+        medicationId: d.medication_id,
+        nome: medNomeMap[d.medication_id] || 'medicamento',
+        horario: d.horario_agendado
+            ? String(d.horario_agendado).substring(0, 5)
+            : new Date(d.scheduled_at).toLocaleTimeString('pt-BR', {
+                hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo'
+            }),
+        scheduledAt: d.scheduled_at,
+        status: d.status,
+        confirmado: d.confirmed === true,
+        takenAt: d.taken_at,
+        // Confirmação retroativa: confirmada em dia diferente do dia devido
+        confirmadaRetroativamente: d.confirmed === true && d.taken_at
+            ? new Date(d.taken_at).toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' }) !== dataISO
+            : false
+    }));
 }
 
 // Medicamentos ativos — alias semântico para getUserMedications
