@@ -8,6 +8,7 @@ import {
     verificarMedicamentoExistente,
     formatarHistoricoConversa
 } from '../database.js';
+import { degradar } from '../observabilidade.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -305,12 +306,23 @@ async function callClaude({ systemPrompt, message, context }) {
             } catch { /* fall through */ }
         }
         console.error('❌ cadastro: Claude não retornou JSON válido:', rawText);
-        return {
-            message: 'Desculpe, tive um probleminha. Pode repetir? 🌿',
-            proximaEtapa: context?.etapa || 'cad_nome',
-            novoContext: context || {},
-            action: null
-        };
+        return await degradar({
+            origem: 'cadastro',
+            motivo: 'parse_json_falhou',
+            agent: 'cadastro',
+            userId: null, // `user` não está no escopo de callClaude() — ver briefing MH-064 T1, risco 3.
+            detalhe: {
+                stop_reason: response?.stop_reason ?? null,
+                tamanho_raw: rawText.length,
+                etapa: context?.etapa || 'cad_nome'
+            },
+            fallback: {
+                message: 'Desculpe, tive um probleminha. Pode repetir? 🌿',
+                proximaEtapa: context?.etapa || 'cad_nome',
+                novoContext: context || {},
+                action: null
+            }
+        });
     }
 }
 

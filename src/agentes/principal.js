@@ -23,6 +23,7 @@ import {
     reverterConfirmacao
 } from '../database.js';
 import { buildAlertaEstoquePosConfirmacao } from '../templates/estoqueTemplates.js';
+import { degradar } from '../observabilidade.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -303,14 +304,30 @@ async function callClaude({ userMessage, image }) {
         console.error('❌ Claude não retornou JSON válido:', rawText);
 
         const pareceJson = rawText.trim().startsWith('{');
-        return {
-            message: (!pareceJson && rawText.length > 10 && rawText.length < 500)
-                ? rawText
-                : 'Desculpe, não entendi bem. Pode repetir? 🌿',
-            newState: 'idle',
-            context: {},
-            action: null
-        };
+        return await degradar({
+            origem: 'principal',
+            motivo: 'parse_json_falhou',
+            agent: 'principal',
+            userId: null, // `user` não está no escopo de callClaude() — ver briefing MH-064 T1, risco 3.
+            detalhe: {
+                // Estes campos existem para DISTINGUIR truncamento de cerca markdown, que
+                // produzem o mesmo sintoma. stop_reason === 'max_tokens' é prova de truncamento.
+                stop_reason: response?.stop_reason ?? null,
+                tamanho_raw: rawText.length,
+                comeca_com_chave: pareceJson,
+                regex_casou: !!jsonMatch,
+                max_tokens: 1024,
+                texto_cru_devolvido: !pareceJson && rawText.length > 10 && rawText.length < 500
+            },
+            fallback: {
+                message: (!pareceJson && rawText.length > 10 && rawText.length < 500)
+                    ? rawText
+                    : 'Desculpe, não entendi bem. Pode repetir? 🌿',
+                newState: 'idle',
+                context: {},
+                action: null
+            }
+        });
     }
 }
 

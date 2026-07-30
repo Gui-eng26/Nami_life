@@ -44,6 +44,80 @@ export async function registrarEvento({
     }
 }
 
+// ============================================================
+// DEGRADAÇÃO CONTROLADA (MH-064, v26)
+//
+// Une "devolver fallback" e "registrar que degradou" numa expressão só. A regra NÃO é que esta
+// função seja dona do texto — é que o valor de fallback só existe como RETORNO dela. Assim fica
+// estruturalmente impossível ter um sem o outro, porque quem quer o fallback passa por quem
+// registra. Mesma forma do princípio 30 (ponto único de despacho), aplicada à degradação.
+//
+// A chave é `origem:motivo` — origem é o local no código (fixo por call site, não é julgamento)
+// e motivo é sintoma observável (princípio 26), nunca causa inferida. Severidade e título vêm
+// da tabela, NUNCA do call site: dois pontos equivalentes escolhendo severidades diferentes
+// desordenam a fila de triagem. O título é templatizado porque alimenta o fingerprint
+// (princípio 25) — o detalhe volátil vive no `detalhe`, fora do hash.
+// ============================================================
+
+const DEGRADACOES = {
+    'principal:parse_json_falhou': {
+        severidade: 'alta',
+        titulo: 'Resposta do principal não pôde ser interpretada — ação descartada'
+    },
+    'cadastro:parse_json_falhou': {
+        severidade: 'media',
+        titulo: 'Resposta do cadastro não pôde ser interpretada — etapa mantida'
+    },
+    'configuracao:classificacao_falhou': {
+        severidade: 'alta',
+        titulo: 'Classificação de intenção da configuração caiu no default'
+    },
+    'exclusao_conta:deteccao_llm_falhou': {
+        severidade: 'alta',
+        titulo: 'Detecção de pedido de exclusão falhou — assumido NÃO'
+    },
+    'exclusao_conta:exclusao_falhou': {
+        severidade: 'critica',
+        titulo: 'Falha ao executar exclusão de conta (LGPD)'
+    }
+};
+
+const DEGRADACAO_NAO_CATALOGADA = {
+    severidade: 'media',
+    titulo: 'Degradação controlada não catalogada'
+};
+
+/**
+ * Registra uma degradação controlada e devolve o fallback recebido.
+ *
+ * @param {string}   origem   - local no código: 'principal', 'cadastro', 'configuracao', 'exclusao_conta'
+ * @param {string}   motivo   - sintoma observável: 'parse_json_falhou', 'classificacao_falhou',
+ *                              'deteccao_llm_falhou', 'exclusao_falhou'
+ * @param {string}   agent    - agente para o campo `agent` de system_events
+ * @param {string?}  userId
+ * @param {object?}  detalhe  - APENAS estrutura. Nunca texto de usuário nem saída de LLM.
+ * @param {*}        fallback - o valor devolvido ao chamador, tal e qual
+ * @returns {Promise<*>} o próprio `fallback`
+ */
+export async function degradar({ origem, motivo, agent, userId = null, detalhe = null, fallback }) {
+    const chave = `${origem}:${motivo}`;
+    const cat = DEGRADACOES[chave] || DEGRADACAO_NAO_CATALOGADA;
+
+    console.error(`⚠️ [DEGRADACAO] ${chave}${detalhe ? ` — ${JSON.stringify(detalhe)}` : ''}`);
+
+    await registrarEvento({
+        tipo: 'erro_tecnico',
+        severidade: cat.severidade,
+        userId,
+        agent,
+        origem: 'outro',
+        titulo: cat.titulo,
+        payload: { origem, motivo, catalogado: !!DEGRADACOES[chave], ...(detalhe || {}) }
+    });
+
+    return fallback;
+}
+
 // categoria: 'elogio' | 'critica' | 'sugestao'
 // origem: 'espontaneo' | 'proativo_adesao' | 'proativo_outro'
 export async function registrarFeedback({

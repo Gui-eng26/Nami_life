@@ -13,6 +13,7 @@ import {
     formatarHistoricoConversa
 } from '../database.js';
 import { isCancelamento, encontrarMedicamento, normalizar } from '../nlp_helpers.js';
+import { degradar } from '../observabilidade.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -102,7 +103,13 @@ REGRAS DE DECISÃO:
         return parsed;
     } catch (e) {
         console.error('⚠️ Erro ao classificar intenção:', e.message);
-        return { acao: 'esclarecer_pausar_encerrar', medicamentoMencionado: null, novoHorario: null };
+        return await degradar({
+            origem: 'configuracao',
+            motivo: 'classificacao_falhou',
+            agent: 'configuracao',
+            detalhe: { erro: e.name, status: e?.status ?? null },
+            fallback: { acao: 'esclarecer_pausar_encerrar', medicamentoMencionado: null, novoHorario: null }
+        });
     }
 }
 

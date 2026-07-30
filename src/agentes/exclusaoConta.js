@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import 'dotenv/config';
 import { saveConversationState, excluirContaUsuario, formatarHistoricoConversa } from '../database.js';
 import { normalizar } from '../nlp_helpers.js';
+import { degradar } from '../observabilidade.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -57,8 +58,16 @@ ${historicoTexto}`;
         return isExclusao;
     } catch (e) {
         // Falha do LLM: por segurança, NÃO trata como exclusão (evita apagar por engano).
+        // A decisão segura continua a mesma; o que muda é que ela deixa de ser invisível —
+        // um pedido de exclusão de conta que desaparece sem rastro é problema de LGPD.
         console.error(`❌ [EXCLUSAO-CONTA] Erro no estágio 2 (LLM): ${e.message} — assumindo NAO`);
-        return false;
+        return await degradar({
+            origem: 'exclusao_conta',
+            motivo: 'deteccao_llm_falhou',
+            agent: 'excluir_conta',
+            detalhe: { erro: e.name, status: e?.status ?? null },
+            fallback: false
+        });
     }
 }
 
@@ -163,8 +172,9 @@ Cuide-se!`;
 
     } catch (e) {
         // Erro técnico: nada foi apagado (transação atômica fez rollback).
-        // console.error completo vai pros logs do Railway (monitoramento reativo atual).
-        // Mantém o estado aguardando_confirmacao_exclusao para permitir retry direto com CONFIRMAR.
+        // Registrado em system_events com severidade critica (MH-064, v26). Nada foi apagado — a
+        // transação atômica fez rollback. Estado mantido em aguardando_confirmacao_exclusao para
+        // permitir retry com CONFIRMAR.
         console.error(`❌ [EXCLUSAO-CONTA] Falha ao excluir conta — ${user.phone} — ${e.message}`);
         console.error('Stack:', e.stack);
 
@@ -172,6 +182,14 @@ Cuide-se!`;
 `${firstName}, tive um probleminha técnico e não consegui concluir a exclusão agora. 😔 Pode ficar tranquilo(a): *nada foi apagado*, seus dados continuam seguros.
 
 Tente de novo daqui a alguns minutos, por favor. Se ainda assim não der certo, fale diretamente com o ${CONTATO_GUILHERME} — ele resolve isso pra você manualmente. 🌿`;
-        return { response, contaExcluida: false };
+
+        return await degradar({
+            origem: 'exclusao_conta',
+            motivo: 'exclusao_falhou',
+            agent: 'excluir_conta',
+            userId: user.id,
+            detalhe: { erro: e.name, estado_preservado: 'aguardando_confirmacao_exclusao' },
+            fallback: { response, contaExcluida: false }
+        });
     }
 }
