@@ -1,6 +1,5 @@
 import 'dotenv/config';
 import {
-    getDosesHoje,
     getDosesDoDia,
     getMedicamentosAtivos,
     getEstoque,
