@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { getOrCreateUser, logAgentInteraction } from './database.js';
 import { sendTextMessage } from './whatsapp.js';
 import { routeMessage } from './router.js';
-import { registrarEvento } from './observabilidade.js';
+import { registrarEvento, tituloEstavel } from './observabilidade.js';
 
 export async function handleIncomingMessage({ phone, text, audio, image, messageId, referenceMessageId }) {
     let user;
@@ -43,7 +43,7 @@ export async function handleIncomingMessage({ phone, text, audio, image, message
                 agent: 'agent',
                 origem: 'catch_global',
                 agentLogId,
-                titulo: `Exceção não tratada: ${error.message?.split('\n')[0] ?? 'desconhecida'}`.slice(0, 200),
+                titulo: tituloEstavel(error, 'Exceção não tratada (agent)'),
                 payload: { message: error.message, stack: error.stack, estado: 'erro' }
             });
         } catch (obsError) {

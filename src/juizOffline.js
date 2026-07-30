@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
 import 'dotenv/config';
-import { registrarEvento, registrarExecucaoJuizOffline } from './observabilidade.js';
+import { registrarEvento, registrarExecucaoJuizOffline, tituloEstavel } from './observabilidade.js';
 
 const supabase = createClient(
     process.env.SUPABASE_URL,
@@ -244,6 +244,11 @@ export async function julgarEpisodio(episodio) {
     const response = await anthropic.messages.create({
         model: MODELO_JUIZ,
         max_tokens: 1024,
+        // temperature 0 (v26): o juiz CLASSIFICA, não redige — variedade aqui é ruído, não
+        // qualidade. Cada episódio é julgado uma única vez (idempotência), então oscilação
+        // produz falso negativo silencioso. Não elimina 100% da variação (batching/ponto
+        // flutuante em GPU), mas reduz drasticamente.
+        temperature: 0,
         system: PROMPT_JUIZ,
         messages: [{ role: 'user', content: texto }]
     });
@@ -285,7 +290,7 @@ function parseJulgamento(rawText) {
     }
 }
 
-function formatarEpisodioParaPrompt(episodio) {
+export function formatarEpisodioParaPrompt(episodio) {
     const linhas = [];
     if (episodio.notaLembrete) {
         linhas.push(episodio.notaLembrete, '');
@@ -299,6 +304,28 @@ function formatarEpisodioParaPrompt(episodio) {
         linhas.push('');
     });
     return linhas.join('\n');
+}
+
+const TENTATIVAS_JULGAMENTO = 3;
+const BACKOFF_MS = [1000, 4000];   // espera ANTES da 2ª e da 3ª tentativa
+
+async function julgarEpisodioComRetry(episodio) {
+    let ultimoErro;
+    for (let tentativa = 1; tentativa <= TENTATIVAS_JULGAMENTO; tentativa++) {
+        try {
+            return await julgarEpisodio(episodio);
+        } catch (e) {
+            ultimoErro = e;
+            const status = e?.status ?? e?.response?.status ?? null;
+            // 4xx (exceto 429) é erro nosso — retry não resolve, falha na hora.
+            if (status && status >= 400 && status < 500 && status !== 429) throw e;
+            if (tentativa < TENTATIVAS_JULGAMENTO) {
+                console.warn(`⚖️ Tentativa ${tentativa} falhou (${e.message}) — nova tentativa`);
+                await sleep(BACKOFF_MS[tentativa - 1]);
+            }
+        }
+    }
+    throw ultimoErro;
 }
 
 // ============================================================
@@ -331,8 +358,32 @@ export async function executarJuizOffline() {
                 continue;
             }
 
-            const enriquecido = await enriquecerEpisodio(episodio);
-            const julgamento = await julgarEpisodio(enriquecido);
+            let julgamento;
+            try {
+                const enriquecido = await enriquecerEpisodio(episodio);
+                julgamento = await julgarEpisodioComRetry(enriquecido);
+            } catch (erroEpisodio) {
+                episodiosFalhaJulgamento++;
+                console.error(
+                    `⚖️ Episódio ${episodio.primeiroLogId} falhou após retries: ${erroEpisodio.message}`
+                );
+                await registrarEvento({
+                    tipo: 'erro_tecnico',
+                    severidade: 'media',
+                    userId: episodio.userId,
+                    agent: 'juiz_offline',
+                    origem: 'scheduler',
+                    agentLogId: episodio.primeiroLogId,
+                    titulo: tituloEstavel(erroEpisodio, 'Falha ao julgar episódio (juiz offline)'),
+                    payload: {
+                        message: erroEpisodio.message,
+                        n_turnos: episodio.turnos.length,
+                        funcao: 'julgarEpisodioComRetry'
+                    }
+                });
+                await sleep(PAUSA_ENTRE_JULGAMENTOS_MS);
+                continue;   // ← o episódio seguinte SEMPRE é tentado
+            }
             await sleep(PAUSA_ENTRE_JULGAMENTOS_MS);
 
             if (julgamento === null) {
@@ -369,11 +420,17 @@ export async function executarJuizOffline() {
             eventosRegistrados++;
         }
 
+        // O status reflete o RESULTADO da varredura, não a ausência de exceção. Com isolamento
+        // por episódio o loop termina mesmo com falhas — sem isto, a telemetria declararia
+        // 'sucesso' numa varredura incompleta (o oposto do propósito do MH-058).
         await registrarExecucaoJuizOffline({
             dataAvaliada, turnosTotais, episodiosTotais,
             episodiosPuladosIdempotencia, episodiosAvaliados,
             episodiosFalhaJulgamento, turnosAvaliados, eventosRegistrados,
-            status: 'sucesso'
+            status: episodiosFalhaJulgamento > 0 ? 'falha_parcial' : 'sucesso',
+            erroResumo: episodiosFalhaJulgamento > 0
+                ? `${episodiosFalhaJulgamento} de ${episodiosTotais} episódio(s) não julgado(s)`
+                : null
         });
     } catch (error) {
         console.error('❌ Erro no juiz offline:', error.message);
@@ -383,7 +440,7 @@ export async function executarJuizOffline() {
             severidade: 'alta',
             origem: 'scheduler',
             agent: 'juiz_offline',
-            titulo: `Erro no juiz offline: ${error.message?.split('\n')[0] ?? ''}`.slice(0, 200),
+            titulo: tituloEstavel(error, 'Erro no juiz offline'),
             payload: { message: error.message, stack: error.stack, funcao: 'executarJuizOffline' }
         });
 

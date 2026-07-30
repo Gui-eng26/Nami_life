@@ -5,7 +5,7 @@ import { getPendingReminders, getPendingFollowUps, createDoseLog,
 import { sendTextMessage } from './whatsapp.js';
 import { handleFollowUp } from './agentes/lembrete.js';
 import { enviarResumoSemanal } from './agentes/relatorios.js';
-import { registrarEvento } from './observabilidade.js';
+import { registrarEvento, tituloEstavel } from './observabilidade.js';
 import { executarJuizOffline } from './juizOffline.js';
 
 // ============================================================
@@ -38,7 +38,7 @@ export function startScheduler() {
                 severidade: 'alta',
                 origem: 'scheduler',
                 agent: 'scheduler',
-                titulo: `Erro no scheduler: ${error.message?.split('\n')[0] ?? ''}`.slice(0, 200),
+                titulo: tituloEstavel(error, 'Erro no scheduler (enviarResumosSemanais)'),
                 payload: { message: error.message, stack: error.stack, funcao: 'enviarResumosSemanais' }
             });
         }
@@ -97,7 +97,7 @@ async function checkAndSendReminders() {
             severidade: 'alta',
             origem: 'scheduler',
             agent: 'scheduler',
-            titulo: `Erro no scheduler: ${error.message?.split('\n')[0] ?? ''}`.slice(0, 200),
+            titulo: tituloEstavel(error, 'Erro no scheduler (checkAndSendReminders)'),
             payload: { message: error.message, stack: error.stack, funcao: 'checkAndSendReminders' }
         });
     }
@@ -159,7 +159,7 @@ async function checkAndSendFollowUps() {
             severidade: 'alta',
             origem: 'scheduler',
             agent: 'scheduler',
-            titulo: `Erro no scheduler: ${error.message?.split('\n')[0] ?? ''}`.slice(0, 200),
+            titulo: tituloEstavel(error, 'Erro no scheduler (checkAndSendFollowUps)'),
             payload: { message: error.message, stack: error.stack, funcao: 'checkAndSendFollowUps' }
         });
     }
@@ -224,7 +224,7 @@ async function sendGroupedReminder(grupo) {
             severidade: 'alta',
             origem: 'scheduler',
             agent: 'scheduler',
-            titulo: `Erro no scheduler: ${error.message?.split('\n')[0] ?? ''}`.slice(0, 200),
+            titulo: tituloEstavel(error, 'Erro no scheduler (sendGroupedReminder)'),
             payload: { message: error.message, stack: error.stack, funcao: 'sendGroupedReminder' }
         });
     }
@@ -274,7 +274,7 @@ async function handleGroupedFollowUp(grupo) {
             severidade: 'alta',
             origem: 'scheduler',
             agent: 'scheduler',
-            titulo: `Erro no scheduler: ${error.message?.split('\n')[0] ?? ''}`.slice(0, 200),
+            titulo: tituloEstavel(error, 'Erro no scheduler (handleGroupedFollowUp)'),
             payload: { message: error.message, stack: error.stack, funcao: 'handleGroupedFollowUp' }
         });
     }
@@ -351,7 +351,7 @@ async function sendReminder(reminder) {
             severidade: 'alta',
             origem: 'scheduler',
             agent: 'scheduler',
-            titulo: `Erro no scheduler: ${error.message?.split('\n')[0] ?? ''}`.slice(0, 200),
+            titulo: tituloEstavel(error, 'Erro no scheduler (sendReminder)'),
             payload: { message: error.message, stack: error.stack, funcao: 'sendReminder' }
         });
     }

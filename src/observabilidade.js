@@ -15,6 +15,16 @@ const supabase = createClient(
 // origem: 'catch_global' | 'classificador_central' | 'juiz_offline' | 'scheduler' | 'outro'
 // titulo: resumo ESTÁVEL/templatizado (o fingerprint agrupa por ele) — NUNCA a mensagem crua.
 // payload: NÃO conter texto cru do usuário (invariante de LGPD). Amarre ao texto via agentLogId.
+
+// Deriva um título ESTÁVEL a partir de um erro, para alimentar o fingerprint.
+// Estável entre ocorrências do MESMO defeito; ainda distingue defeitos diferentes.
+// O detalhe volátil (mensagem, request_id, stack) vive no payload, nunca aqui.
+export function tituloEstavel(error, prefixo) {
+    const nome = error?.name || 'Error';
+    const status = error?.status ?? error?.response?.status ?? null;
+    return `${prefixo}: ${nome}${status ? ` ${status}` : ''}`.slice(0, 200);
+}
+
 export async function registrarEvento({
     tipo, severidade, userId = null, agent = null, origem,
     agentLogId = null, titulo = null, payload = null
