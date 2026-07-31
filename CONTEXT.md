@@ -1,7 +1,7 @@
-# 🌿 NAMI — Contexto do Projeto (v26 — FECHADA: sessão de captação de erros — degradar() e MH-064
-T1 (5 pontos instrumentados), isolamento de falha por episódio + temperature 0 no juiz, fingerprint
-estável (8 pontos), barreira de forma no envio, status_triagem 'nao_valida'; seções v23 e v24
-reconstruídas no CONTEXT.md — 30/07/2026)
+# 🌿 NAMI — Contexto do Projeto (v27 — FECHADA: MH-065 — contexto proativo para o
+classificador central: reconstrução a partir de dose_logs (nunca escrita em agent_logs),
+regra de inclusão estado + sequência + rede de segurança, renderização cronológica não
+predominante; validação em produção pendente — 31/07/2026)
 
 ---
 
@@ -78,10 +78,11 @@ Nami_life/
 ├── src/
 │   ├── index.js              → Entry point + webhook + proteção idempotência
 │   ├── agent.js               → Orquestrador — chama routeMessage
-│   ├── router.js               → Roteador central (classificador LLM retorna JSON {agente, subtipoRelatorio} — v15); temDosePendente() exclui nao_informado (v17, BUG-035); despacharEscalada() (v18) — função compartilhada que recebe o sinal { escalarParaRoteador: true } de qualquer agente e decide o próximo destino usando classificarIntencaoComContexto, preservando medicationId/medicationNome/schedulesAtivos quando o destino ainda é configuracao
-│   ├── database.js             → Todas as queries no Supabase; registrarMovimentoEstoque (MH-042) é o único ponto de escrita em estoque; calcularAdesao/calcularProgressoTratamento (v15); getHistoricoRecente() (v18) agora também seleciona estado_conversa/contexto_conversa de agent_logs, usado pelo classificador central pra resolver referências em mensagens futuras sem context vivo; classificarNivelEstoquePorDias() (v19, BUG-065) — classifica zerado/urgente/ok a partir de estoque real + dias de cobertura, nunca infere uma métrica a partir da outra
+│   ├── router.js               → Roteador central (classificador LLM retorna JSON {agente, subtipoRelatorio} — v15); temDosePendente() exclui nao_informado (v17, BUG-035); despacharEscalada() (v18) — função compartilhada que recebe o sinal { escalarParaRoteador: true } de qualquer agente e decide o próximo destino usando classificarIntencaoComContexto, preservando medicationId/medicationNome/schedulesAtivos quando o destino ainda é configuracao. v27 (MH-065): classificarIntencaoComContexto recebe contextoProativo como campo paralelo (princípio 22) em 4 call sites; despacharEscalada propaga em 5 call sites, sem query nova (princípio 6). renderizarContextoProativo() insere o evento no FIM da cronologia do bloco CONVERSA RECENTE — sem seção destacada e sem instrução de precedência, para não cegar o classificador do lado reativo. Sem evento proativo, o prompt é idêntico ao anterior.
+│   ├── database.js             → Todas as queries no Supabase; registrarMovimentoEstoque (MH-042) é o único ponto de escrita em estoque; calcularAdesao/calcularProgressoTratamento (v15); getHistoricoRecente() (v18) agora também seleciona estado_conversa/contexto_conversa de agent_logs, usado pelo classificador central pra resolver referências em mensagens futuras sem context vivo; classificarNivelEstoquePorDias() (v19, BUG-065) — classifica zerado/urgente/ok a partir de estoque real + dias de cobertura, nunca infere uma métrica a partir da outra. getContextoProativoRecente() (v27, MH-065) — reconstrói o ÚLTIMO evento proativo (lembrete ou follow-up) a partir de dose_logs, que é registro de ENTREGA (escrito depois de sendTextMessage), ao contrário de agent_logs que é registro de INTENÇÃO (princípio 24). Duas etapas com .in(), regra padrão do projeto. Consumida SÓ pelo classificador central.
 │   ├── whatsapp.js              → Envio de mensagens e parse Z-API. v26: BARREIRA DE FORMA no início de sendTextMessage — rejeita message não-string, registra a FORMA (nunca o conteúdo) em system_events e lança TypeError. Fica FORA do try de propósito (dentro, o catch da Z-API registraria um 2º evento com fingerprint diferente). Não muda o desfecho para o usuário: hoje o objeto já vira 400 → catch global → mesma mensagem educada
 │   ├── scheduler.js             → Cron: lembretes + follow-ups + resumo de adesão ('0 16 * * 0' COM timezone explícito, `America/Sao_Paulo` — scheduler.js:45; pendência aberta na v24 fechada por evidência na v27: `adesao_estado.updated_at` em 26/07 19:00 UTC = 16:00 BRT confirma o disparo correto) + juiz offline (03:00 BRT com timezone explícito, v24). v26: os 6 pontos de registrarEvento usam tituloEstavel(error, 'Erro no scheduler (<funcao>)') — prefixo por função, senão falhas de lembrete e de resumo semanal colapsariam no mesmo fingerprint
+│   ├── observabilidade.js       → Ponto único de escrita em system_events/juiz_offline_execucoes (registrarEvento/registrarFeedback/registrarExecucaoJuizOffline); degradar() (v26, MH-064) registra evento E devolve o fallback na mesma chamada (princípio 31); tituloEstavel() deriva fingerprint estável por classe de erro. v27: entrada 'contexto_proativo:query_falhou' no catálogo DEGRADACOES (severidade media — a degradação devolve ao comportamento anterior, que é a ausência que o MH-065 corrige).
 │   ├── juizOffline.js  → Juiz Offline (MH-054, v24) — varredura diária de agent_logs agrupada em
 │   │                     episódios (user_id + gap 30min), enriquecida com system_events e dose_logs;
 │   │                     LLM classifica em taxonomia canônica de sintoma com precedência; severidade
@@ -1119,6 +1120,11 @@ comentário dizendo "horário de Brasília". Se o processo roda em UTC, dispara 
 Railway (procurar `📊 Enviando resumos semanais...` num domingo e conferir a hora) antes de
 alterar. Ainda em aberto na v26.
 
+> **Corrigido na v27:** a afirmação acima está superada. O código tem `{ timezone:
+> 'America/Sao_Paulo' }` (`scheduler.js:45`) e o dado de produção confirma o disparo correto:
+> `adesao_estado.updated_at` das 6 linhas em 26/07 19:00 UTC = **16:00 BRT**. Se o processo
+> rodasse em UTC sem timezone, teria disparado 13:00 BRT. Pendência fechada por evidência.
+
 ### BUG-069 — registrado com causa raiz confirmada, correção NÃO implementada
 
 Em escalada dupla (usuário em `configurando` → `configuracao` escala → `despacharEscalada` →
@@ -1509,6 +1515,203 @@ Critério: `episodios_avaliados + episodios_pulados_idempotencia = episodios_tot
 `episodios_falha_julgamento > 0` com `status = 'falha_parcial'`. O que não pode acontecer é a soma
 não fechar sem ninguém contabilizado — isso significaria caminho de saída silenciosa remanescente.
 
+> **Fechada na v27:** execução de 31/07 03:00 BRT sobre os dados de 30/07 — 7 de 7 episódios
+> avaliados, 0 falhas, `status: sucesso`. Critério `avaliados + pulados = totais` atendido.
+> Cobertura 100% (era 3,1%).
+
+## Sessão v27 (31/07/2026) — MH-065: contexto proativo para o classificador central
+
+Sessão de uma frente só. O gatilho foi o diagnóstico da v26: o vazamento do BUG-069 era o
+**último** elo de uma cadeia de seis, e a causa está a montante — o classificador central não
+enxerga nada que a Nami envie por iniciativa própria.
+
+### A medição que definiu o problema
+
+`logAgentInteraction` tem 3 call sites, **todos no caminho reativo** (`router.js:569`,
+`router.js:1040`, `agent.js:31`). Os 8 pontos de `sendTextMessage` fora desse caminho —
+lembrete individual e agrupado, follow-up individual e agrupado, aviso de estoque zerado,
+alerta pós-`nao_informado`, cuidador, resumo semanal — não escrevem em `agent_logs`.
+
+Turnos de usuário que chegaram até 15 min depois de um `reminder_sent_at`, em todo o histórico
+(05/06 → 30/07):
+
+| Métrica | Valor |
+|---|---|
+| Turnos na janela | 294 |
+| Turnos em que o lembrete era o turno real anterior (invisível ao classificador) | **169** |
+| Destes, com histórico visível de outro assunto na última hora | **30** |
+| Destes, mensagens curtas (≤4 caracteres) | 127 |
+
+**Reenquadramento do BUG-069:** o "1 ocorrência em todo o histórico" registrado na v26 mediu o
+*sintoma na ponta da cadeia* (o objeto vazando no envio). A *condição a montante* ocorre 169
+vezes.
+
+### Por que o dano é raro apesar da frequência
+
+Dos 169 turnos, **158 foram para `principal`** — o destino correto. Duas camadas mascaram a
+lacuna: o fast-path `detectarConfirmacaoDose` intercepta a maioria das confirmações curtas
+antes do classificador, e `principal` é o fallback natural.
+
+Dos 11 que não foram para `principal`, **10 eram roteamento correto** — mensagens
+auto-suficientes (`"Qual meu estoque de dipirona?"`, `"Parar losartana"`, `"Quero cadastrar
+dipirona"`). Princípio 17 em ação: o texto literal resolveu sozinho, o lembrete invisível não
+fez falta.
+
+Isso permitiu a formulação precisa da causa raiz:
+
+> O histórico incompleto só causa dano quando a mensagem do usuário **não é auto-suficiente** —
+> resposta curta ou anafórica cujo significado depende inteiramente do que a Nami acabou de
+> dizer. Mensagens auto-suficientes atravessam a lacuna sem consequência.
+
+### A decisão de arquitetura — e a opção descartada
+
+**Descartada:** inserir os turnos proativos em `agent_logs`.
+
+O motivo é **semântico, não de risco**. `agent_logs` registra a resposta PRETENDIDA
+(princípio 24: `logAgentInteraction` roda antes de `sendTextMessage`). Já `dose_logs` é escrito
+**depois** do envio em todos os pontos verificados (`scheduler.js:203/259/309/333`,
+`lembrete.js:103`) — é **registro de entrega**. Inserir um fato de entrega numa tabela de
+intenção teria forçado uma escolha entre duas semânticas erradas.
+
+**Sinal de diagnóstico registrado:** a opção descartada exigia 5 adaptações — dois formatadores,
+decisão sobre `contexto_conversa`, limite do histórico, valor do campo `agent`, ordem
+log/envio. **A quantidade de adaptação necessária era o diagnóstico**: um dado que só entra numa
+tabela mediante nulos e três decisões de semântica não pertence àquela tabela.
+
+**Escolhida:** reconstruir o evento proativo a partir de `dose_logs` na leitura, como campo
+paralelo ao `historicoConversa` (forma do princípio 22 — dimensão ortogonal não vira novo valor
+do eixo existente). Nenhum consumidor de `agent_logs` muda.
+
+### Regra de inclusão — estado, sequência e rede de segurança
+
+```
+(1) ESTADO — dose ainda aguardando resposta:
+    reminder_sent = true, confirmed = false,
+    status ∉ {pausado, nao_tomado, nao_informado, sem_estoque}
+
+(2) SEQUÊNCIA — o evento é mais recente que o último turno registrado:
+    instanteEvento > created_at do turno mais recente em historicoConversa
+
+(3) REDE DE SEGURANÇA — scheduled_at dentro do dia de hoje (BRT)
+```
+
+**(1) é de estado, não de relógio** — e isso eliminou a única constante de tempo arbitrária do
+desenho. A cadência de follow-up é 30min + 1h + 30min, e então `markAsNaoInformado`: o próprio
+ciclo de vida da dose fecha a janela em ~2h. A condição é idêntica à de `temDosePendente`
+(`router.js:48-54`), mantendo as duas leituras consistentes.
+
+**(2) sozinha não basta.** Cenário: último `agent_log` na segunda, lembrete na terça sem
+resposta, usuário escreve na sexta. O lembrete de terça É mais recente que segunda e passaria em
+(2), sendo injetado como "turno imediatamente anterior".
+
+**(3) existe porque (1) tem uma premissa.** Se o scheduler cair, uma dose fica `pendente`
+indefinidamente e o estado não a fecha. Rede, não regra principal.
+
+### O bloco não é predominante — decisão explícita
+
+O modo de falha simétrico ao que estamos corrigindo: hoje o classificador é cego para o
+proativo; um bloco predominante o cegaria para o reativo. Três decisões garantem o equilíbrio:
+
+1. **Integração cronológica, não seção destacada.** O evento entra no fim da mesma linha do
+   tempo do bloco `CONVERSA RECENTE` — por (2) ele é mais recente que os 3 turnos.
+2. **Zero linguagem instrucional.** Nenhuma frase de precedência. A cronologia carrega a
+   informação sozinha. O rótulo entre colchetes é descritivo, existe só para o LLM não ler a
+   linha como turno de usuário (sem ele, a alternativa seria `Usuário: null`).
+3. **Renderização condicional.** Sem evento proativo, o prompt fica **byte a byte idêntico** ao
+   anterior — o que limita o raio de qualquer regressão aos casos-alvo.
+
+**Divisão de trabalho preservada:** o classificador responde apenas *qual agente*. Quem decide
+confirmação de dose é o `principal`, que já tem o bloco `DOSES AGUARDANDO CONFIRMAÇÃO` com
+`[ref:]` e instrução de precedência. Duplicar essa regra no classificador criaria dois donos da
+mesma decisão.
+
+### Escopo de propagação — só o classificador
+
+`principal.js:72` já chama `getRecentDoses(user.id, 3)` e monta o bloco de doses pendentes com
+`doseLogId`. Ele **já tem** esse contexto, em formato mais forte que qualquer reconstrução. A
+cegueira é exclusiva do roteador. `cadastro`, `configuracao` e `exclusaoConta` não precisam.
+
+`despacharEscalada` recebe **obrigatoriamente** — é o passo 5 da cadeia do `"S"`; sem isso a
+reclassificação repete a decisão cega e a cadeia continua inteira.
+
+### Redundância intencional com o Juiz Offline — documentada, não unificada
+
+`juizOffline.js:205-232` já faz uma reconstrução de lembrete a partir de `dose_logs`. A extração
+de função compartilhada foi **deliberadamente adiada**: os contratos ainda diferem — o juiz
+ancora num instante passado para julgar retrospectivamente, em batch; o classificador ancora no
+agora para rotear, por mensagem. O princípio 30 trata de *mesmo contrato replicado*, e ainda não
+é o caso.
+
+**Gatilho de revisão (MH-067):** na próxima reavaliação do Juiz Offline, comparar as duas
+implementações; se o contrato tiver convergido, unificar.
+
+Efeito colateral positivo: a função nova segue a **regra padrão do projeto** (duas etapas com
+`.in()`), sem herdar o `!inner` que hoje existe só no juiz.
+
+### Lição de forma herdada do diagnóstico do juiz (H3)
+
+O diagnóstico do falso positivo da v26 revelou que a `notaLembrete` do juiz — *"lembrete
+automático de Elani"* — é **gramaticalmente ambígua** quando o nome do medicamento soa como nome
+próprio: lê tanto como "lembrete do medicamento Elani" quanto como "lembrete [pertencente a]
+Elani [pessoa]". O juiz resolveu para o lado errado e produziu um `informacao_saude_incorreta`
+de severidade **crítica** — falso positivo.
+
+**Nenhuma correção foi aplicada no juiz nesta sessão** (decisão de escopo). Mas o texto novo
+nasceu sem o defeito: campos rotulados, sem genitivo solto.
+
+```
+[mensagem automática da Nami — sem resposta do usuário até aqui]
+Nami: lembrete de dose — medicamento: Ômega 3 (dose das 20:00) — enviado 3 min atrás
+```
+
+Origem do princípio 32.
+
+### Fora de cobertura, declarado
+
+| Envio proativo | Registro | Coberto? |
+|---|---|---|
+| `lembrete.js:133` — alerta de estoque pós-`nao_informado` | nenhum | ❌ |
+| `relatorios.js:665` — resumo semanal | só `adesao_estado.updated_at` | ❌ |
+| `lembrete.js:76` — cuidador | `caregiver_notified` | ❌ (outro telefone, não é contexto do paciente) |
+
+Exposição medida do resumo semanal: **1 turno de usuário** em todo o histórico dentro de 1h30
+depois de um domingo 16:00 (28/06, `"Tomei"`, roteado corretamente). Lacuna conhecida, não
+oculta.
+
+### Decisão explícita: uma camada por vez
+
+O sinal determinístico — passar `temDosePendente` ao classificador — ficou **fora** desta
+rodada. Hoje esse fato só é consultado atrás de `detectarConfirmacaoDose(message) &&`
+(`router.js:654/749/910/919`), ou seja, nunca é olhado quando o parser não reconhece a mensagem.
+É provavelmente um sinal mais forte que a reconstrução do histórico.
+
+Motivo do adiamento: empilhar as duas camadas de uma vez torna impossível saber qual funcionou.
+O projeto já tem histórico de correção sistêmica boa sendo mascarada por camada extra. Medir
+primeiro.
+
+### Validação da v26 — fechada
+
+O Juiz Offline rodou em 31/07 03:00 BRT sobre os dados de 30/07:
+`turnos_totais 16 · episodios_totais 7 · episodios_avaliados 7 · pulados_idempotencia 0 ·
+falha_julgamento 0 · status sucesso`.
+
+Critério da v26 atendido: `avaliados + pulados = totais`. Cobertura **100%**, contra 3,1% na
+execução anterior. As correções do juiz (try/catch por episódio, retry, `status` derivado de
+`episodios_falha_julgamento`) e o MH-058 estão validados.
+
+### Pendências de validação da v27
+
+O MH-065 permanece `em_validacao`. Os testes exigem tráfego real e correm ao longo de 31/07:
+cenário-alvo (reprodução do `"S"` com histórico enviesado), lembrete agrupado (20:00 —
+Dipirona + Vitamina C), follow-up, os 10 casos nominais de não-regressão, e as condições de
+exclusão — com destaque para a regra de sequência, cuja falha faria o bloco aparecer em todas as
+mensagens seguintes do dia.
+
+**Limite de observabilidade do teste:** o prompt do classificador não é logado em lugar nenhum.
+Testar só por WhatsApp mostra o desfecho do roteamento, mas não distingue "bloco renderizado
+certo" de "renderizado errado e o LLM acertou assim mesmo". `getContextoProativoRecente` é
+exportada e pode ser inspecionada por script read-only; a renderização é função pura do objeto.
+
 ## Backlog (BUG/FIX/MH)
 
 A partir de 07/07/2026, o backlog completo vive na tabela `backlog_items`
@@ -1678,6 +1881,17 @@ Não é mais mantido neste arquivo. Consultar via Supabase MCP:
     é um comando que varre o projeto, nunca a lista de pontos que o autor conseguiu enumerar. Na
     v26 o autor do briefing afirmou "dois produtores violam o contrato de título estável"; o `grep`
     do próprio checklist encontrou oito.
+32. **Transporte de fato estruturado entre camadas não depende de desambiguação de linguagem
+    natural (v27, H3 do juiz).** Quando um dado estruturado (nome de medicamento, horário,
+    status) é transportado para dentro do prompt de outra camada, ele vai em **campos
+    rotulados**, nunca embutido em prosa com genitivo ou aposto. Caso concreto: a nota
+    `"lembrete automático de Elani"` do Juiz Offline é ambígua quando o nome do medicamento soa
+    como nome próprio — o juiz leu "Elani" como o nome da usuária, concluiu que a Nami errara o
+    nome dela e emitiu `informacao_saude_incorreta` de severidade crítica. Extensão dos
+    princípios 25 e 26: lá, identidade de agrupamento não pode depender de geração livre de LLM;
+    aqui, o significado de um campo não pode depender de leitura correta de uma construção
+    gramatical ambígua. **Corolário:** se dois nomes próprios podem aparecer no mesmo bloco
+    (usuário e medicamento), ambos precisam de rótulo — desambiguar um só deixa o outro exposto.
 
 ---
 
