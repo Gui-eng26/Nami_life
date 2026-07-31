@@ -935,7 +935,14 @@ async function continuarComAcao({ user, firstName, acao, med, medicationsAtivos,
                 return `O *${med.nome}* tem lembretes em ${descricaoQtd}:\n\n${lista}\n\nQual desses você quer alterar? Me responda com o horário — por exemplo: *${schedulesAtivos[0]?.horario?.substring(0,5)}*`;
             }
 
-            if (!novoHorario) {
+            // BUG-083: um único número na mensagem não pode ser origem E destino ao mesmo tempo.
+            // scheduleEspecifico (seleção) e novoHorario (destino) só podem ter vindo de tokens
+            // DIFERENTES quando a mensagem realmente contém dois números distintos (padrão
+            // "das X para Y"). Com um número só, novoHorario nunca é confiável aqui — mesmo que
+            // esteja preenchido, tratamos como ausente e pedimos o destino separadamente.
+            const temDoisHorariosNaMensagem = [...message.matchAll(/\d{1,2}[:h]\d{2}/g)].length >= 2;
+
+            if (!novoHorario || !temDoisHorariosNaMensagem) {
                 await saveConversationState(user.id, {
                     state: 'configurando',
                     context: { etapa: 'obter_horario', acao, medicationId: med.id, medicationNome: med.nome, schedulesAtivos, scheduleId: scheduleEspecifico.id, horarioAtual: scheduleEspecifico.horario }
