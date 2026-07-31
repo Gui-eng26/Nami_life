@@ -621,8 +621,11 @@ export async function handleConfiguracao({ user, message, state, context, histor
             return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
         }
         if (!isConfirmacao(message)) {
-            return buildConfirmacaoMessage(firstName, context)
-                + '\n\n_(Responda *SIM* para confirmar ou *NÃO* para cancelar)_';
+            if (isCancelamentoGenuino(message, medicationsAtivos)) {
+                await saveConversationState(user.id, { state: 'idle', context: {} });
+                return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
+            }
+            return { escalarParaRoteador: true };
         }
         return await executarAcao(user, firstName, context);
     }
@@ -632,6 +635,14 @@ export async function handleConfiguracao({ user, message, state, context, histor
         if (isCancelamento(message) || /\b(não|nao|n)\b/i.test(message.toLowerCase())) {
             await saveConversationState(user.id, { state: 'idle', context: {} });
             return `Tudo bem, ${firstName}! Se precisar de algo, é só me chamar 🌿`;
+        }
+
+        if (!isConfirmacao(message)) {
+            if (isCancelamentoGenuino(message, medicationsAtivos)) {
+                await saveConversationState(user.id, { state: 'idle', context: {} });
+                return `Tudo bem, ${firstName}! Se precisar de algo, é só me chamar 🌿`;
+            }
+            return { escalarParaRoteador: true };
         }
 
         await saveConversationState(user.id, {
@@ -764,6 +775,14 @@ export async function handleConfiguracao({ user, message, state, context, histor
         if (isCancelamento(message) || /\b(não|nao|n|chega|pronto|ok|tudo bem)\b/i.test(message.toLowerCase())) {
             await saveConversationState(user.id, { state: 'idle', context: {} });
             return `Tudo certo, ${firstName}! Se precisar de algo, é só me chamar 🌿`;
+        }
+
+        if (!isConfirmacao(message)) {
+            if (isCancelamentoGenuino(message, medicationsAtivos)) {
+                await saveConversationState(user.id, { state: 'idle', context: {} });
+                return `Tudo certo, ${firstName}! Se precisar de algo, é só me chamar 🌿`;
+            }
+            return { escalarParaRoteador: true };
         }
 
         const schedulesRestantes = context.schedulesAtivos || [];
