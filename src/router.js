@@ -1,7 +1,7 @@
 import { getConversationState, logAgentInteraction, getRecentDoses,
     getDoseLogByZapiMessageId, confirmDoseByLogId,
     getEstoqueInfoParaAlerta, contarConfirmacoesHoje, calcularAlertaEstoque,
-    saveConversationState, getHistoricoRecente,
+    saveConversationState, getHistoricoRecente, getContextoProativoRecente,
     getDosesRetroativas, confirmarDoseRetroativa, usuarioRespondeuDesde } from './database.js';
 import { registrarEvento, registrarFeedback } from './observabilidade.js';
 import { buildAlertaEstoquePosConfirmacao } from './templates/estoqueTemplates.js';
@@ -277,12 +277,30 @@ function extrairJSON(texto) {
     }
 }
 
-async function classificarIntencaoComContexto({ message, currentState, historicoConversa }) {
+// MH-065 — renderiza o evento proativo como uma linha da cronologia da conversa.
+// O rótulo entre colchetes é DESCRITIVO (evita que o LLM leia a linha como turno de
+// usuário), nunca diretivo. Sem ele, a alternativa seria "Usuário: null".
+function renderizarContextoProativo(ctx) {
+    const rotuloTipo = ctx.tipo === 'follow_up'
+        ? `follow-up de dose (cobrança ${ctx.tentativa})`
+        : (ctx.agrupado ? 'lembrete de dose (agrupado)' : 'lembrete de dose');
+
+    const listaMeds = ctx.doses
+        .map(d => (d.horario ? `${d.nome} (dose das ${d.horario})` : d.nome))
+        .join(', ');
+
+    const rotuloMeds = ctx.doses.length > 1 ? 'medicamentos' : 'medicamento';
+
+    return `[mensagem automática da Nami — sem resposta do usuário até aqui]\n` +
+           `Nami: ${rotuloTipo} — ${rotuloMeds}: ${listaMeds} — enviado ${ctx.minutosAtras} min atrás`;
+}
+
+async function classificarIntencaoComContexto({ message, currentState, historicoConversa, contextoProativo = null }) {
     const fallback = { agente: 'principal', subtipoRelatorio: null, params: { medicamento: null, expressaoData: null }, feedback: null };
 
     try {
         // Monta o histórico como texto legível para o LLM
-        const historicoTexto = historicoConversa.length > 0
+        const historicoReativo = historicoConversa.length > 0
             ? historicoConversa.map(h => {
                 const contextoResumo = h.contexto_conversa?.medicationNome
                     ? ` [em andamento: configuração sobre ${h.contexto_conversa.medicationNome}, etapa ${h.contexto_conversa.etapa}]`
@@ -290,6 +308,16 @@ async function classificarIntencaoComContexto({ message, currentState, historico
                 return `Usuário: ${h.user_message}\nNami: ${h.agent_response}${contextoResumo}`;
               }).join('\n\n')
             : 'Sem histórico recente.';
+
+        // MH-065: mensagem proativa entra na MESMA linha do tempo, no fim (por construção da
+        // regra de sequência ela é mais recente que os 3 turnos). NÃO é seção destacada e
+        // NÃO leva instrução de precedência — a cronologia carrega a informação sozinha.
+        // Campos rotulados, sem genitivo solto: "lembrete de X" é ambíguo quando o nome do
+        // medicamento soa como nome próprio (ex. "Elani").
+        // Quando não há evento proativo, historicoTexto fica idêntico ao de antes.
+        const historicoTexto = contextoProativo
+            ? `${historicoReativo}\n\n${renderizarContextoProativo(contextoProativo)}`
+            : historicoReativo;
 
         const prompt = `Você é o classificador de intenções da Nami, um assistente de saúde via WhatsApp.
 
@@ -459,9 +487,11 @@ async function despacharRelatorio({ user, message, image, historicoConversa,
 // { escalarParaRoteador: true } em vez de uma resposta de texto
 // ============================================================
 
-async function despacharEscalada({ user, message, image, contextoPreservado, historicoConversa }) {
+async function despacharEscalada({ user, message, image, contextoPreservado, historicoConversa, contextoProativo = null }) {
+    // MH-065: recebe o contextoProativo JÁ BUSCADO pelo roteador — nenhuma query nova
+    // (princípio 6: buscar uma vez, propagar).
     const { agente: agenteSelecionado, subtipoRelatorio, params, feedback } = await classificarIntencaoComContexto({
-        message, currentState: 'configurando', historicoConversa
+        message, currentState: 'configurando', historicoConversa, contextoProativo
     });
 
     let agentName = agenteSelecionado;
@@ -573,6 +603,15 @@ export async function routeMessage({ user, message, image, messageId, referenceM
     // Histórico conversacional — buscado UMA vez, propagado a todos os agentes LLM
     const historicoConversa = await getHistoricoRecente(user.id, 3);
 
+    // Contexto proativo (MH-065) — buscado UMA vez aqui, propagado SÓ ao classificador
+    // central e ao despacharEscalada. Os agentes não recebem: o principal já tem o bloco
+    // DOSES AGUARDANDO CONFIRMAÇÃO, que é mais forte (traz o doseLogId).
+    // historicoConversa vem em ordem cronológica (mais antigo primeiro) — o último item é
+    // o turno mais recente. O turno ATUAL ainda não foi logado (logAgentInteraction roda no
+    // fim de routeMessage, L1000), então não há off-by-one.
+    const ultimoTurnoAt = historicoConversa.at(-1)?.created_at ?? null;
+    const contextoProativo = await getContextoProativoRecente(user.id, ultimoTurnoAt);
+
     let response;
     let agentName;
     let feedbackDetectado = null;
@@ -674,7 +713,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
 
         } else {
             const { agente: agenteSelecionado, subtipoRelatorio, params, feedback } = await classificarIntencaoComContexto({
-                message, currentState, historicoConversa
+                message, currentState, historicoConversa, contextoProativo
             });
             feedbackDetectado = feedback ?? feedbackDetectado;
 
@@ -710,7 +749,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                     });
                     if (resultadoConfig?.escalarParaRoteador) {
                         const escalada = await despacharEscalada({
-                            user, message, image, historicoConversa,
+                            user, message, image, historicoConversa, contextoProativo,
                             contextoPreservado: null
                         });
                         agentName = escalada.agentName;
@@ -761,7 +800,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
 
         } else {
             const { agente: agenteSelecionado, subtipoRelatorio, params, feedback } = await classificarIntencaoComContexto({
-                message, currentState, historicoConversa
+                message, currentState, historicoConversa, contextoProativo
             });
             feedbackDetectado = feedback ?? feedbackDetectado;
 
@@ -797,7 +836,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                     });
                     if (resultadoConfig?.escalarParaRoteador) {
                         const escalada = await despacharEscalada({
-                            user, message, image, historicoConversa,
+                            user, message, image, historicoConversa, contextoProativo,
                             contextoPreservado: null
                         });
                         agentName = escalada.agentName;
@@ -835,7 +874,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         });
         if (resultadoConfig?.escalarParaRoteador) {
             const escalada = await despacharEscalada({
-                user, message, image, historicoConversa,
+                user, message, image, historicoConversa, contextoProativo,
                 contextoPreservado: state?.context
             });
             agentName = escalada.agentName;
@@ -856,7 +895,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         });
         if (resultadoConfig?.escalarParaRoteador) {
             const escalada = await despacharEscalada({
-                user, message, image, historicoConversa,
+                user, message, image, historicoConversa, contextoProativo,
                 contextoPreservado: null
             });
             agentName = escalada.agentName;
@@ -943,7 +982,8 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         const { agente: agenteSelecionado, subtipoRelatorio, params, feedback } = await classificarIntencaoComContexto({
             message,
             currentState,
-            historicoConversa
+            historicoConversa,
+            contextoProativo
         });
         feedbackDetectado = feedback ?? feedbackDetectado;
 
@@ -969,7 +1009,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             });
             if (resultadoConfig?.escalarParaRoteador) {
                 const escalada = await despacharEscalada({
-                    user, message, image, historicoConversa,
+                    user, message, image, historicoConversa, contextoProativo,
                     contextoPreservado: null
                 });
                 agentName = escalada.agentName;

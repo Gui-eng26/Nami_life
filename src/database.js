@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import 'dotenv/config';
 import fetch from 'node-fetch';
-import { registrarEvento } from './observabilidade.js';
+import { registrarEvento, degradar } from './observabilidade.js';
 import { janelaDiaBRT, hojeBRT } from './dataReferencia.js';
 global.fetch = fetch;
 
@@ -1568,6 +1568,144 @@ export function formatarHistoricoConversa(historicoConversa) {
     return historicoConversa
         .map(h => `Usuário: ${h.user_message}\nNami: ${h.agent_response}`)
         .join('\n\n');
+}
+
+// ============================================================
+// CONTEXTO PROATIVO — MH-065
+// Mensagens que a Nami enviou por iniciativa própria (lembrete/follow-up) não existem em
+// agent_logs: scheduler.js e lembrete.js não chamam logAgentInteraction. Esta função
+// reconstrói o ÚLTIMO evento proativo a partir de dose_logs, que é registro de ENTREGA
+// (escrito DEPOIS de sendTextMessage), ao contrário de agent_logs que é registro de
+// INTENÇÃO (princípio 24).
+//
+// Consumida SOMENTE pelo classificador central (router.js). O principal já tem esse
+// contexto via getRecentDoses + bloco DOSES AGUARDANDO CONFIRMAÇÃO.
+//
+// Redundância intencional com juizOffline.js:205-232 (v27): os contratos diferem — o juiz
+// ancora num instante passado para julgar, esta ancora no agora para rotear. Reavaliar
+// unificação na próxima revisão do Juiz Offline.
+// ============================================================
+
+// Tolerância para agrupar doses do mesmo disparo. MH-032 cria uma linha por dose, cada uma
+// com seu próprio new Date() — o drift de milissegundos é o mesmo do BUG-066.
+const JANELA_AGRUPAMENTO_PROATIVO_MS = 60 * 1000;
+
+export async function getContextoProativoRecente(userId, ultimoTurnoAt) {
+    try {
+        // Duas etapas com .in() — regra do projeto (BUG-017/BUG-023). Filtro via join
+        // não é usado aqui de propósito.
+        const { data: meds, error: erroMeds } = await supabase
+            .from('medications')
+            .select('id, nome')
+            .eq('user_id', userId)
+            .eq('ativo', true);
+
+        if (erroMeds) {
+            return await degradar({
+                origem: 'contexto_proativo',
+                motivo: 'query_falhou',
+                agent: 'classificador',
+                userId,
+                detalhe: { etapa: 'medications' },
+                fallback: null
+            });
+        }
+
+        if (!meds || meds.length === 0) return null;
+
+        const medNomeMap = Object.fromEntries(meds.map(m => [m.id, m.nome]));
+        const medicationIds = meds.map(m => m.id);
+
+        // (3) rede de segurança: dose do dia de hoje em BRT
+        const { inicio: inicioDiaBRT } = janelaDiaBRT(hojeBRT());
+
+        const { data, error } = await supabase
+            .from('dose_logs')
+            .select('id, medication_id, horario_agendado, scheduled_at, status, confirmed, ' +
+                    'reminder_sent, reminder_sent_at, tentativas, ultima_tentativa_at')
+            .in('medication_id', medicationIds)
+            .eq('reminder_sent', true)
+            .eq('confirmed', false)
+            .gte('scheduled_at', inicioDiaBRT);
+
+        if (error) {
+            return await degradar({
+                origem: 'contexto_proativo',
+                motivo: 'query_falhou',
+                agent: 'classificador',
+                userId,
+                detalhe: { etapa: 'dose_logs' },
+                fallback: null
+            });
+        }
+
+        // (1) ESTADO — mesma condição de temDosePendente (router.js:48-54). Filtrado em JS
+        // de propósito: mantém a definição idêntica num lugar só, legível lado a lado.
+        const aguardando = (data || []).filter(d =>
+            d.status !== 'pausado' &&
+            d.status !== 'nao_tomado' &&
+            d.status !== 'nao_informado' &&
+            d.status !== 'sem_estoque'
+        );
+
+        if (aguardando.length === 0) return null;
+
+        // instante do evento = a última coisa que a Nami efetivamente enviou sobre esta dose
+        const instanteDe = (d) => {
+            const t = [d.reminder_sent_at, d.ultima_tentativa_at]
+                .filter(Boolean)
+                .map(x => new Date(x).getTime());
+            return t.length ? Math.max(...t) : null;
+        };
+
+        const comInstante = aguardando
+            .map(d => ({ dose: d, instante: instanteDe(d) }))
+            .filter(x => x.instante !== null);
+
+        if (comInstante.length === 0) return null;
+
+        const maisRecente = Math.max(...comInstante.map(x => x.instante));
+
+        // (2) SEQUÊNCIA — só entra se for mais recente que o último turno registrado.
+        // ultimoTurnoAt null = usuário sem histórico nenhum: o evento é o único contexto.
+        if (ultimoTurnoAt && maisRecente <= new Date(ultimoTurnoAt).getTime()) return null;
+
+        // Agrupa as doses do MESMO disparo (MH-032)
+        const doGrupo = comInstante.filter(x =>
+            maisRecente - x.instante <= JANELA_AGRUPAMENTO_PROATIVO_MS
+        );
+
+        const ehFollowUp = doGrupo.some(x =>
+            x.dose.ultima_tentativa_at &&
+            new Date(x.dose.ultima_tentativa_at).getTime() === x.instante &&
+            (x.dose.tentativas || 1) > 1
+        );
+
+        const tentativa = Math.max(...doGrupo.map(x => x.dose.tentativas || 1));
+
+        return {
+            tipo: ehFollowUp ? 'follow_up' : 'lembrete',
+            tentativa,
+            agrupado: doGrupo.length > 1,
+            minutosAtras: Math.max(0, Math.round((Date.now() - maisRecente) / 60000)),
+            doses: doGrupo.map(x => ({
+                nome: medNomeMap[x.dose.medication_id] || 'medicamento',
+                horario: x.dose.horario_agendado
+                    ? String(x.dose.horario_agendado).substring(0, 5)
+                    : null
+            }))
+        };
+
+    } catch (e) {
+        return await degradar({
+            origem: 'contexto_proativo',
+            motivo: 'query_falhou',
+            agent: 'classificador',
+            userId,
+            detalhe: { excecao: true },
+            fallback: null
+        });
+    }
 }
 
 // ============================================================

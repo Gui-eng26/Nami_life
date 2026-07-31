@@ -79,6 +79,10 @@ const DEGRADACOES = {
     'exclusao_conta:exclusao_falhou': {
         severidade: 'critica',
         titulo: 'Falha ao executar exclusão de conta (LGPD)'
+    },
+    'contexto_proativo:query_falhou': {
+        severidade: 'media',
+        titulo: 'Contexto proativo não pôde ser lido — classificador seguiu sem ele'
     }
 };
 

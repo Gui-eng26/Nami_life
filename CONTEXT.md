@@ -81,7 +81,7 @@ Nami_life/
 │   ├── router.js               → Roteador central (classificador LLM retorna JSON {agente, subtipoRelatorio} — v15); temDosePendente() exclui nao_informado (v17, BUG-035); despacharEscalada() (v18) — função compartilhada que recebe o sinal { escalarParaRoteador: true } de qualquer agente e decide o próximo destino usando classificarIntencaoComContexto, preservando medicationId/medicationNome/schedulesAtivos quando o destino ainda é configuracao
 │   ├── database.js             → Todas as queries no Supabase; registrarMovimentoEstoque (MH-042) é o único ponto de escrita em estoque; calcularAdesao/calcularProgressoTratamento (v15); getHistoricoRecente() (v18) agora também seleciona estado_conversa/contexto_conversa de agent_logs, usado pelo classificador central pra resolver referências em mensagens futuras sem context vivo; classificarNivelEstoquePorDias() (v19, BUG-065) — classifica zerado/urgente/ok a partir de estoque real + dias de cobertura, nunca infere uma métrica a partir da outra
 │   ├── whatsapp.js              → Envio de mensagens e parse Z-API. v26: BARREIRA DE FORMA no início de sendTextMessage — rejeita message não-string, registra a FORMA (nunca o conteúdo) em system_events e lança TypeError. Fica FORA do try de propósito (dentro, o catch da Z-API registraria um 2º evento com fingerprint diferente). Não muda o desfecho para o usuário: hoje o objeto já vira 400 → catch global → mesma mensagem educada
-│   ├── scheduler.js             → Cron: lembretes + follow-ups + resumo de adesão (⚠️ '0 16 * * 0' SEM timezone — se o processo roda em UTC dispara 13:00 BRT, não 16:00; discrepância registrada na v24, a verificar nos logs do Railway) + juiz offline (03:00 BRT com timezone explícito, v24). v26: os 6 pontos de registrarEvento usam tituloEstavel(error, 'Erro no scheduler (<funcao>)') — prefixo por função, senão falhas de lembrete e de resumo semanal colapsariam no mesmo fingerprint
+│   ├── scheduler.js             → Cron: lembretes + follow-ups + resumo de adesão ('0 16 * * 0' COM timezone explícito, `America/Sao_Paulo` — scheduler.js:45; pendência aberta na v24 fechada por evidência na v27: `adesao_estado.updated_at` em 26/07 19:00 UTC = 16:00 BRT confirma o disparo correto) + juiz offline (03:00 BRT com timezone explícito, v24). v26: os 6 pontos de registrarEvento usam tituloEstavel(error, 'Erro no scheduler (<funcao>)') — prefixo por função, senão falhas de lembrete e de resumo semanal colapsariam no mesmo fingerprint
 │   ├── juizOffline.js  → Juiz Offline (MH-054, v24) — varredura diária de agent_logs agrupada em
 │   │                     episódios (user_id + gap 30min), enriquecida com system_events e dose_logs;
 │   │                     LLM classifica em taxonomia canônica de sintoma com precedência; severidade
@@ -1436,10 +1436,10 @@ O BUG-069 continua `aberto`. A correção da L473 do `router.js` foi escrita, re
 **E o diagnóstico do BUG-069 estava incompleto.** A investigação da ocorrência real revelou que o
 vazamento é o **último** elo de uma cadeia de seis, e a causa está a montante — ver MH-065.
 
-### A cadeia real de 28/07 (origem do MH-065)
+### A cadeia real de 27/07 (origem do MH-065)
 
-`agent_log e9cbd89b`, 28/07 21:01 BRT: `estado_conversa` **`idle`**, `contexto_conversa` `{}`,
-`user_message` **`"S"`**.
+`agent_log e9cbd89b`, 27/07 21:01 BRT (= 28/07 00:01 UTC — a v26 registrou a data em UTC por
+engano): `estado_conversa` **`idle`**, `contexto_conversa` `{}`, `user_message` **`"S"`**.
 
 1. Lembrete proativo do Ômega 3 às 20:58, respondido com `"S"` às 21:01.
 2. `detectarConfirmacaoDose("S")` devolve `false` — o ramo 12 do roteador (dose pendente) não
