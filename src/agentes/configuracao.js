@@ -131,9 +131,33 @@ function extrairHorarioDestino(message) {
     return `${m[1].padStart(2, '0')}:${(m[2] || '00').padStart(2, '0')}`;
 }
 
+// Números por extenso mais comuns em pt-BR para horários (0-20). "vinte e X"
+// tratado à parte pra não quebrar em "vinte" + "e" + "x" separadamente.
+const NUMERO_POR_EXTENSO = {
+    'zero': 0, 'uma': 1, 'um': 1, 'duas': 2, 'dois': 2, 'três': 3, 'tres': 3,
+    'quatro': 4, 'cinco': 5, 'seis': 6, 'sete': 7, 'oito': 8, 'nove': 9,
+    'dez': 10, 'onze': 11, 'doze': 12, 'treze': 13, 'catorze': 14, 'quatorze': 14,
+    'quinze': 15, 'dezesseis': 16, 'dezessete': 17, 'dezoito': 18, 'dezenove': 19,
+    'vinte': 20
+};
+const VINTE_E_ALGO = { 'um': 21, 'uma': 21, 'dois': 22, 'duas': 22, 'três': 23, 'tres': 23 };
+
+// Converte números por extenso presentes na mensagem para dígitos, preservando
+// o resto do texto — as camadas de regex existentes (dígito, "h", período do
+// dia) passam a funcionar sem duplicar lógica nenhuma.
+function converterNumerosPorExtenso(mensagem) {
+    let resultado = mensagem.replace(/vinte\s+e\s+(um|uma|dois|duas|tr[êe]s)/gi,
+        (_, palavra) => String(VINTE_E_ALGO[palavra.toLowerCase()]));
+    for (const [palavra, numero] of Object.entries(NUMERO_POR_EXTENSO)) {
+        resultado = resultado.replace(new RegExp(`\\b${palavra}\\b`, 'gi'), String(numero));
+    }
+    return resultado;
+}
+
 // Converte linguagem natural em HH:MM sem depender de lista de schedules.
 // Usado em obter_horario (adicionar novo horário) onde o horário não existe ainda.
 function interpretarHorarioLivre(message) {
+    message = converterNumerosPorExtenso(message);
     const msg = message.toLowerCase().trim();
 
     // 1. Formato numérico explícito (HH:MM ou HHhMM) — pega o último (destino)
@@ -177,10 +201,19 @@ function interpretarHorarioLivre(message) {
     if (/meio.?dia/i.test(msg)) return '12:00';
     if (/meia.?noite/i.test(msg)) return '00:00';
 
+    // 6. BUG-085: número solto embutido numa frase, sem ":"/"h"/período do dia
+    // — pega o último (mesma convenção de destino das camadas anteriores).
+    const numerosSoltos = [...msg.matchAll(/\b(\d{1,2})\b/g)];
+    if (numerosSoltos.length > 0) {
+        const hora = parseInt(numerosSoltos[numerosSoltos.length - 1][1]);
+        if (hora >= 0 && hora <= 23) return `${String(hora).padStart(2, '0')}:00`;
+    }
+
     return null;
 }
 
 function normalizarHorario(message, schedulesDisponiveis) {
+    message = converterNumerosPorExtenso(message);
     const msg = message.toLowerCase().trim();
 
     // 1. Regex numérico (HH:MM ou HHhMM)
@@ -232,6 +265,16 @@ function normalizarHorario(message, schedulesDisponiveis) {
             const schedule = schedulesDisponiveis.find(s => s.horario.startsWith(hora + ':'));
             if (schedule) return schedule.horario.substring(0, 5);
         }
+    }
+
+    // 4. BUG-085: número solto embutido numa frase (ex: "mudar das 11 para as
+    // 10"), sem ":"/"h" nem período do dia. Pega o primeiro número (mesma
+    // convenção de origem da camada 1), só como último recurso.
+    const numerosSoltos = [...msg.matchAll(/\b(\d{1,2})\b/g)];
+    if (numerosSoltos.length > 0) {
+        const horaSolta = numerosSoltos[0][1].padStart(2, '0');
+        const scheduleSolto = schedulesDisponiveis.find(s => s.horario.startsWith(horaSolta + ':'));
+        if (scheduleSolto) return scheduleSolto.horario.substring(0, 5);
     }
 
     return null;
@@ -534,7 +577,16 @@ export async function handleConfiguracao({ user, message, state, context, histor
             return { escalarParaRoteador: true };
         }
 
-        if (!context.novoHorario) {
+        // BUG-085: extrai o destino sempre da MESMA mensagem que resolveu a seleção
+        // — nunca reaproveita context.novoHorario de uma tentativa anterior (poderia
+        // não corresponder a esta mensagem). Só confia no destino se houver dois
+        // números distintos na mensagem, mesma proteção do BUG-083 contra um único
+        // número servir pros dois papéis (seleção e destino) ao mesmo tempo.
+        const mensagemConvertida = converterNumerosPorExtenso(message);
+        const temDoisHorarios = [...mensagemConvertida.matchAll(/\b\d{1,2}\b/g)].length >= 2;
+        const novoHorarioAtual = temDoisHorarios ? interpretarHorarioLivre(message) : null;
+
+        if (!novoHorarioAtual) {
             await saveConversationState(user.id, {
                 state: 'configurando',
                 context: { ...context, etapa: 'obter_horario', scheduleId: schedule.id, horarioAtual: schedule.horario }
@@ -542,7 +594,7 @@ export async function handleConfiguracao({ user, message, state, context, histor
             return `Certo! Vou alterar o lembrete das *${schedule.horario.substring(0,5)}* do *${context.medicationNome}*.\n\nPara qual horário? Me responda só com o novo horário — por exemplo: *08:00*`;
         }
 
-        const newCtx = { ...context, etapa: 'confirm_acao', scheduleId: schedule.id, horarioAtual: schedule.horario };
+        const newCtx = { ...context, etapa: 'confirm_acao', scheduleId: schedule.id, horarioAtual: schedule.horario, novoHorario: novoHorarioAtual };
         await saveConversationState(user.id, { state: 'configurando', context: newCtx });
         return buildConfirmacaoMessage(firstName, newCtx);
     }
@@ -949,9 +1001,13 @@ async function continuarComAcao({ user, firstName, acao, med, medicationsAtivos,
                 const descricaoQtd = qtd === 1 ? 'um horário' :
                                      qtd === 2 ? 'dois horários' :
                                      `${qtd} horários`;
+                // BUG-085: não carregamos novoHorario adiante. Se a origem não foi
+                // reconhecida nesta mensagem, qualquer destino que a IA tenha lido aqui
+                // pode não corresponder a uma tentativa futura — cada seleção de horário
+                // deve pedir o destino de novo, na sua própria vez.
                 await saveConversationState(user.id, {
                     state: 'configurando',
-                    context: { etapa: 'identif_schedule', acao, medicationId: med.id, medicationNome: med.nome, schedulesAtivos, novoHorario }
+                    context: { etapa: 'identif_schedule', acao, medicationId: med.id, medicationNome: med.nome, schedulesAtivos }
                 });
                 return `O *${med.nome}* tem lembretes em ${descricaoQtd}:\n\n${lista}\n\nQual desses você quer alterar? Me responda com o horário — por exemplo: *${schedulesAtivos[0]?.horario?.substring(0,5)}*`;
             }
