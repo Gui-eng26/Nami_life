@@ -277,46 +277,75 @@ function extrairJSON(texto) {
     }
 }
 
-// MH-065 — renderiza o evento proativo como uma linha da cronologia da conversa.
-// O rótulo entre colchetes é DESCRITIVO (evita que o LLM leia a linha como turno de
-// usuário), nunca diretivo. Sem ele, a alternativa seria "Usuário: null".
-function renderizarContextoProativo(ctx) {
-    const rotuloTipo = ctx.tipo === 'follow_up'
-        ? `follow-up de dose (cobrança ${ctx.tentativa})`
-        : (ctx.agrupado ? 'lembrete de dose (agrupado)' : 'lembrete de dose');
+// MH-70/Parte C (v28) — rótulo de tempo determinístico, comum ao bloco reativo
+// e ao proativo, pra que o classificador enxergue a distância real entre os
+// turnos em vez de inferir pela posição no texto (nenhum dos dois blocos tinha
+// rótulo de tempo nenhum antes desta sessão).
+function formatarTempoRelativo(timestamp) {
+    const minutos = Math.max(0, Math.round((Date.now() - new Date(timestamp).getTime()) / 60000));
+    if (minutos < 1) return 'agora mesmo';
+    if (minutos < 60) return `há ${minutos} min`;
+    const horas = Math.round(minutos / 60);
+    if (horas < 24) return `há ${horas}h`;
+    const dias = Math.round(horas / 24);
+    return `há ${dias} dia${dias > 1 ? 's' : ''}`;
+}
 
-    const listaMeds = ctx.doses
-        .map(d => (d.horario ? `${d.nome} (dose das ${d.horario})` : d.nome))
-        .join(', ');
+const ROTULOS_EVENTO_PROATIVO = {
+    lembrete: 'lembrete de dose',
+    follow_up: 'follow-up de dose',
+    alerta_estoque_zerado: 'aviso de estoque zerado',
+    alerta_estoque_nao_informado: 'aviso de estoque (dose não confirmada)',
+    resumo_semanal: 'resumo semanal de adesão'
+};
 
-    const rotuloMeds = ctx.doses.length > 1 ? 'medicamentos' : 'medicamento';
+// MH-065 (v27) / reescrito MH-70/Parte C (v28) — renderiza CADA evento proativo
+// como sua própria linha da cronologia, em vez de só o mais recente. O rótulo
+// entre colchetes é DESCRITIVO (evita que o LLM leia as linhas como turno de
+// usuário), nunca diretivo. Não é seção destacada, não leva instrução de
+// precedência — a cronologia e o rótulo de tempo carregam a informação sozinhas.
+function renderizarEventosProativos(eventos) {
+    if (!eventos || eventos.length === 0) return '';
 
-    return `[mensagem automática da Nami — sem resposta do usuário até aqui]\n` +
-           `Nami: ${rotuloTipo} — ${rotuloMeds}: ${listaMeds} — enviado ${ctx.minutosAtras} min atrás`;
+    const linhas = eventos.map(ev => {
+        const rotulo = ROTULOS_EVENTO_PROATIVO[ev.tipo] || 'mensagem automática';
+        const tentativaTexto = ev.tipo === 'follow_up' && ev.tentativa ? ` (cobrança ${ev.tentativa})` : '';
+        const medTexto = ev.medicamento
+            ? ` — ${ev.medicamento}${ev.horarioAgendado ? ` (dose das ${ev.horarioAgendado})` : ''}`
+            : '';
+        return `Nami: ${rotulo}${tentativaTexto}${medTexto} — enviado ${formatarTempoRelativo(ev.enviadoAt)}`;
+    }).join('\n');
+
+    return `[mensagens automáticas da Nami — sem resposta do usuário até aqui]\n${linhas}`;
 }
 
 async function classificarIntencaoComContexto({ message, currentState, historicoConversa, contextoProativo = null }) {
     const fallback = { agente: 'principal', subtipoRelatorio: null, params: { medicamento: null, expressaoData: null }, feedback: null };
 
     try {
-        // Monta o histórico como texto legível para o LLM
+        // Monta o histórico como texto legível para o LLM. MH-70/Parte C: cada turno
+        // ganha um rótulo de tempo determinístico — antes desta sessão, nenhum dos
+        // dois blocos (reativo ou proativo) tinha noção de distância temporal alguma.
         const historicoReativo = historicoConversa.length > 0
             ? historicoConversa.map(h => {
                 const contextoResumo = h.contexto_conversa?.medicationNome
                     ? ` [em andamento: configuração sobre ${h.contexto_conversa.medicationNome}, etapa ${h.contexto_conversa.etapa}]`
                     : '';
-                return `Usuário: ${h.user_message}\nNami: ${h.agent_response}${contextoResumo}`;
+                const tempo = h.created_at ? ` (${formatarTempoRelativo(h.created_at)})` : '';
+                return `Usuário: ${h.user_message}\nNami: ${h.agent_response}${contextoResumo}${tempo}`;
               }).join('\n\n')
             : 'Sem histórico recente.';
 
-        // MH-065: mensagem proativa entra na MESMA linha do tempo, no fim (por construção da
-        // regra de sequência ela é mais recente que os 3 turnos). NÃO é seção destacada e
-        // NÃO leva instrução de precedência — a cronologia carrega a informação sozinha.
-        // Campos rotulados, sem genitivo solto: "lembrete de X" é ambíguo quando o nome do
+        // MH-065/MH-70/Parte C: até 6 eventos proativos entram na MESMA linha do tempo,
+        // no fim (por construção da regra de sequência, são mais recentes que os 3
+        // turnos reativos). NÃO é seção destacada e NÃO leva instrução de precedência —
+        // a cronologia e o rótulo de tempo carregam a informação sozinhos. Campos
+        // rotulados, sem genitivo solto: "lembrete de X" é ambíguo quando o nome do
         // medicamento soa como nome próprio (ex. "Elani").
         // Quando não há evento proativo, historicoTexto fica idêntico ao de antes.
-        const historicoTexto = contextoProativo
-            ? `${historicoReativo}\n\n${renderizarContextoProativo(contextoProativo)}`
+        const eventosProativosTexto = renderizarEventosProativos(contextoProativo);
+        const historicoTexto = eventosProativosTexto
+            ? `${historicoReativo}\n\n${eventosProativosTexto}`
             : historicoReativo;
 
         const prompt = `Você é o classificador de intenções da Nami, um assistente de saúde via WhatsApp.
