@@ -778,6 +778,27 @@ export async function handleConfiguracao({ user, message, state, context, histor
         }
 
         if (!isConfirmacao(message)) {
+            // A pergunta "quer alterar algum?" já oferece uma lista implícita (os horários
+            // restantes). Se a mensagem nomeia diretamente um deles, é "sim" + seleção na
+            // mesma mensagem — mesmo princípio já usado no ramo de 1 horário só (pula
+            // pergunta desnecessária quando a resposta já é inequívoca). Reaproveita o
+            // mesmo casador determinístico que identif_schedule usa, em vez de escalar
+            // para um classificador geral que não tem essa lista em mãos.
+            const schedulesRestantesParaCheck = context.schedulesAtivos || [];
+            if (schedulesRestantesParaCheck.length > 1) {
+                const horarioMencionado = normalizarHorario(message, schedulesRestantesParaCheck);
+                const scheduleEspecifico = horarioMencionado
+                    ? schedulesRestantesParaCheck.find(s => s.horario.startsWith(horarioMencionado))
+                    : null;
+                if (scheduleEspecifico) {
+                    await saveConversationState(user.id, {
+                        state: 'configurando',
+                        context: { ...context, etapa: 'obter_horario', scheduleId: scheduleEspecifico.id, horarioAtual: scheduleEspecifico.horario }
+                    });
+                    return `Certo! Vou alterar o lembrete das *${scheduleEspecifico.horario.substring(0, 5)}* do *${context.medicationNome}*.\n\nPara qual horário? Me responda só com o novo horário — por exemplo: *08:00*`;
+                }
+            }
+
             if (isCancelamentoGenuino(message, medicationsAtivos)) {
                 await saveConversationState(user.id, { state: 'idle', context: {} });
                 return `Tudo certo, ${firstName}! Se precisar de algo, é só me chamar 🌿`;
