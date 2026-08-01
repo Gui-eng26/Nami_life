@@ -1571,6 +1571,30 @@ export function formatarHistoricoConversa(historicoConversa) {
 }
 
 // ============================================================
+// EVENTOS PROATIVOS (MH-70, v28)
+// Ponto único de escrita — nunca inserir em eventos_proativos por SQL direto
+// fora desta função (mesmo princípio de src/backlog.js para backlog_items).
+// Defensiva: uma falha aqui nunca pode impedir o envio real da mensagem ao
+// usuário, por isso nunca lança exceção — mesmo padrão de registrarEvento/
+// registrarFeedback (observabilidade.js).
+// ============================================================
+export async function registrarEventoProativo({ userId, tipo, medicationId = null, doseLogId = null, tentativa = null, horarioAgendado = null }) {
+    try {
+        const { error } = await supabase.from('eventos_proativos').insert({
+            user_id: userId,
+            tipo,
+            medication_id: medicationId,
+            dose_log_id: doseLogId,
+            tentativa,
+            horario_agendado: horarioAgendado
+        });
+        if (error) console.error(`[eventos_proativos] Falha ao registrar evento proativo: ${error.message}`);
+    } catch (e) {
+        console.error(`[eventos_proativos] Exceção ao registrar evento proativo: ${e.message}`);
+    }
+}
+
+// ============================================================
 // CONTEXTO PROATIVO — MH-065
 // Mensagens que a Nami enviou por iniciativa própria (lembrete/follow-up) não existem em
 // agent_logs: scheduler.js e lembrete.js não chamam logAgentInteraction. Esta função

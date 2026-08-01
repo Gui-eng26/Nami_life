@@ -9,7 +9,8 @@ import {
     getAdesaoEstado,
     upsertAdesaoEstado,
     saveConversationState,
-    precisaSaudacao
+    precisaSaudacao,
+    registrarEventoProativo
 } from '../database.js';
 import { registrarEvento } from '../observabilidade.js';
 import { sendTextMessage } from '../whatsapp.js';
@@ -663,6 +664,10 @@ export async function enviarResumoSemanal(user) {
         }
 
         await sendTextMessage(user.phone, texto);
+        await registrarEventoProativo({
+            userId: user.id,
+            tipo: 'resumo_semanal'
+        });
 
         const melhorFaixaNova = (!melhorAnterior || RANKING_FAIXA[faixaNova] > RANKING_FAIXA[melhorAnterior])
             ? faixaNova

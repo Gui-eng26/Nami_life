@@ -6,7 +6,8 @@ import {
     getCaregivers,
     markCaregiverNotified,
     getEstoqueInfoParaAlerta,
-    calcularAlertaEstoque
+    calcularAlertaEstoque,
+    registrarEventoProativo
 } from '../database.js';
 import { buildAlertaEstoqueNaoInformado } from '../templates/estoqueTemplates.js';
 
@@ -109,6 +110,14 @@ export async function handleFollowUp({ doseLog, reminder }) {
             if (zapiMessageId) {
                 await updateDoseLogZapiMessageId(doseLog.id, zapiMessageId);
             }
+            await registrarEventoProativo({
+                userId: reminder.user_id,
+                tipo: 'follow_up',
+                medicationId: doseLog.medication_id,
+                doseLogId: doseLog.id,
+                tentativa,
+                horarioAgendado: doseLog.horario_agendado ? String(doseLog.horario_agendado).substring(0, 5) : null
+            });
 
             console.log(`🔔 Follow-up tentativa ${tentativa} enviado para ${reminder.phone} — ${reminder.med_nome}`);
         } else {
@@ -131,6 +140,12 @@ export async function handleFollowUp({ doseLog, reminder }) {
                         const firstName = reminder.user_name?.split(' ')[0] || 'você';
                         const msg = buildAlertaEstoqueNaoInformado(firstName, estoqueInfo);
                         await sendTextMessage(reminder.phone, msg);
+                        await registrarEventoProativo({
+                            userId: reminder.user_id,
+                            tipo: 'alerta_estoque_nao_informado',
+                            medicationId: doseLog.medication_id,
+                            doseLogId: doseLog.id
+                        });
                         console.log(`📦 Alerta de estoque (nao_informado) enviado para ${reminder.phone} — ${estoqueInfo.medNome}`);
                     }
                 }

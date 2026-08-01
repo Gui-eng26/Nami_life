@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import 'dotenv/config';
 import { getPendingReminders, getPendingFollowUps, createDoseLog,
-    getUsuariosAtivos, updateDoseLogTentativa } from './database.js';
+    getUsuariosAtivos, updateDoseLogTentativa, registrarEventoProativo } from './database.js';
 import { sendTextMessage } from './whatsapp.js';
 import { handleFollowUp } from './agentes/lembrete.js';
 import { enviarResumoSemanal } from './agentes/relatorios.js';
@@ -205,13 +205,21 @@ async function sendGroupedReminder(grupo) {
         // Doses agrupadas NÃO gravam zapi_message_id (fica NULL) — ver briefing MH-032 complemento.
         // A confirmação delas ocorre pelo fluxo [ref:] do principal.js, não pelo fast-path.
         for (const reminder of grupo) {
-            await createDoseLog({
+            const horarioAgendado = String(reminder.horario).substring(0, 5);
+            const doseLog = await createDoseLog({
                 medicationId: reminder.medication_id,
                 scheduledAt: new Date().toISOString(),
                 reminderSent: true,
                 reminderSentAt: new Date().toISOString(),
                 // zapiMessageId omitido de propósito (default null)
-                horarioAgendado: String(reminder.horario).substring(0, 5)
+                horarioAgendado
+            });
+            await registrarEventoProativo({
+                userId: reminder.user_id,
+                tipo: 'lembrete',
+                medicationId: reminder.medication_id,
+                doseLogId: doseLog.id,
+                horarioAgendado
             });
         }
 
@@ -263,6 +271,14 @@ async function handleGroupedFollowUp(grupo) {
         for (const item of grupo) {
             const tentativaItem = (item.tentativas || 1) + 1;
             await updateDoseLogTentativa(item.id, tentativaItem);
+            await registrarEventoProativo({
+                userId: item.user_id,
+                tipo: 'follow_up',
+                medicationId: item.medication_id,
+                doseLogId: item.id,
+                tentativa: tentativaItem,
+                horarioAgendado: item.horario_agendado ? String(item.horario_agendado).substring(0, 5) : null
+            });
         }
 
         const nomes = grupo.map(i => i.med_nome).join(', ');
@@ -310,12 +326,19 @@ async function sendReminder(reminder) {
 
             // Cria dose_log com status 'sem_estoque' para ativar deduplicação do scheduler
             // Sem isso, o stored procedure retorna o mesmo medicamento no próximo ciclo
-            await createDoseLog({
+            const doseLog = await createDoseLog({
                 medicationId: reminder.medication_id,
                 scheduledAt: new Date().toISOString(),
                 reminderSent: true,
                 reminderSentAt: new Date().toISOString(),
                 status: 'sem_estoque',
+                horarioAgendado
+            });
+            await registrarEventoProativo({
+                userId: reminder.user_id,
+                tipo: 'alerta_estoque_zerado',
+                medicationId: reminder.medication_id,
+                doseLogId: doseLog.id,
                 horarioAgendado
             });
 
@@ -333,12 +356,19 @@ async function sendReminder(reminder) {
         const zapiResult = await sendTextMessage(reminder.phone, message);
         const zapiMessageId = zapiResult?.zapiMessageId || null;
 
-        await createDoseLog({
+        const doseLog = await createDoseLog({
             medicationId: reminder.medication_id,
             scheduledAt: new Date().toISOString(),
             reminderSent: true,
             reminderSentAt: new Date().toISOString(),
             zapiMessageId,
+            horarioAgendado
+        });
+        await registrarEventoProativo({
+            userId: reminder.user_id,
+            tipo: 'lembrete',
+            medicationId: reminder.medication_id,
+            doseLogId: doseLog.id,
             horarioAgendado
         });
 
