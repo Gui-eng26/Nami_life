@@ -1,7 +1,7 @@
-# 🌿 NAMI — Contexto do Projeto (v27 — FECHADA: MH-065 — contexto proativo para o
-classificador central: reconstrução a partir de dose_logs (nunca escrita em agent_logs),
-regra de inclusão estado + sequência + rede de segurança, renderização cronológica não
-predominante; validação em produção pendente — 31/07/2026)
+# 🌿 NAMI — Contexto do Projeto (v28 — FECHADA: cadeia BUG-082→085 no fluxo de
+configuração + MH-70/71 reestruturação do contexto proativo (tabela eventos_proativos
+append-only substituindo reconstrução via dose_logs); BUG-086 identificado como
+bloqueador da validação do MH-71 — 01-05/08/2026)
 
 ---
 
@@ -260,6 +260,15 @@ aprendizado de produto que deve sobreviver à exclusão de conta (anonimizado po
 Ponto único de escrita das duas tabelas: `src/observabilidade.js` (`registrarEvento`/
 `registrarFeedback`) — nunca insert direto em outro lugar (princípio 16). Ambas as funções são
 defensivas (try/catch interno, nunca lançam — ver princípio 23).
+
+**eventos_proativos (novo — v28, MH-70)** — registro **append-only** de mensagens que a Nami
+enviou por iniciativa própria (`lembrete`, `follow_up`, `alerta_estoque_zerado`,
+`alerta_estoque_nao_informado`, `resumo_semanal`). Escrita no **instante do envio**, ponto único
+`registrarEventoProativo()` em `database.js`. Semanticamente distinta de `dose_logs` (estado
+mutável da dose) e de `agent_logs` (registro de intenção, escrito antes do envio, princípio 24):
+aqui cada envio gera uma linha própria que **nunca é sobrescrita**. Existe porque reconstruir
+histórico a partir de `dose_logs` perdia os follow-ups intermediários. `user_id` e
+`medication_id` com `ON DELETE CASCADE` (princípio 34).
 
 **intencoes_nao_suportadas** — **descontinuada a partir da v22.** Mantida só como histórico (11
 linhas, última escrita 10/07/2026); nenhum código novo escreve nela. O não-suportado agora vira
@@ -1712,6 +1721,149 @@ Testar só por WhatsApp mostra o desfecho do roteamento, mas não distingue "blo
 certo" de "renderizado errado e o LLM acertou assim mesmo". `getContextoProativoRecente` é
 exportada e pode ser inspecionada por script read-only; a renderização é função pura do objeto.
 
+## Sessão v28 (01-05/08/2026) — Cadeia BUG-082→085 + MH-70/71: contexto proativo reestruturado
+
+### Origem da sessão
+
+Guilherme testou o MH-065 (v27) em produção e encontrou um cenário **pior que antes do fix**:
+com um fluxo de configuração pendente (`Pausar Dipirona`, aberto há 2h30) e quatro mensagens
+proativas da Nami no meio (lembrete + 2 follow-ups + alerta de estoque, todas sobre outro
+medicamento), a mensagem `"Tomei o ômega 3"` — autossuficiente, inequívoca — foi **completamente
+ignorada**: a Nami repetiu palavra por palavra a pergunta de confirmação de pausar.
+
+Investigação separou dois problemas independentes, nenhum deles regressão do MH-065 (que não
+tocou `configuracao.js`):
+
+1. **Escalada ausente** em 3 das 12 etapas do state machine (BUG-082).
+2. **Erro de modelagem** no contexto proativo: `getContextoProativoRecente` reconstruía a partir
+   de `dose_logs`, tabela de estado **mutável** (MH-70/71).
+
+### BUG-082 — escalada ausente em `confirm_acao`, `reativ_confirmar`, `pos_alteracao`
+
+Na v18 (09/07), o modelo de 3 camadas (parser → `isCancelamentoGenuino` → `escalarParaRoteador`)
+foi aplicado a 9 das 12 etapas. As 3 restantes ficaram de fora por já terem uma checagem de
+`isCancelamento()` própria — mas essa checagem nunca cobriu conteúdo genuíno não reconhecido:
+
+- `confirm_acao`: repetia a pergunta indefinidamente, nunca escalava.
+- `reativ_confirmar`: não checava confirmação nenhuma — qualquer coisa que não fosse cancelamento
+  virava "sim" implícito e o fluxo avançava sozinho.
+- `pos_alteracao`: qualquer conteúdo não-cancelamento virava "quer alterar mais um horário".
+
+Confirmado como pré-existente desde antes da v18: precedentes em `agent_logs` de 23/06/2026
+(`"Sim, tomei"` e `"Tomei"` em `confirm_acao` produzindo erro genérico). Corrigido aplicando o
+mesmo padrão das outras 9 etapas. **Validado: 9 casos em produção, 31/07.**
+
+### Cadeia de bugs revelados pela correção (BUG-083, 084, 085)
+
+A restauração da escalada tornou alcançáveis três caminhos de código que nunca tinham sido
+exercitados nessa combinação. Todos **pré-existentes**, nenhum regressão:
+
+- **BUG-083** (`continuarComAcao`): duas extrações independentes rodavam sobre a mesma mensagem —
+  `normalizarHorario` pegando o **primeiro** número (seleção) e `interpretarHorarioLivre` pegando
+  o **último** (destino). Com um número único, ambas colapsavam no mesmo token → confirmação
+  `"mudar de 12:40 para 12:40"`. Correção: só confiar em `novoHorario` como destino quando a
+  mensagem trouxer **dois números distintos**.
+- **BUG-084** (`pos_alteracao`): a mensagem `"12:40"` escalava para o classificador geral
+  (`classificarIntencao`), cujo prompt só tem exemplos **com verbo** — diante da ambiguidade,
+  escolheu `remover_horario`. Correção: a pergunta *"quer alterar algum?"* já embute uma **lista
+  implícita** (os horários restantes, conhecidos com precisão em `context.schedulesAtivos`);
+  reconhecer diretamente com o mesmo casador determinístico antes de escalar.
+- **BUG-085** (dois defeitos): (a) `normalizarHorario` não reconhecia número por extenso nem
+  número solto embutido em frase; (b) **mais grave** — `identif_schedule` reaproveitava
+  `context.novoHorario` de uma tentativa **anterior**, confirmando destino obsoleto.
+  Reproduzido em produção: `"das dez para as onze"` (falha) seguido de `"das 10:00 para as nove"`
+  → confirmou **11:00** (da tentativa anterior), não 09:00. Correção: `identif_schedule` extrai o
+  destino sempre **fresco da mensagem atual**, com a mesma trava de dois números do BUG-083.
+
+Todos validados em produção 01/08. O caminho específico do BUG-083 (`continuarComAcao` alcançado
+diretamente do `idle`) foi validado com teste dedicado, após constatar que os testes anteriores o
+exercitavam apenas por equivalência via `identif_schedule`.
+
+### MH-70 — tabela `eventos_proativos` (Parte B)
+
+**Erro de modelagem identificado:** `getContextoProativoRecente` (MH-065) tentava reconstruir a
+linha do tempo de mensagens proativas a partir de `dose_logs`. Dois defeitos estruturais:
+
+1. `dose_logs` é **estado mutável** — `ultima_tentativa_at` é sobrescrito a cada follow-up, então
+   os follow-ups intermediários se perdiam antes de qualquer leitura acontecer. Não existia
+   "construção incremental do contexto": a função só rodava quando o usuário mandava mensagem, e
+   nesse instante o dado já tinha sido apagado.
+2. O filtro por status da dose (idêntico ao de `temDosePendente`) misturava duas perguntas
+   diferentes: *"esta dose ainda está pendente?"* (operacional) e *"isso apareceu na tela do
+   usuário?"* (conversacional). Uma dose já `nao_informado` continua tendo acontecido.
+
+Solução: tabela **append-only** `eventos_proativos`, escrita no **instante do envio**, com ponto
+único de escrita (`registrarEventoProativo` em `database.js`, defensiva — nunca lança). 7 pontos
+de instrumentação cobrindo 5 tipos: `lembrete`, `follow_up`, `alerta_estoque_zerado`,
+`alerta_estoque_nao_informado`, `resumo_semanal`. Isso fechou também os 3 gaps que a v27 já
+documentava como "fora de cobertura" mais um quarto não mapeado (`scheduler.js` — alerta de
+estoque zerado disparado na hora do lembrete, em vez do lembrete normal).
+
+Notificação a cuidador ficou **deliberadamente de fora**: é mensagem para outro telefone, e o
+contexto proativo é sobre o que o **paciente** viu na própria tela.
+
+**Validado:** os 5 tipos gravando corretamente em produção.
+
+### MH-71 — leitura reescrita (Parte C)
+
+`getContextoProativoRecente` passou a ler de `eventos_proativos`, sem filtro de status, com janela
+de até 6 eventos (número escolhido como ponto de partida pragmático, a calibrar com mais volume —
+mesmo espírito do gap de 30min do Juiz Offline). Retorna array (nunca `null`).
+
+Adicionado **rótulo de tempo determinístico em cada linha**, reativa e proativa
+(`formatarTempoRelativo`): antes desta sessão, **nenhum dos dois blocos** tinha noção de distância
+temporal alguma — o classificador precisava inferir pela posição no texto. Isso resolve o cenário
+levantado por Guilherme: 3 turnos reativos de 2 dias atrás ficam explicitamente marcados como
+"há 2 dias", enquanto eventos proativos recentes ficam "há 5 min".
+
+**Decisão de janela:** os 3 turnos reativos permanecem fixos e independentes (orçamentos
+separados, não janela única) — evita que muitos eventos proativos empurrem turnos reativos reais
+para fora do contexto.
+
+**Não reagrupa mais lembretes combinados** (2 remédios no mesmo horário = 2 linhas em vez de 1) —
+decisão deliberada, a revisar se o volume incomodar.
+
+**NÃO VALIDADO** — ver BUG-086.
+
+### BUG-086 — o bloqueador (identificado no encerramento)
+
+Teste de validação do MH-71 falhou, mas **não por defeito do MH-71: ele nunca foi invocado**.
+
+Linha do tempo reconstruída cruzando `agent_logs` + `eventos_proativos` (exatamente o cruzamento
+que a tabela nova torna possível):
+
+```
+15:54:29  [REATIVO]   "Pausar Cataflam" → Nami pergunta confirmação
+15:56:02  [PROATIVO]  follow-up Ômega 3 (tentativa 2)
+15:57:37  [REATIVO]   "Sim" → configuracao → pausou Cataflam ❌
+```
+
+O `"Sim"` respondia ao follow-up de 1min35s antes, não à pergunta de 3min antes. Mas
+`isConfirmacao("Sim")` é verdadeiro em `confirm_acao` → `executarAcao` roda direto. A escalada do
+BUG-082 só cobre "não reconheci o que você disse"; um token de confirmação **válido** é consumido
+localmente. O `contextoProativo` é buscado e **descartado sem uso**.
+
+**Distinção importante que só ficou clara no fechamento:** `detectarConfirmacaoDose` reconhece
+`'sim'` mas **não** `'s'`. Isso separa completamente dois cenários:
+
+| Mensagem | Estado | Caminho |
+|---|---|---|
+| `"S"` | `idle` | Não bate no fast-path → **chega ao classificador** → caso do MH-65/71 |
+| `"Sim"` | `configurando` | Consumido por `isConfirmacao` → **nunca chega ao classificador** → BUG-086 |
+
+Portanto o MH-71 **não está bloqueado para validação** — precisa do teste certo (`"S"` em `idle`
+após lembrete proativo), não do cenário que foi testado.
+
+### Princípios novos (33 e 34) — ver seção de Princípios de Engenharia
+
+### Lição de processo
+
+Ao investigar a falha do MH-71, o próprio Claude consultou apenas `agent_logs` e não cruzou com
+`eventos_proativos` — cometendo exatamente o erro que a tabela foi criada para corrigir. Guilherme
+apontou: *"Se você não conseguiu ter a visualização cronológica de como a conversa aconteceu, o
+classificador vai acertar de que jeito?"* O cruzamento das duas fontes tornou a causa imediatamente
+visível. **A ferramenta só serve se for usada.**
+
 ## Backlog (BUG/FIX/MH)
 
 A partir de 07/07/2026, o backlog completo vive na tabela `backlog_items`
@@ -1892,6 +2044,28 @@ Não é mais mantido neste arquivo. Consultar via Supabase MCP:
     aqui, o significado de um campo não pode depender de leitura correta de uma construção
     gramatical ambígua. **Corolário:** se dois nomes próprios podem aparecer no mesmo bloco
     (usuário e medicamento), ambos precisam de rótulo — desambiguar um só deixa o outro exposto.
+33. **Lista implícita numa pergunta fechada é resolvida pelo casador determinístico local, nunca
+    pelo classificador geral (v28, BUG-084).** Quando uma etapa faz uma pergunta de sim/não que
+    **embute uma lista** ("você ainda tem lembretes: 09:00, 12:40 — quer alterar algum?"), uma
+    resposta que nomeia diretamente um item dessa lista deve ser reconhecida ali mesmo, com o
+    mesmo casador que a etapa já usa para essa lista, **antes** de qualquer escalada. Motivo: a
+    etapa conhece a lista com precisão (`context.schedulesAtivos`); o classificador geral não a
+    recebe, e decide com menos informação. Caso concreto: `"12:40"` respondendo a "quer alterar
+    algum?" foi classificado como `remover_horario` — o prompt do classificador só tem exemplos
+    **com verbo** ("tirar o das 8h"), e nada cobria "só o número, respondendo a uma pergunta de
+    continuação". **Corolário:** escalar não é sempre a opção mais segura — escalar para uma
+    camada que tem *menos* contexto que a atual é uma perda de informação, não um fallback.
+34. **Toda nova tabela ou escrita que armazene dado de usuário decide sua cobertura de exclusão
+    LGPD no momento da criação (v28).** `CASCADE` quando o dado é puramente operacional e não tem
+    valor após a exclusão da conta (`dose_logs`, `eventos_proativos`); `SET NULL` quando tem valor
+    de aprendizado de produto que deve sobreviver anonimizado (`system_events`, `feedbacks`).
+    Verificar contra `delete_user_account` (MH-020) antes de considerar a tabela pronta — a função
+    só precisa de passos manuais explícitos para FKs com `NO ACTION` (`stock_movements`,
+    `adesao_estado`); todo o resto é resolvido pela cascata do único `DELETE FROM users`. Nunca
+    deixar essa decisão implícita ou para depois. **Dívida conhecida:** o comentário da função
+    `delete_user_account` lista as tabelas cobertas pela cascata e não inclui `eventos_proativos`
+    (cosmético — o `CASCADE` do banco não depende do comentário; corrigir na próxima vez que a
+    função for tocada).
 
 ---
 
