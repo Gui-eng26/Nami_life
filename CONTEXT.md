@@ -2165,3 +2165,9 @@ node src/index.js
 - **Supabase:** banco Brasil (São Paulo). `agent_logs` = histórico conversacional (também usado para saudação condicional, v15). `conversation_state` = estado operacional (sem 's').
 - **Railway:** produção com auto-deploy no git push. Logs exportados em UTC.
 - **Claude Code (VS Code):** implementação via briefings `.md`, sempre com texto literal embutido.
+
+---
+
+## Convenções do Projeto
+
+Identidade visual. Todo relatório e apresentação da Nami segue `docs/GUIDANCE_IDENTIDADE_VISUAL.md`. Documentos `.docx` são gerados por `assets/templates/nami_identidade.py`; apresentações por `assets/templates/nami_slides_template.js`. Cor, fonte e espaçamento têm ponto único de escrita no dicionário `TOKENS` de cada gerador — nenhum documento define esses valores por conta própria. Paleta: laranja `#FC4C02` (marca), `#C43C00` (laranja em texto), marinho `#0F2B46`, e os quatro estados epistêmicos (dado verificado / hipótese / advertência-lacuna / decisão).
