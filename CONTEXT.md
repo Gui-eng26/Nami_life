@@ -1864,6 +1864,80 @@ apontou: *"Se você não conseguiu ter a visualização cronológica de como a c
 classificador vai acertar de que jeito?"* O cruzamento das duas fontes tornou a causa imediatamente
 visível. **A ferramenta só serve se for usada.**
 
+## Sessão v29 (05/08/2026) — Governança de backlog: categoria ACH e Partes (A/B/C)
+
+### Origem da sessão
+
+Guilherme abriu a sessão apontando um padrão: toda sessão termina com a lista de
+BUG/MH maior do que começou. "Achados" de sessão viravam item novo no backlog mesmo
+quando eram desdobramento de um item já existente, gerando títulos/conteúdos
+sobrepostos e confusão sobre origem. O objetivo de MVP leve pro beta estava sendo
+diretamente ameaçado pelo acúmulo.
+
+### Decisão de processo (Guilherme)
+
+1. **Nenhum item novo (BUG, MH ou ACH) entra em `backlog_items` sem autorização
+   EXPLÍCITA de Guilherme** na conversa — candidato encontrado durante investigação é
+   apresentado como candidato, nunca registrado direto.
+2. **Item grande demais para uma sessão → Parte (A, B, C...) do MESMO número**, nunca
+   item novo.
+3. **Nova categoria ACH (achado)** — observação de sessão que não é necessariamente
+   bug fechado nem melhoria definida, com referência ao BUG/MH relacionado quando
+   existir.
+
+### Implementação (schema + `src/backlog.js`)
+
+- Migration `supabase/migrations/20260805000000_ach_e_partes_backlog.sql`: `tipo`
+  passa a aceitar `'ACH'`; coluna `relacionado` (nullable, texto livre); coluna
+  `parte` (`NOT NULL DEFAULT ''` — ver Princípio 35); índice único trocado de
+  `backlog_items_tipo_numero_ativo` `(tipo, numero)` para
+  `backlog_items_tipo_numero_parte_ativo` `(tipo, numero, parte)`.
+- `src/backlog.js`: `registrarItemBacklog` e `atualizarStatusBacklogItem` passam a
+  aceitar `relacionado`/`parte`; `parte` (default `''`) entra no filtro do update —
+  sem isso um update numa Parte B poderia casar com a Parte A.
+- Aplicado e verificado de forma independente (schema no Supabase + `diff` do
+  `src/backlog.js` no GitHub contra o texto do briefing) — commit `68e6ac3`.
+- CONTEXT.md: seção "Backlog" renomeada para `(BUG/FIX/MH/ACH)`, subseção
+  "Governança de backlog" documentando as 3 regras acima, e item 4 do "Ritual de
+  início de sessão" atualizado — commit `2f12565`, também verificado
+  independentemente.
+
+### Princípio novo (35) — ver seção de Princípios de Engenharia
+
+### BUG-86 / BUG-87 — investigação iniciada e pausada por decisão explícita
+
+Comecei a ler `router.js` e `configuracao.js` para entender a causa raiz completa do
+BUG-86 (decisão de escopo em aberto: restringir a `configurando` ou generalizar a
+todos os estados; complicação identificada — `despacharEscalada` reentra com
+`currentState` fixo, o que descartaria o fluxo pendente em vez de retomá-lo).
+Guilherme pausou explicitamente: sessão v29 é só o desenho de governança. **Nenhuma
+conclusão nova sobre a causa raiz, nenhum código alterado.** BUG-86 e BUG-87
+continuam exatamente como estavam no fechamento da v28 — mesma prioridade, mesmo
+status, sem nenhum campo tocado.
+
+### Backlog — nenhuma escrita nesta sessão
+
+Confirmado via `updated_at` em `backlog_items`: nenhum registro foi tocado desde o
+fechamento da v28. Primeira sessão sob a nova governança, e ela já se provou na
+prática — nenhum item novo nasceu sem alguém pedir.
+
+### Lição de processo
+
+Ao desenhar a coluna `parte`, a primeira versão do desenho (nullable) teria reaberto
+silenciosamente a mesma classe de colisão de número que o índice único de
+`backlog_items` foi criado para fechar em 08/07 — porque Postgres trata dois `NULL`
+como não-iguais dentro de um índice único. Isso só apareceu por checar o
+comportamento do Postgres antes de escrever a migration, não por teste posterior.
+Formalizado como Princípio 35.
+
+### Próximos passos
+
+- Investigar causa raiz do BUG-86 (decisão de escopo: restringir a `configurando` ou
+  generalizar) e do BUG-87 (ainda não investigado — pode ser sintoma do mesmo
+  problema, já que ambos giram em torno de "Sim" mal-roteado).
+- Validar o MH-71 com o cenário correto, herdado da v28: resposta curta fora da lista
+  de termos de confirmação, em estado ocioso, logo após um lembrete proativo.
+
 ## Backlog (BUG/FIX/MH/ACH)
 
 A partir de 07/07/2026, o backlog completo vive na tabela `backlog_items`
@@ -2085,6 +2159,14 @@ leve pro beta. A partir da v29:
     `delete_user_account` lista as tabelas cobertas pela cascata e não inclui `eventos_proativos`
     (cosmético — o `CASCADE` do banco não depende do comentário; corrigir na próxima vez que a
     função for tocada).
+
+35. **Coluna usada para diferenciar linhas dentro de um índice único nunca pode ser
+    NULLABLE quando o "sem valor" também precisa de proteção de unicidade (v29).**
+    Postgres trata `NULL` como distinto de qualquer outro `NULL` em índice único —
+    duas linhas com o mesmo `(tipo, numero)` e `parte = NULL` não colidiriam,
+    reabrindo a mesma classe de erro que o índice foi criado para fechar. Um valor
+    sentinela não-nulo (`''` para "sem parte") preserva a proteção original. Aplicado
+    em `backlog_items.parte` (categoria ACH/Partes).
 
 ---
 
