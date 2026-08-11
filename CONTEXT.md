@@ -1864,16 +1864,35 @@ apontou: *"Se você não conseguiu ter a visualização cronológica de como a c
 classificador vai acertar de que jeito?"* O cruzamento das duas fontes tornou a causa imediatamente
 visível. **A ferramenta só serve se for usada.**
 
-## Backlog (BUG/FIX/MH)
+## Backlog (BUG/FIX/MH/ACH)
 
 A partir de 07/07/2026, o backlog completo vive na tabela `backlog_items`
 do Supabase (projeto Nami_Life Brazil, project_id nputymewnwmnhrtpizzs).
 Não é mais mantido neste arquivo. Consultar via Supabase MCP:
 
-  SELECT tipo, numero, titulo, status, prioridade, data_criacao
+  SELECT tipo, numero, titulo, status, prioridade, parte, relacionado, data_criacao
   FROM backlog_items
   WHERE status IN ('aberto', 'em_validacao')
   ORDER BY prioridade, data_criacao;
+
+### Governança de backlog (decisão v29, 05/08/2026)
+
+A lista de BUG/MH crescia mais rápido do que fechava, ameaçando o objetivo de MVP
+leve pro beta. A partir da v29:
+
+- **Nenhum item novo (BUG, MH ou ACH) entra em `backlog_items` sem autorização
+  EXPLÍCITA de Guilherme** na conversa do chat de planejamento — candidato a
+  bug/melhoria encontrado durante investigação é apresentado como candidato, nunca
+  registrado direto.
+- **Item grande demais para uma sessão → Parte (A, B, C...) do MESMO número**, nunca
+  item novo. Coluna `parte` (`text NOT NULL DEFAULT ''`, nunca NULL — ver comentário
+  da migration) distingue as partes; índice único
+  `backlog_items_tipo_numero_parte_ativo` cobre `(tipo, numero, parte)`.
+- **Categoria ACH (achado)** — observação de sessão que não é necessariamente bug
+  fechado nem melhoria definida. Coluna `relacionado` (texto livre, ex: `"MH-071"`)
+  aponta pro BUG/MH relacionado, quando existir; nulo quando solto.
+- Migration: `supabase/migrations/20260805000000_ach_e_partes_backlog.sql`. Racional
+  completo em `briefings/BRIEFING_ACH_PARTES.md`.
 
 ---
 
@@ -2096,9 +2115,11 @@ calculado dinamicamente a partir da data de entrada e da data atual da sessão �
 1. Ler CONTEXT.md via `curl -s "https://raw.githubusercontent.com/Gui-eng26/Nami_life/main/CONTEXT.md"`
 2. Confirmar estado atual com Guilherme antes de começar
 3. Schema do banco: ler supabase/migrations/ no repositório
-4. Antes de atribuir qualquer ID novo de BUG/FIX/MH, consultar `backlog_items` no Supabase
+4. Antes de atribuir qualquer ID novo de BUG/FIX/MH/ACH, consultar `backlog_items` no Supabase
    (não mais `ls briefings/` — essa checagem manual foi substituída pela constraint do banco,
-   que rejeita fisicamente qualquer tentativa de reaproveitar um número ativo).
+   que rejeita fisicamente qualquer tentativa de reaproveitar um número ativo). **A partir da
+   v29, nenhum item novo é registrado sem autorização explícita de Guilherme** — ver
+   "Governança de backlog" na seção Backlog.
 
 ### Ritual de encerramento de sessão
 1. Gerar relatório .docx e apresentar para download (upload manual no Drive)
