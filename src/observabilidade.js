@@ -83,6 +83,10 @@ const DEGRADACOES = {
     'contexto_proativo:query_falhou': {
         severidade: 'media',
         titulo: 'Contexto proativo não pôde ser lido — classificador seguiu sem ele'
+    },
+    'data_nascimento:etapa_ruido_nao_reconhecida': {
+        severidade: 'media',
+        titulo: 'Etapa não reconhecida ao montar mensagem de ruído na coleta de nascimento'
     }
 };
 

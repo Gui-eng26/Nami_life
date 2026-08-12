@@ -117,4 +117,59 @@ check('não-bissexto: 29/02/1990 inválida', () => {
     assert.equal(r.valida, false);
 });
 
+// MH-072 A.1 item 0 — Levenshtein sobre tokens curtos não pode engolir vocabulário
+// funcional do português. Nenhuma das frases abaixo pode devolver mês.
+const FRASES_SEM_MES = [
+    'nossa que chato nao quero mais', 'nao quero mais', 'mas nao sei',
+    'nao sei', 'pode ser', 'sei la',
+    'nem sei', 'ate mais', 'deixa pra la',
+    'prefiro nao dizer', 'tanto faz', 'quero ver'
+];
+for (const frase of FRASES_SEM_MES) {
+    check(`"${frase}" -> NUNCA mês (era o bug do item 0)`, () => {
+        const r = extrairComponenteData(frase, 'mes');
+        assert.notEqual(r.tipo, 'mes');
+    });
+}
+
+// E as variações abaixo de "novembro" continuam funcionando (ganho preservado).
+const VARIACOES_NOVEMBRO = ['novembro', 'Nvembro', 'Novembto', 'Novenbro', 'Novmbro', 'nov', 'Nov'];
+for (const variacao of VARIACOES_NOVEMBRO) {
+    check(`"${variacao}" -> mes:11 (novembro)`, () => {
+        const r = extrairComponenteData(variacao, 'mes');
+        assert.equal(r.tipo, 'mes');
+        assert.equal(r.valor, 11);
+    });
+}
+
+// Cobertura extra pedida na seção 11.1: nome completo, forma normalizada e
+// abreviação de cada mês citado como colisão.
+check('"marco" -> mes:3 (nome completo, sem acento)', () => {
+    assert.deepEqual(extrairComponenteData('marco', 'mes'), { tipo: 'mes', valor: 3, candidatos: null });
+});
+check('"março" -> mes:3', () => {
+    assert.deepEqual(extrairComponenteData('março', 'mes'), { tipo: 'mes', valor: 3, candidatos: null });
+});
+check('"mar" (abreviação exata) -> mes:3', () => {
+    assert.deepEqual(extrairComponenteData('mar', 'mes'), { tipo: 'mes', valor: 3, candidatos: null });
+});
+check('"maio" -> mes:5', () => {
+    assert.deepEqual(extrairComponenteData('maio', 'mes'), { tipo: 'mes', valor: 5, candidatos: null });
+});
+check('"mai" (abreviação exata) -> mes:5', () => {
+    assert.deepEqual(extrairComponenteData('mai', 'mes'), { tipo: 'mes', valor: 5, candidatos: null });
+});
+check('"setembro" -> mes:9', () => {
+    assert.deepEqual(extrairComponenteData('setembro', 'mes'), { tipo: 'mes', valor: 9, candidatos: null });
+});
+check('"set" (abreviação exata) -> mes:9', () => {
+    assert.deepEqual(extrairComponenteData('set', 'mes'), { tipo: 'mes', valor: 9, candidatos: null });
+});
+check('"dezembro" -> mes:12', () => {
+    assert.deepEqual(extrairComponenteData('dezembro', 'mes'), { tipo: 'mes', valor: 12, candidatos: null });
+});
+check('"dez" (abreviação exata) -> mes:12', () => {
+    assert.deepEqual(extrairComponenteData('dez', 'mes'), { tipo: 'mes', valor: 12, candidatos: null });
+});
+
 console.log(`\n${ok} verificações passaram.`);

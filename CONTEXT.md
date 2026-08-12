@@ -96,7 +96,7 @@ Nami_life/
 │   ├── prompts.js               → System prompt do agente_principal
 │   ├── nlp_helpers.js           → isCancelamento (v18: regex apertado — "para" solto removido, exige "para de/com"/"parar"; vocabulário ampliado), encontrarMedicamento (agora também exportada como normalizar) — compartilhados entre agentes (evita duplicação, lição do BUG-036)
 │   ├── dataReferencia.js        → NOVO (v25): resolução determinística de data. O LLM devolve a EXPRESSÃO ("ontem", "domingo", "19/07"); o cálculo da data real acontece só aqui. extrairExpressaoData() (texto-primeiro, princípio 17) · resolverDataReferencia() · validarJanela() (30 dias) · diasAtras() · rotularData() · janelaDiaBRT() (offset fixo -03:00; Brasil sem DST desde 2019 — único arquivo a revisar se isso mudar)
-│   ├── dataNascimento.js        → NOVO (v30, MH-072 Parte A): extração/validação determinística de data de nascimento, sem LLM. extrairComponenteData() reconhece dia/mês/ano/data completa a partir de dígitos, número por extenso e nome de mês (Levenshtein <=1 só contra nomes de mês, nunca contra números); ano de 2 dígitos nunca é inferido (sempre indeterminado). montarDataNascimento() valida calendário + idade 0-110, campoARefazer é sempre 'dia' quando inválida. Módulo puro, sem I/O, mesmo padrão de dataReferencia.js — importa hojeBRT() de lá
+│   ├── dataNascimento.js        → NOVO (v30, MH-072 Parte A): extração/validação determinística de data de nascimento, sem LLM. extrairComponenteData() reconhece dia/mês/ano/data completa a partir de dígitos, número por extenso e nome de mês (Levenshtein <=1 só contra nomes de mês, nunca contra números); ano de 2 dígitos nunca é inferido (sempre indeterminado). montarDataNascimento() valida calendário + idade 0-110, campoARefazer é sempre 'dia' quando inválida. Módulo puro, sem I/O, mesmo padrão de dataReferencia.js — importa hojeBRT() de lá. v30 (MH-072 A.1, item 0 — CRÍTICO, corrupção silenciosa de dado): extrairMes() tolerava Levenshtein <=1 também contra MESES_ABREV (3 chars) e a partir de tok.length>=3 — "mais"/"mas"/"sei"/"ser" colidiam com maio/março/setembro. Corrigido: tolerância só contra MESES (nomes completos), piso de 5 caracteres no token (princípio 36). Regressão coberta em scripts/verificar_dataNascimento.js
 │   ├── estadoPosOnboarding.js   → NOVO (v30, MH-072 Parte A): definirEstadoPosOnboarding() — decisão adding_med vs. post_onboarding extraída de recepcionista.js (era o querCadastrar inline no bloco if (lgpdAccepted)). Chamador único agora é data_nascimento.js, ao fechar a coleta (com dado gravado ou por recusa). Alvo declarado da Parte B (princípio 14 — lista de palavras-chave, mesma família de pareceNome())
 │   ├── templates/
 │   │   ├── adesaoTemplates.js  → NOVO (v15): templates 100% determinísticos de adesão/progresso — espinha semanal (16) + mensal (12) + blocos aditivos (motivo/turno/tendência/marco) + progresso de tratamento (3 fases + estoque) + fluxo de período
@@ -104,7 +104,7 @@ Nami_life/
 │   │   └── balancoTemplates.js → NOVO (v25): núcleo factual determinístico do balanco_do_dia. montarBlocoFactual() (lista de doses, renderizada em código e inserida LITERALMENTE na mensagem) · montarCabecalhoData() (a data resolvida precisa de lugar determinístico porque o LLM é proibido de citá-la) · resumirSituacao() (contadores + cenário) · molduraPadrao() (fallback quando a chamada de moldura ao LLM falha)
 │   └── agentes/
 │       ├── recepcionista.js    → Onboarding de novos usuários (v3). v30 (MH-072 Parte A): ao aceitar a LGPD, não decide mais adding_med/post_onboarding — transiciona sempre para coletando_nascimento (etapa nasc_dia), com ponte no mesmo turno perguntando o dia de nascimento (evita 2 mensagens seguidas da Nami). Textos de LGPD passam a citar "nome, telefone e data de nascimento". pareceNome() intocado (alvo da Parte B)
-│       ├── data_nascimento.js  → NOVO (v30, MH-072 Parte A): máquina de turno do estado coletando_nascimento. Fluxo/etapa/validação 100% determinísticos via dataNascimento.js; LLM só redige o texto de cada turno e classifica indeterminado em recusa|duvida|nova_intencao|ruido (único outro uso de LLM do arquivo). nova_intencao devolve {escalarParaRoteador:true}, mesmo contrato de configuracao.js. 3+ tentativas indeterminadas -> oferece pular espontaneamente (saída de emergência, nunca trava o usuário). Fecha o fluxo via definirEstadoPosOnboarding()
+│       ├── data_nascimento.js  → NOVO (v30, MH-072 Parte A): máquina de turno do estado coletando_nascimento. Fluxo/etapa/validação 100% determinísticos via dataNascimento.js; LLM só redige o texto de cada turno e classifica indeterminado em recusa|duvida|nova_intencao|ruido (único outro uso de LLM do arquivo). nova_intencao devolve {escalarParaRoteador:true}, mesmo contrato de configuracao.js. Fecha o fluxo via definirEstadoPosOnboarding(). v30 (MH-072 A.1, pós-validação em produção — 12 cenários ok, 1 reprovado, 2 com ressalva): buildSystemPrompt() ganha bloco ESTADO ATUAL (camposPreenchidos/campoPendente/valorAceito/valorRejeitado) injetado em toda etapa via prompt base, junto da proibição global de insistir/negociar (princípio 38) — antes só nasc_recusa proibia, e a LLM inventava tom conciliatório sozinha em outros templates. classificarIndeterminado() ganha categorias confirmacao/negacao quando etapa===nasc_confirmacao (um typo em cima de "sim" caía em ruido e reabria o fluxo do zero); negacao entra em etapa nova nasc_negacao, que reabre SÓ o campo indicado. nasc_ruido ganha ramo dedicado pra nasc_confirmacao (relê a data, nunca reabre campo) e removeu o fallback silencioso `|| 'dia'` (agora loga via degradar(), catálogo `data_nascimento:etapa_ruido_nao_reconhecida` em observabilidade.js). 3ª tentativa de ruído agora PULA automaticamente (nasc_limite_tentativas) em vez de oferecer — decisão de produto, não bug (princípio 37 documenta o invariante do contador que não mudou)
 │       ├── principal.js         → Conversa geral + confirmação + ciclo de vida da dose + UPDATE_STOCK (MH-042); perdeu o bloco ad-hoc de progresso de tratamento (v15, origem do BUG-055); calcularRotuloDia() + âncora "Agora é..." no context (v17, BUG-059)
 │       ├── cadastro.js          → Cadastro (cálculo determinístico + MH-038 duplicata no início)
 │       ├── lembrete.js          → Follow-up espaçado (30min/1h/30min)
@@ -2171,6 +2171,33 @@ leve pro beta. A partir da v29:
     reabrindo a mesma classe de erro que o índice foi criado para fechar. Um valor
     sentinela não-nulo (`''` para "sem parte") preserva a proteção original. Aplicado
     em `backlog_items.parte` (categoria ACH/Partes).
+
+36. **Tolerância a erro de digitação exige comprimento mínimo de token (v30, MH-072 A.1
+    item 0).** Distância de edição (Levenshtein) sobre tokens curtos (≤ 4 caracteres)
+    engole vocabulário funcional da língua e transforma frases comuns em dados válidos
+    — "mais" virou "maio" por distância 1 contra o nome do mês. Quanto menor o token,
+    menor deve ser a janela; em vocabulários de 3 letras (abreviações), a janela correta
+    é zero — tolerância só contra nomes completos, nunca contra abreviações. Aplicado em
+    `extrairMes()` (`dataNascimento.js`), piso de 5 caracteres no token.
+
+37. **Contador de tentativas conta exclusivamente o sintoma que o esgotamento resolve,
+    nunca declaração explícita do usuário (v30, MH-072 A.1 item 7).** Em
+    `data_nascimento.js`, `tentativas_indeterminado` incrementa SÓ no ramo `ruido`;
+    `recusa`, `duvida` e `nova_intencao` retornam antes e nunca tocam o contador. Uma
+    pessoa que diz claramente que não quer informar um dado não está errando, está
+    decidindo — misturar os dois esgotaria a paciência de alguém que já foi claro.
+    Invariante a preservar numa refatoração futura que tente "unificar" os ramos.
+
+38. **Prompt de geração livre precisa receber o estado determinístico explicitamente —
+    a LLM nunca propõe valor que o sistema não possui (v30, MH-072 A.1 itens 1 e 4,
+    mesma raiz do princípio 24).** Não basta o JS decidir etapa/avanço/validade
+    corretamente; se o prompt de redação não recebe o que foi aceito, o que foi
+    rejeitado e por quê, a LLM lê o histórico bruto e improvisa — tratando uma resposta
+    válida como erro, ou propondo um valor (ex: "1989" a partir de um "89" rejeitado)
+    que nunca foi gravado em lugar nenhum. Aplicado em `buildSystemPrompt()`
+    (`data_nascimento.js`): bloco `ESTADO ATUAL` com `camposPreenchidos`/
+    `campoPendente`/`valorAceito`/`valorRejeitado`, injetado em toda etapa via o prompt
+    base, com regras obrigatórias que proíbem propor fora desse estado.
 
 ---
 

@@ -75,15 +75,16 @@ function extrairMes(norm) {
     for (const tok of tokens) {
         if (MESES_ABREV[tok] !== undefined) return MESES_ABREV[tok];
     }
-    // Tolerância a erro de digitação: distância de Levenshtein <= 1, só contra
-    // nomes/abreviações de mês, nunca contra números (princípio explícito do briefing).
+    // Tolerância a erro de digitação: distância de Levenshtein <= 1, só contra NOMES
+    // COMPLETOS de mês, nunca contra abreviações (3 chars) nem contra números
+    // (princípio explícito do briefing, MH-072 A.1 item 0). Piso de 5 caracteres no
+    // token: "maio" (4) é o nome completo mais curto, e distância 1 sobre ele ainda
+    // alcança "mais" — abaixo de 5, a janela de erro de 1 colide com vocabulário
+    // funcional do português ("mais"->maio, "mas"->março, "sei"/"ser"->setembro).
     for (const tok of tokens) {
-        if (tok.length < 3) continue;
+        if (tok.length < 5) continue;
         for (const [nome, num] of Object.entries(MESES)) {
             if (levenshtein(tok, nome) <= 1) return num;
-        }
-        for (const [abrev, num] of Object.entries(MESES_ABREV)) {
-            if (levenshtein(tok, abrev) <= 1) return num;
         }
     }
     return null;

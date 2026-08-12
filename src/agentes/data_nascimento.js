@@ -1,11 +1,15 @@
 // ============================================================
-// COLETA DE DATA DE NASCIMENTO NO ONBOARDING (MH-072 Parte A)
+// COLETA DE DATA DE NASCIMENTO NO ONBOARDING (MH-072 Parte A, correções MH-072 A.1)
 // Máquina de turno determinística: quem decide etapa, avanço, correção e
 // validade é sempre o JS (extrairComponenteData/montarDataNascimento, em
 // ../dataNascimento.js). A LLM entra em dois papéis, isolados um do outro:
-// 1) redigir o texto de cada turno, com o tom da Nami (nunca decide fluxo);
+// 1) redigir o texto de cada turno, com o tom da Nami (nunca decide fluxo) —
+//    sempre recebendo um bloco de ESTADO explícito (campos confirmados, campo
+//    pendente, o que acabou de ser aceito/rejeitado), pra nunca improvisar em
+//    cima do histórico bruto (MH-072 A.1 item 1);
 // 2) classificar uma resposta 'indeterminado' em recusa|duvida|nova_intencao|
-//    ruido (única outra chamada de LLM do arquivo).
+//    ruido — e, quando a etapa é nasc_confirmacao, também confirmacao|negacao
+//    (MH-072 A.1 item 4) — única outra chamada de LLM do arquivo.
 // ============================================================
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -19,6 +23,7 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const MAX_TENTATIVAS_INDETERMINADO = 3;
 const CAMPO_ESPERADO_POR_ETAPA = { nasc_dia: 'dia', nasc_mes: 'mes', nasc_ano: 'ano' };
+const CAMPO_LABEL_POR_ETAPA = { nasc_dia: 'dia', nasc_mes: 'mês', nasc_ano: 'ano', nasc_confirmacao: 'confirmação' };
 
 function firstNameOf(user) {
     return user.name ? user.name.split(' ')[0] : 'você';
@@ -49,17 +54,45 @@ function proximaEtapaFaltante(context) {
     return 'nasc_confirmacao';
 }
 
+// Puramente informativo (MH-072 A.1 item 1): identifica um ano de 2 dígitos que
+// extrairComponenteData já descartou por regra (nunca infere século — "89" pode ser
+// 1889, 1989 ou 2089). Serve só pra avisar a LLM do que foi rejeitado e por quê; a
+// decisão de fluxo já foi tomada pelo extrator, isso não reabre decisão nenhuma.
+function detectarAnoDoisDigitosRejeitado(message) {
+    const norm = (message || '').toLowerCase();
+    if (/\b\d{3,4}\b/.test(norm)) return null;
+    const m = norm.match(/\b(\d{2})\b/);
+    return m ? m[1] : null;
+}
+
+// Estado determinístico do preenchimento — mesma leitura que o JS usa pra decidir
+// fluxo, exposta pra LLM só redigir em cima dela (nunca inferir do histórico).
+function estadoContexto(context, etapa) {
+    const camposPreenchidos = {};
+    if (context.dia !== null && context.dia !== undefined) camposPreenchidos.dia = context.dia;
+    if (context.mes !== null && context.mes !== undefined) camposPreenchidos.mes = context.mes;
+    if (context.ano !== null && context.ano !== undefined) camposPreenchidos.ano = context.ano;
+    return { camposPreenchidos, campoPendente: CAMPO_LABEL_POR_ETAPA[etapa] || null };
+}
+
 // ============================================================
-// CLASSIFICADOR DE `indeterminado` (seção 6.4 do briefing) — só roda quando o
-// extrator determinístico não reconheceu nenhum componente de data.
+// CLASSIFICADOR DE `indeterminado` — só roda quando o extrator determinístico não
+// reconheceu nenhum componente de data. Na etapa nasc_confirmacao, o vocabulário
+// ganha confirmacao/negacao (MH-072 A.1 item 4) — sem isso, um typo em cima de "sim"
+// (ex: "Issi") caía em ruido e reabria o fluxo do zero.
 // ============================================================
-async function classificarIndeterminado({ message, historicoConversa }) {
+async function classificarIndeterminado({ message, historicoConversa, etapa }) {
     const historicoTexto = formatarHistoricoConversa(historicoConversa);
+    const naConfirmacao = etapa === 'nasc_confirmacao';
+
+    const categoriaConfirmacao = naConfirmacao ? `
+- confirmacao: o usuário está confirmando que a data lida de volta está certa, mesmo com erro de digitação ou de forma indireta. Ex: "Issi", "isso ai", "eh isso mesmo", "ta certo", "aham".
+- negacao: o usuário está dizendo que a data lida de volta está ERRADA, sem dizer qual campo. Ex: "não, tá errado", "não é essa data", "errado".` : '';
 
     const systemPrompt = `Você é um classificador para a etapa de coleta de data de nascimento de um assistente de saúde via WhatsApp (a Nami).
 
-A mensagem do usuário não foi reconhecida como um componente de data (dia, mês ou ano). Classifique-a em UMA destas categorias:
-
+A mensagem do usuário não foi reconhecida ${naConfirmacao ? 'como confirmação/negação explícita da data que acabou de ser lida de volta pra ele' : 'como um componente de data (dia, mês ou ano)'}. Classifique-a em UMA destas categorias:
+${categoriaConfirmacao}
 - recusa: o usuário não quer informar a data de nascimento, está incomodado com a pergunta, ou pede para pular/parar. Ex: "não quero dizer", "prefiro não falar", "chato isso", "não quero mais".
 - duvida: o usuário pergunta o motivo da pergunta, questiona a necessidade, sem recusar diretamente. Ex: "pra que você precisa disso?", "por que isso importa?", "vocês vão usar pra quê?".
 - nova_intencao: o usuário muda de assunto — quer fazer outra coisa (cadastrar remédio, tirar outra dúvida, etc.) em vez de responder. Ex: "na verdade quero cadastrar meu remédio agora", "esquece, me ajuda com outra coisa".
@@ -70,7 +103,7 @@ ${historicoTexto}
 
 MENSAGEM ATUAL: "${message}"
 
-Responda APENAS com uma palavra: recusa, duvida, nova_intencao ou ruido. Sem pontuação, sem explicação.`;
+Responda APENAS com uma palavra: ${naConfirmacao ? 'confirmacao, negacao, ' : ''}recusa, duvida, nova_intencao ou ruido. Sem pontuação, sem explicação.`;
 
     try {
         const resposta = await anthropic.messages.create({
@@ -80,7 +113,9 @@ Responda APENAS com uma palavra: recusa, duvida, nova_intencao ou ruido. Sem pon
             messages: [{ role: 'user', content: message }]
         });
         const texto = (resposta.content[0]?.text || '').toLowerCase().trim();
-        const validos = ['recusa', 'duvida', 'nova_intencao', 'ruido'];
+        const validos = naConfirmacao
+            ? ['confirmacao', 'negacao', 'recusa', 'duvida', 'nova_intencao', 'ruido']
+            : ['recusa', 'duvida', 'nova_intencao', 'ruido'];
         const achado = validos.find(v => texto.includes(v));
         console.log(`🎂 [DATA-NASCIMENTO] Classificador indeterminado: "${message}" -> ${achado || 'ruido (fallback)'}`);
         return achado || 'ruido';
@@ -99,9 +134,26 @@ Responda APENAS com uma palavra: recusa, duvida, nova_intencao ou ruido. Sem pon
 // ============================================================
 // SYSTEM PROMPT — redige o texto do turno. Nunca decide etapa/validade.
 // ============================================================
-function buildSystemPrompt({ etapa, context, user, motivo, correcaoAplicada, dataFormatada }) {
+function buildSystemPrompt({ etapa, context, user, motivo, correcaoAplicada, dataFormatada, valorAceito, valorRejeitado, campo }) {
     const nome = firstNameOf(user);
     const mensagemInicial = context.mensagem_inicial || '';
+    const { camposPreenchidos, campoPendente } = estadoContexto(context, etapa);
+
+    // Bloco de estado (MH-072 A.1 itens 1+2) — injetado em TODA etapa via `base`, pra
+    // fechar a divergência entre o que o sistema sabe e o que a LLM diz (princípio 24).
+    const estadoTexto = `
+
+ESTADO ATUAL (única fonte de verdade — nunca contradiga isto, nunca invente valor fora daqui):
+- Campos já confirmados: ${Object.keys(camposPreenchidos).length ? JSON.stringify(camposPreenchidos) : 'nenhum ainda'}
+- Campo pendente agora: ${campoPendente || 'nenhum'}${valorAceito ? `
+- Acabou de aceitar nesse turno: ${valorAceito.campo} = ${valorAceito.valor}. Reconheça isso antes de pedir o próximo campo — NUNCA trate como tentativa errada.` : ''}${valorRejeitado ? `
+- Valor rejeitado nesse turno: "${valorRejeitado.valor}" (motivo: ${valorRejeitado.motivo}). NUNCA proponha, sugira ou confirme esse valor — peça de novo.` : ''}
+
+Regras obrigatórias, válidas em TODA etapa deste fluxo:
+1. Nunca proponha, sugira ou confirme um valor que não esteja em "Campos já confirmados" acima. Se a resposta do usuário for inválida, peça de novo — não adivinhe o que ele quis dizer.
+2. Nunca trate como erro do usuário um valor que acabou de ser aceito (ver "Acabou de aceitar" acima, quando presente).
+3. O exemplo de formato na pergunta deve corresponder exatamente ao campo pendente — nunca misture com exemplo de data completa (DD/MM/AAAA) quando só um campo isolado foi pedido.
+4. Nunca insista, negocie ou minimize desconforto do usuário. Proibido: "só mais uma", "é rapidinho", "prometo que é a última", "é só uma informação", "não vai demorar", ou qualquer promessa de brevidade. Se a pessoa demonstrar desconforto, acolha e ofereça a saída — nunca tente convencer.`;
 
     const base = `Você é a Nami, uma assistente de saúde pessoal que ajuda pessoas a não esquecerem seus medicamentos de uso contínuo.
 
@@ -109,7 +161,7 @@ Você está coletando a data de nascimento de ${nome} durante o onboarding, logo
 
 Seu tom é: acolhedor, caloroso, humano, responsável e confiável. Use linguagem natural e próxima, não robótica. Use emojis com moderação.
 
-Responda APENAS com a mensagem que deve ser enviada ao usuário. Sem explicações, sem prefixos, sem aspas.`;
+Responda APENAS com a mensagem que deve ser enviada ao usuário. Sem explicações, sem prefixos, sem aspas.${estadoTexto}`;
 
     const correcaoTexto = correcaoAplicada
         ? `\n\nO usuário acabou de CORRIGIR o campo "${correcaoAplicada.campo}" para ${correcaoAplicada.valor}. Comece reconhecendo a correção brevemente (ex: "Corrigi para ...!"), sem se desculpar de forma exagerada.`
@@ -175,14 +227,41 @@ ${nome} perguntou por que a Nami precisa da data de nascimento. Explique em UMA 
 Exemplo: "É só pra gente entender a idade média de quem usa a Nami, de forma bem geral 🌿 Mas se preferir não informar, sem problema nenhum — é só me dizer. Em que dia você nasceu?"`;
     }
 
-    if (etapa === 'nasc_ruido') {
-        const campo = { nasc_dia: 'dia', nasc_mes: 'mês', nasc_ano: 'ano' }[context.etapa] || 'dia';
-        const ofertaSaida = motivo === 'oferecer_saida'
-            ? ' Ofereça espontaneamente pular essa etapa, já que já tentamos algumas vezes sem sucesso — deixe claro que não tem problema nenhum pular.'
-            : '';
+    if (etapa === 'nasc_negacao') {
+        if (motivo === 'repetir') {
+            return `${base}
+
+${nome} ainda não deixou claro qual parte da data está errada. Pergunte de novo, de forma simples, qual campo: dia, mês ou ano.
+Exemplo: "Não entendi bem — é o dia, o mês ou o ano que está errado?"`;
+        }
         return `${base}
 
-A última resposta de ${nome} não deu pra entender como resposta à pergunta sobre a data de nascimento (campo pendente: ${campo}). Repita a pergunta dessa etapa com o exemplo de formato, de forma gentil, sem soar repetitiva ou impaciente.${ofertaSaida}`;
+${nome} disse que a data lida de volta está errada, mas não especificou qual parte. Pergunte de forma simples e curta qual campo está errado: dia, mês ou ano.
+Exemplo: "Poxa, desculpa! O que ficou errado — o dia, o mês ou o ano?"`;
+    }
+
+    if (etapa === 'nasc_ruido') {
+        if (motivo === 'confirmacao_nao_entendida') {
+            return `${base}
+
+A última resposta de ${nome} não deu pra entender como confirmação da data. A data montada é EXATAMENTE: ${dataFormatada}. Releia essa data pra ${nome} de forma natural e peça confirmação de novo, sem reabrir nenhum campo.
+Exemplo: "Não entendi direito — só confirmando: você nasceu em ${dataFormatada}?"`;
+        }
+        return `${base}
+
+A última resposta de ${nome} não deu pra entender como resposta à pergunta sobre a data de nascimento (campo pendente: ${campo}). Repita a pergunta dessa etapa com o exemplo de formato, de forma gentil, sem soar repetitiva ou impaciente.`;
+    }
+
+    if (etapa === 'nasc_limite_tentativas') {
+        return `${base}
+
+Não foi possível entender a data de nascimento de ${nome} depois de algumas tentativas. Informe de forma leve que vamos seguir sem essa informação por agora — sem cobrar, sem culpar ${nome} — e retome com naturalidade o que ${nome} pediu originalmente antes do onboarding.
+
+MENSAGEM ORIGINAL DE ${nome}: "${mensagemInicial}"
+
+Se a mensagem original indicar pedido de cadastro de remédio, siga para isso, citando o remédio mencionado. Caso contrário, pergunte por onde ${nome} quer começar.
+Exemplo (quando a msg original foi "quero cadastrar losartana"):
+"Sem problemas, ${nome}! Vamos seguir sem essa informação por agora 🌿 Voltando ao que você me pediu — cadastrar a losartana. Qual a dosagem?"`;
     }
 
     if (etapa === 'nasc_fechamento') {
@@ -212,12 +291,16 @@ async function gerarTexto(promptArgs) {
 }
 
 // ============================================================
-// FECHAMENTO DO FLUXO (seção 7) — reproduz a decisão de roteamento que antes
-// vivia em recepcionista.js, agora com chamador único (definirEstadoPosOnboarding).
+// FECHAMENTO DO FLUXO — reproduz a decisão de roteamento que antes vivia em
+// recepcionista.js, agora com chamador único (definirEstadoPosOnboarding).
+// motivo distingue o TOM do fechamento: 'recusa' (usuário declarou que não quer)
+// vs. 'limite_tentativas' (MH-072 A.1 item 6 — 3 tentativas de ruído, a Nami pula
+// por conta própria, sem perguntar, sem tratar como recusa do usuário).
 // ============================================================
 
-async function fecharSemDado({ user, context, message }) {
-    const resposta = await gerarTexto({ etapa: 'nasc_recusa', context, user, message });
+async function fecharSemDado({ user, context, message, motivo = 'recusa' }) {
+    const etapa = motivo === 'limite_tentativas' ? 'nasc_limite_tentativas' : 'nasc_recusa';
+    const resposta = await gerarTexto({ etapa, context, user, message });
     await definirEstadoPosOnboarding(user, context.mensagem_inicial || '');
     return resposta;
 }
@@ -287,14 +370,14 @@ async function aplicarPreenchimento({ user, message, context, etapaAtual, campo,
         const proxima = proximaEtapaFaltante(novoContext);
         novoContext.etapa = proxima;
         await saveConversationState(user.id, { state: 'coletando_nascimento', context: novoContext });
-        return await gerarTexto({ etapa: proxima, context: novoContext, user, message, motivo: 'avanco' });
+        return await gerarTexto({ etapa: proxima, context: novoContext, user, message, motivo: 'avanco', valorAceito: { campo, valor } });
     }
 
     // Campo "futuro" (ainda não previsto pela etapa atual): preenche, permanece
-    // na etapa atual e repete a pergunta (seção 6.2 do briefing).
+    // na etapa atual e repete a pergunta (seção 6.2 do briefing original da Parte A).
     novoContext.etapa = etapaAtual;
     await saveConversationState(user.id, { state: 'coletando_nascimento', context: novoContext });
-    return await gerarTexto({ etapa: etapaAtual, context: novoContext, user, message, motivo: 'campo_futuro' });
+    return await gerarTexto({ etapa: etapaAtual, context: novoContext, user, message, motivo: 'campo_futuro', valorAceito: { campo, valor } });
 }
 
 // ============================================================
@@ -305,7 +388,7 @@ export async function handleDataNascimento({ user, message, state, historicoConv
     const context = state?.context || {};
     const etapa = context.etapa || 'nasc_dia';
 
-    // Saída de emergência já oferecida (3+ tentativas indeterminadas) — aceite explícito.
+    // Saída de emergência já oferecida (dúvida com oferta ativa) — aceite explícito.
     if (context.oferta_pular_ativa && respostaAfirmativaSimples(message)) {
         console.log(`🎂 [DATA-NASCIMENTO] Saída de emergência aceita — ${user.phone}`);
         return await fecharSemDado({ user, context, message });
@@ -336,11 +419,43 @@ export async function handleDataNascimento({ user, message, state, historicoConv
         // "dia") — segue para extração normal da mensagem, sem ficar preso no impasse.
     }
 
+    // Resolução da pergunta "o que está errado?" depois de uma negação em
+    // nasc_confirmacao (MH-072 A.1 item 4) — reabre SÓ o campo indicado, nunca os três.
+    if (etapa === 'nasc_negacao') {
+        const msgNorm = (message || '').toLowerCase();
+        const campoErrado = /\bdia\b/.test(msgNorm) ? 'dia'
+            : /\bm[eê]s\b/.test(msgNorm) ? 'mes'
+            : /\bano\b/.test(msgNorm) ? 'ano'
+            : null;
+
+        if (campoErrado) {
+            const proximaEtapa = { dia: 'nasc_dia', mes: 'nasc_mes', ano: 'nasc_ano' }[campoErrado];
+            const novoContext = { ...context, [campoErrado]: null, etapa: proximaEtapa, tentativas_indeterminado: 0 };
+            await saveConversationState(user.id, { state: 'coletando_nascimento', context: novoContext });
+            return await gerarTexto({ etapa: proximaEtapa, context: novoContext, user, message });
+        }
+
+        console.log(`🎂 [DATA-NASCIMENTO] Resposta não esclareceu qual campo está errado — repetindo — ${user.phone}`);
+        return await gerarTexto({ etapa: 'nasc_negacao', context, user, message, motivo: 'repetir' });
+    }
+
     const campoEsperado = CAMPO_ESPERADO_POR_ETAPA[etapa] || 'dia';
     const extracao = extrairComponenteData(message, campoEsperado);
 
     if (extracao.tipo === 'indeterminado') {
-        const classificacao = await classificarIndeterminado({ message, historicoConversa });
+        const classificacao = await classificarIndeterminado({ message, historicoConversa, etapa });
+
+        if (classificacao === 'confirmacao') {
+            console.log(`🎂 [DATA-NASCIMENTO] Confirmação reconhecida via classificador — ${user.phone}`);
+            return await gravarEFechar({ user, context, message });
+        }
+
+        if (classificacao === 'negacao') {
+            console.log(`🎂 [DATA-NASCIMENTO] Negação na confirmação — perguntando qual campo está errado — ${user.phone}`);
+            const novoContext = { ...context, etapa: 'nasc_negacao', tentativas_indeterminado: 0 };
+            await saveConversationState(user.id, { state: 'coletando_nascimento', context: novoContext });
+            return await gerarTexto({ etapa: 'nasc_negacao', context: novoContext, user, message });
+        }
 
         if (classificacao === 'recusa') {
             console.log(`🎂 [DATA-NASCIMENTO] Recusa — ${user.phone}`);
@@ -354,19 +469,64 @@ export async function handleDataNascimento({ user, message, state, historicoConv
         }
 
         if (classificacao === 'duvida') {
-            const novoContext = { ...context };
+            // Dúvida sempre oferece a saída explícita nessa mesma mensagem (item 5) —
+            // reafirmação de recusa no turno seguinte fecha por fecharSemDado, pelo
+            // mesmo mecanismo de oferta_pular_ativa usado pela saída de emergência.
+            const novoContext = { ...context, oferta_pular_ativa: true };
             await saveConversationState(user.id, { state: 'coletando_nascimento', context: novoContext });
             return await gerarTexto({ etapa: 'nasc_duvida', context: novoContext, user, message, motivo: 'duvida' });
         }
 
-        // ruido
+        // ruido — o ÚNICO ramo que consome tentativa. Recusa, dúvida e nova_intencao
+        // retornam antes e nunca tocam o contador: uma pessoa que diz claramente que
+        // não quer informar não está errando, está decidindo (invariante, MH-072 A.1
+        // item 7 — não "unificar" este ramo com os anteriores numa refatoração futura).
         const tentativas = (context.tentativas_indeterminado || 0) + 1;
-        const ofereceSaida = tentativas >= MAX_TENTATIVAS_INDETERMINADO;
-        const novoContext = { ...context, tentativas_indeterminado: tentativas, oferta_pular_ativa: ofereceSaida };
+
+        // Item 6: ao atingir o limite, PULA automaticamente — não oferece mais (decisão
+        // de produto: perguntar "quer pular?" depois de 3 tentativas só empurra fricção).
+        if (tentativas >= MAX_TENTATIVAS_INDETERMINADO) {
+            console.log(`🎂 [DATA-NASCIMENTO] ${tentativas}ª tentativa de ruído — pulando automaticamente — ${user.phone}`);
+            return await fecharSemDado({
+                user, context: { ...context, tentativas_indeterminado: tentativas }, message,
+                motivo: 'limite_tentativas'
+            });
+        }
+
+        const novoContext = { ...context, tentativas_indeterminado: tentativas, oferta_pular_ativa: false };
         await saveConversationState(user.id, { state: 'coletando_nascimento', context: novoContext });
+
+        // Item 3: nasc_confirmacao tem ramo próprio — relê a data montada em vez de
+        // repetir a pergunta de um campo dia/mês/ano (essa etapa não é nenhum deles).
+        if (etapa === 'nasc_confirmacao') {
+            return await gerarTexto({
+                etapa: 'nasc_ruido', context: novoContext, user, message,
+                motivo: 'confirmacao_nao_entendida',
+                dataFormatada: formatarDataBR(context.dia, context.mes, context.ano)
+            });
+        }
+
+        let campoRuido = CAMPO_LABEL_POR_ETAPA[etapa];
+        if (!campoRuido) {
+            // Defensivo (alinhado ao MH-064): etapa fora do mapa é bug, não degradação
+            // silenciosa — loga em system_events e segue com um fallback razoável,
+            // nunca trava o usuário (MH-072 A.1 item 3).
+            campoRuido = await degradar({
+                origem: 'data_nascimento',
+                motivo: 'etapa_ruido_nao_reconhecida',
+                agent: 'data_nascimento',
+                userId: user.id,
+                detalhe: { etapa },
+                fallback: 'dia'
+            });
+        }
+
+        const anoRejeitado = campoEsperado === 'ano' ? detectarAnoDoisDigitosRejeitado(message) : null;
+        const valorRejeitado = anoRejeitado ? { valor: anoRejeitado, motivo: 'ano precisa de 4 dígitos' } : null;
+
         return await gerarTexto({
             etapa: 'nasc_ruido', context: novoContext, user, message,
-            motivo: ofereceSaida ? 'oferecer_saida' : 'repetir'
+            motivo: 'repetir', campo: campoRuido, valorRejeitado
         });
     }
 
