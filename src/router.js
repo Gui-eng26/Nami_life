@@ -11,6 +11,7 @@ import { handleCadastro } from './agentes/cadastro.js';
 import { handleRelatorios, classificarIntencaoRelatorio, extrairPeriodo } from './agentes/relatorios.js';
 import { handleConfiguracao } from './agentes/configuracao.js';
 import { handleExclusaoConta, confirmarIntencaoExclusaoConta } from './agentes/exclusaoConta.js';
+import { handleDataNascimento } from './agentes/data_nascimento.js';
 import { isCancelamento, pareceExclusaoConta } from './nlp_helpers.js';
 
 // ============================================================
@@ -683,6 +684,28 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         console.log(`🗑️ Pedido de exclusão de conta detectado — ${user.phone}`);
         const r = await handleExclusaoConta({ user, message, etapa: 'solicitar_confirmacao', historicoConversa });
         response = r.response;
+
+    // 3.5. MH-072 Parte A — coleta de data de nascimento no onboarding. Entre o portão
+    // de exclusão de conta (bloco 3, que tem precedência sobre tudo) e post_onboarding
+    // (bloco 4): o usuário aqui já está onboarded (recepcionista.js grava onboarded=true
+    // no momento do aceite da LGPD, antes desta coleta começar), então um pedido de
+    // exclusão de conta durante a coleta é atendido normalmente pelo bloco 3, antes deste.
+    } else if (currentState === 'coletando_nascimento') {
+        agentName = 'data_nascimento';
+        console.log(`🎂 Roteando para coleta de data de nascimento — ${user.phone}`);
+        const resultadoNascimento = await handleDataNascimento({ user, message, state, historicoConversa });
+        if (resultadoNascimento?.escalarParaRoteador) {
+            const escalada = await despacharEscalada({
+                user, message, image, historicoConversa, contextoProativo,
+                contextoPreservado: null
+            });
+            agentName = escalada.agentName;
+            response = escalada.response;
+            feedbackDetectado = escalada.feedback ?? feedbackDetectado;
+            if (escalada.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
+        } else {
+            response = resultadoNascimento;
+        }
 
     // 4. Usuário concluiu onboarding agora — respondendo "por onde quer começar?"
     } else if (currentState === 'post_onboarding') {

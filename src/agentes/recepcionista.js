@@ -126,14 +126,15 @@ SE etapa = 'recep_coleta_nome':
 
   Se CADASTRAR:
     "Para eu te ajudar nessa jornada e cadastrar seus medicamentos,
-     preciso guardar seu nome e telefone aqui comigo. Seus dados ficam
-     protegidos e são usados só para personalizar seus lembretes.
-     Você concorda?"
+     preciso guardar seu nome, telefone e data de nascimento aqui
+     comigo. Seus dados ficam protegidos e são usados só para
+     personalizar seus lembretes. Você concorda?"
 
   Se DESCOBRIR ou NEUTRO:
-    "Para continuar, preciso guardar algumas informações suas — nome
-     e telefone — para personalizar seus lembretes. Seus dados ficam
-     protegidos e são usados só para isso. Você concorda?"
+    "Para continuar, preciso guardar algumas informações suas — nome,
+     telefone e data de nascimento — para personalizar seus lembretes.
+     Seus dados ficam protegidos e são usados só para isso. Você
+     concorda?"
 
 SE etapa = 'recep_lgpd':
 
@@ -145,33 +146,32 @@ SE etapa = 'recep_lgpd':
   o usuário está apenas dizendo se concorda ou não com a coleta de dados.
 
   Se o usuário confirmar:
-    Agradeça e faça a transição para o próximo passo de forma natural.
+    Agradeça o aceite e faça a transição para a COLETA DE DATA DE NASCIMENTO —
+    NÃO vá direto para o cadastro nem para a apresentação de funcionalidades:
+    essa etapa vem sempre antes (logo após o aceite da LGPD, antes do cadastro
+    de medicamento). Essa ponte é necessária porque este turno já produz uma
+    resposta — sem ela, seriam duas mensagens seguidas da Nami. Termine SEMPRE
+    perguntando em que DIA do mês {nome} nasceu, com exemplo obrigatório de
+    formato (ex: "por exemplo: 7").
 
     Se CADASTRAR e mensagem_inicial contém informações de medicamento
     (remédio, posologia, horário):
-      Após agradecer pelo aceite, demonstre que lembrou do contexto.
-      Use as informações que o usuário já forneceu — NÃO pergunte o que você já sabe.
-      Exemplo (quando usuário já informou remédio e posologia):
-      "Perfeito, {nome}! Agora posso te ajudar de verdade 💊
-      Vi que você precisa tomar {remédio} de {posologia} — vamos
-      organizar isso certinho. Só preciso de mais alguns detalhes
-      para configurar seus lembretes. Qual a dosagem?"
-      Se o usuário informou o horário da última dose, calcule o próximo
-      horário esperado e pergunte se já tomou.
-      Exemplo: "Vi que sua última dose foi às 21:30 de ontem.
-      Se você toma de 12 em 12 horas, o próximo seria às 09:30 —
-      já tomou hoje?"
+      Mostre que lembrou do contexto — cite o remédio/situação mencionada —
+      mas NÃO avance para o cadastro ainda. Peça só mais um detalhe rápido
+      antes: o dia de nascimento.
+      Exemplo: "Perfeito, {nome}! Já anotei que você quer cuidar da
+      {remédio} — vamos organizar isso já já 💊 Antes, só um detalhe
+      rapidinho: em que dia do mês você nasceu? Por exemplo: 7"
 
     Se CADASTRAR sem contexto rico:
-      Vá direto para o cadastro.
-      Exemplo: "Perfeito, {nome}! Agora vamos ao que interessa —
-      cadastrar seu medicamento! 💊 Qual é o nome do remédio?"
+      Exemplo: "Perfeito, {nome}! Antes de irmos para o cadastro, só
+      preciso de um detalhe rapidinho: em que dia do mês você nasceu?
+      Por exemplo: 7"
 
     Se DESCOBRIR ou NEUTRO:
-      Apresente o que a Nami pode fazer e pergunte por onde quer começar.
-      Exemplo: "Ótimo, {nome}! Agora posso te ajudar de verdade 🌿
-      Posso lembrar você de tomar seus remédios, registrar as doses e
-      avisar quando o estoque estiver acabando. Por onde quer começar?"
+      Exemplo: "Ótimo, {nome}! Antes de te contar tudo que posso fazer,
+      só um detalhe rapidinho: em que dia do mês você nasceu? Por
+      exemplo: 7"
 
   Se o usuário recusar:
     Explique brevemente por que o consentimento é necessário — sem pressão,
@@ -180,8 +180,9 @@ SE etapa = 'recep_lgpd':
     Deixe a porta aberta para ele voltar quando quiser.
     Exemplo: "Entendo e respeito sua decisão! 😊
     Pela Lei Geral de Proteção de Dados (LGPD), preciso do seu consentimento
-    para guardar seu nome e telefone — sem isso, infelizmente não consigo
-    personalizar seus lembretes e o serviço não funciona.
+    para guardar seu nome, telefone e data de nascimento — sem isso,
+    infelizmente não consigo personalizar seus lembretes e o serviço não
+    funciona.
     Se mudar de ideia, é só me chamar. Estarei aqui!"
 
 SE etapa = 'lgpd_recusado':
@@ -195,9 +196,10 @@ SE etapa = 'lgpd_recusado':
 SE etapa = 'recep_lgpd_reapresentacao':
   O usuário confirmou que mudou de ideia. Reapresente os termos LGPD
   completos para que ele dê um consentimento explícito e consciente.
-  Exemplo: "Ótimo! Para eu poder te ajudar, preciso guardar seu nome e
-  telefone para personalizar seus lembretes. Seus dados ficam protegidos
-  e são usados exclusivamente para esse fim, conforme a LGPD.
+  Exemplo: "Ótimo! Para eu poder te ajudar, preciso guardar seu nome,
+  telefone e data de nascimento para personalizar seus lembretes. Seus
+  dados ficam protegidos e são usados exclusivamente para esse fim,
+  conforme a LGPD.
   Você concorda?"
   Aguarde um "Sim" explícito antes de continuar.
 
@@ -312,22 +314,21 @@ export async function handleRecepcionista({ user, message, context, historicoCon
             lgpd_accepted_at: new Date().toISOString()
         });
 
-        const mensagemInicial = context.mensagem_inicial || '';
-        const querCadastrar = [
-            'cadastrar', 'remédio', 'remedios', 'remedio', 'medicamento',
-            'registrar', 'me ajuda', 'ajuda'
-        ].some(t => mensagemInicial.toLowerCase().includes(t));
-
-        if (querCadastrar) {
-            await saveConversationState(user.id, {
-                state: 'adding_med',
-                context: { etapa: 'cad_nome' }
-            });
-            console.log(`✅ Recepcionista: onboarding concluído — roteando para cadastro (${user.phone})`);
-        } else {
-            await saveConversationState(user.id, { state: 'post_onboarding', context: {} });
-            console.log(`✅ Recepcionista: onboarding concluído — aguardando intenção (${user.phone})`);
-        }
+        // MH-072 Parte A: onboarding não termina mais aqui — segue para a coleta de
+        // data de nascimento, logo após o aceite da LGPD e antes do cadastro de
+        // medicamento. definirEstadoPosOnboarding() (agora com chamador único, em
+        // data_nascimento.js) decide adding_med vs. post_onboarding só ao FECHAR
+        // aquele fluxo (com o dado gravado ou por recusa).
+        await saveConversationState(user.id, {
+            state: 'coletando_nascimento',
+            context: {
+                etapa: 'nasc_dia',
+                dia: null, mes: null, ano: null,
+                mensagem_inicial: context.mensagem_inicial || '',
+                tentativas_indeterminado: 0
+            }
+        });
+        console.log(`🎂 Recepcionista: onboarding aceito — roteando para coleta de data de nascimento (${user.phone})`);
 
     } else if (lgpdRecusado) {
         // Correção 4: recusa explícita — encerra com dignidade, não bloqueia retorno
