@@ -87,6 +87,10 @@ const DEGRADACOES = {
     'data_nascimento:etapa_ruido_nao_reconhecida': {
         severidade: 'media',
         titulo: 'Etapa não reconhecida ao montar mensagem de ruído na coleta de nascimento'
+    },
+    'recepcionista:classificador_lgpd_falhou': {
+        severidade: 'alta',
+        titulo: 'Classificador de consentimento LGPD falhou — assumido indeterminado, nunca aceite'
     }
 };
 

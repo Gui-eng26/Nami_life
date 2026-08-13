@@ -33,9 +33,12 @@ function firstNameOf(user) {
 }
 
 // Confirmação curta ("sim", "isso", "correto"...) — mesmo padrão já usado em
-// isLgpdAccepted (recepcionista.js) e isAffirmativeSimple (router.js): lista
-// fechada para reconhecer SIM/NÃO, não uma lista crescente de "foge do padrão"
-// (isso seria o antipadrão do princípio 14 — não é o caso aqui).
+// isAffirmativeSimple (router.js): lista fechada para reconhecer SIM/NÃO, não
+// uma lista crescente de "foge do padrão" (isso seria o antipadrão do
+// princípio 14 — não é o caso aqui). Nota BUG-88: o equivalente em
+// recepcionista.js (isLgpdAccepted) NÃO era uma lista fechada de SIM/NÃO — era
+// checada com includes() sobre mensagem livre, o que é o antipadrão de fato;
+// foi substituído por classificarConsentimentoLgpd (classificação semântica).
 function respostaAfirmativaSimples(message) {
     const termos = ['sim', 'isso', 'isso mesmo', 'correto', 'exato', 'confirmo', 'certo', 'certinho', 'pode', 'ok'];
     const msg = (message || '').toLowerCase().trim();

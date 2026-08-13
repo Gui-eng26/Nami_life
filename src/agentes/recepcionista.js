@@ -1,24 +1,66 @@
 import Anthropic from '@anthropic-ai/sdk';
 import 'dotenv/config';
-import { saveConversationState, updateUser } from '../database.js';
+import { saveConversationState, updateUser, formatarHistoricoConversa } from '../database.js';
+import { degradar } from '../observabilidade.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// BUG-88 (MH-072 Parte B.0): teto de tentativas indeterminadas antes de encerrar
+// em lgpd_recusado como saída de emergência — mesmo padrão de
+// MAX_TENTATIVAS_INDETERMINADO em data_nascimento.js. duvida NÃO conta (ver
+// classificarConsentimentoLgpd) — só indeterminado consome tentativa.
+const MAX_TENTATIVAS_LGPD = 3;
+
 // ============================================================
-// KEYWORDS DE ACEITE / RECUSA LGPD
+// CLASSIFICADOR DE CONSENTIMENTO LGPD
 // ============================================================
+// BUG-88: substitui isLgpdAccepted()/contemRecusa() (keyword 's' via includes()
+// casava com "pa*s*sar" em "prefiro nao passar os dados" — recusa gravada como
+// aceite). Um único julgamento semântico sobre a mensagem, categoria fechada —
+// o gerador de texto (buildSystemPrompt) só executa a decisão já tomada aqui,
+// nunca decide sozinho. Mesmo padrão de classificarIndeterminado em
+// data_nascimento.js (max_tokens: 8, degradar() no catch, nunca aceite em falha).
+export async function classificarConsentimentoLgpd({ message, historicoConversa }) {
+    const historicoTexto = formatarHistoricoConversa(historicoConversa);
 
-const LGPD_ACCEPT_KEYWORDS = ['sim', 's', 'pode', 'concordo', 'aceito', 'ok', 'claro', 'com certeza', 'yes'];
+    const systemPrompt = `Você é um classificador de consentimento LGPD para uma assistente de saúde via WhatsApp (a Nami).
 
-function isLgpdAccepted(message) {
-    const normalized = message.toLowerCase().trim();
-    return LGPD_ACCEPT_KEYWORDS.some(kw => normalized.includes(kw));
-}
+A Nami acabou de pedir consentimento para guardar nome, telefone e data de nascimento do usuário. Classifique a resposta dele em UMA destas categorias:
 
-function contemRecusa(message) {
-    const msg = message.toLowerCase().trim();
-    return ['não', 'nao', 'nope', 'recuso', 'não aceito', 'não concordo',
-        'prefiro não', 'não quero'].some(t => msg.includes(t));
+- aceite: o usuário concorda de forma inequívoca com a guarda dos dados. Ex: "sim", "pode", "concordo", "aceito", "tudo bem", "claro", "ok", "sim, pode guardar".
+- recusa: o usuário não concorda, ou adia. Ex: "não", "prefiro não passar os dados", "agora não", "deixa pra lá", "não quero compartilhar", "tô com receio disso".
+- duvida: o usuário pergunta sobre o uso dos dados, sem aceitar nem recusar. Ex: "pra que vocês precisam disso?", "vocês vendem meus dados?", "quem vai ver isso?", "posso apagar depois?".
+- indeterminado: a resposta não se encaixa em nenhuma categoria acima — confusa ou fora de contexto.
+
+CONVERSA RECENTE:
+${historicoTexto}
+
+MENSAGEM ATUAL: "${message}"
+
+Responda APENAS com uma palavra: aceite, recusa, duvida ou indeterminado. Sem pontuação, sem explicação.`;
+
+    try {
+        const resposta = await anthropic.messages.create({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 8,
+            system: systemPrompt,
+            messages: [{ role: 'user', content: message || 'Olá' }]
+        });
+        const texto = (resposta.content[0]?.text || '').toLowerCase().trim();
+        const validos = ['aceite', 'recusa', 'duvida', 'indeterminado'];
+        const achado = validos.find(v => texto.includes(v));
+        console.log(`🔒 [RECEPCIONISTA] Classificador LGPD: "${message}" -> ${achado || 'indeterminado (fallback)'}`);
+        return achado || 'indeterminado';
+    } catch (e) {
+        console.error(`❌ [RECEPCIONISTA] Erro no classificador de consentimento LGPD: ${e.message} — assumindo indeterminado`);
+        return await degradar({
+            origem: 'recepcionista',
+            motivo: 'classificador_lgpd_falhou',
+            agent: 'recepcionista',
+            detalhe: { erro: e.name, status: e?.status ?? null },
+            fallback: 'indeterminado'
+        });
+    }
 }
 
 // ============================================================
@@ -145,7 +187,12 @@ SE etapa = 'recep_lgpd':
   com medicamentos. Não importa o que esteja em mensagem_inicial — neste turno
   o usuário está apenas dizendo se concorda ou não com a coleta de dados.
 
-  Se o usuário confirmar:
+  A classificação da resposta já foi decidida por um classificador (não é sua
+  decisão): classificacao_lgpd = '${context.classificacao_lgpd || ''}'. Você
+  APENAS redige o texto do comportamento correspondente abaixo — nunca julgue
+  de novo se o usuário aceitou ou recusou.
+
+${context.classificacao_lgpd === 'aceite' ? `  O usuário ACEITOU o consentimento.
     Agradeça o aceite e faça a transição para a COLETA DE DATA DE NASCIMENTO —
     NÃO vá direto para o cadastro nem para a apresentação de funcionalidades:
     essa etapa vem sempre antes (logo após o aceite da LGPD, antes do cadastro
@@ -171,9 +218,8 @@ SE etapa = 'recep_lgpd':
     Se DESCOBRIR ou NEUTRO:
       Exemplo: "Ótimo, {nome}! Antes de te contar tudo que posso fazer,
       só um detalhe rapidinho: em que dia do mês você nasceu? Por
-      exemplo: 7"
-
-  Se o usuário recusar:
+      exemplo: 7"` : ''}${context.classificacao_lgpd === 'recusa' ? `  O usuário RECUSOU o consentimento (ou não respondeu com clareza suficiente
+    depois de algumas tentativas).
     Explique brevemente por que o consentimento é necessário — sem pressão,
     sem tentar convencer, apenas informando.
     Diga que sem o consentimento o serviço não pode funcionar pela LGPD.
@@ -183,7 +229,19 @@ SE etapa = 'recep_lgpd':
     para guardar seu nome, telefone e data de nascimento — sem isso,
     infelizmente não consigo personalizar seus lembretes e o serviço não
     funciona.
-    Se mudar de ideia, é só me chamar. Estarei aqui!"
+    Se mudar de ideia, é só me chamar. Estarei aqui!"` : ''}${context.classificacao_lgpd === 'duvida' ? `  O usuário tem uma DÚVIDA sobre o uso dos dados — não aceitou nem recusou.
+    Responda com transparência, em UMA ou duas frases: os dados são usados só
+    para personalizar os lembretes, nunca são vendidos nem compartilhados com
+    terceiros. Depois, reapresente o pedido de consentimento de forma natural.
+    NÃO grave nada — ainda estamos aguardando a decisão do usuário.
+    Exemplo: "Boa pergunta! Uso seus dados só pra personalizar seus lembretes
+    — nunca vendo nem compartilho com ninguém. 😊 Posso guardar seu nome,
+    telefone e data de nascimento?"` : ''}${context.classificacao_lgpd === 'indeterminado' ? `  A resposta do usuário não deixou claro se ele aceita ou recusa o
+    consentimento. Repergunte de forma mais simples e direta, sem constranger
+    e sem repetir o texto legal inteiro de novo.
+    Exemplo: "Não entendi direito — posso guardar seu nome, telefone e data
+    de nascimento pra personalizar seus lembretes? Pode responder só 'sim' ou
+    'não' 🙂"` : ''}
 
 SE etapa = 'lgpd_recusado':
   O usuário recusou os termos LGPD anteriormente e voltou a conversar.
@@ -259,13 +317,43 @@ export async function handleRecepcionista({ user, message, context, historicoCon
 
     } else if (etapa === 'recep_coleta_nome' || etapa === 'recep_lgpd') {
         nextEtapa = 'recep_lgpd';
-        lgpdAccepted = isLgpdAccepted(message);
-        lgpdRecusado = !lgpdAccepted && contemRecusa(message);
-        updatedContext = { ...context, etapa: 'recep_lgpd' }; // spread preserva mensagem_inicial
+        const categoria = await classificarConsentimentoLgpd({ message, historicoConversa });
+
+        if (categoria === 'aceite') {
+            lgpdAccepted = true;
+            updatedContext = { ...context, etapa: nextEtapa, classificacao_lgpd: 'aceite' };
+
+        } else if (categoria === 'recusa') {
+            lgpdRecusado = true;
+            updatedContext = { ...context, etapa: nextEtapa, classificacao_lgpd: 'recusa' };
+
+        } else if (categoria === 'duvida') {
+            // Dúvida legítima sobre o uso dos dados — não conta para o teto de
+            // tentativas (só indeterminado consome, ver tentativas_lgpd abaixo).
+            updatedContext = { ...context, etapa: nextEtapa, classificacao_lgpd: 'duvida' };
+
+        } else {
+            // indeterminado — único ramo que consome tentativa.
+            const tentativas = (context.tentativas_lgpd || 0) + 1;
+            if (tentativas >= MAX_TENTATIVAS_LGPD) {
+                // Saída de emergência (padrão da Parte A.1 item 6): teto atingido,
+                // encerra em lgpd_recusado — estado morno e reversível.
+                console.log(`🔒 Recepcionista: ${tentativas}ª tentativa indeterminada de LGPD — encerrando em lgpd_recusado (${user.phone})`);
+                lgpdRecusado = true;
+                updatedContext = { ...context, etapa: nextEtapa, classificacao_lgpd: 'recusa', tentativas_lgpd: tentativas };
+            } else {
+                updatedContext = { ...context, etapa: nextEtapa, classificacao_lgpd: 'indeterminado', tentativas_lgpd: tentativas };
+            }
+        }
 
     } else if (etapa === 'lgpd_recusado') {
-        // Usuário volta após ter recusado LGPD — verificar se mudou de ideia
-        const mudouDeIdeia = isLgpdAccepted(message);
+        // Usuário volta após ter recusado LGPD — verificar se mudou de ideia.
+        // Reaproveita o mesmo classificador: "mudou de ideia" é, em essência, a
+        // mesma pergunta de consentimento respondida em contexto diferente — e
+        // historicoConversa carrega o turno anterior ("mudou de ideia?"), então o
+        // classificador tem o mesmo contexto que teria em recep_lgpd.
+        const categoria = await classificarConsentimentoLgpd({ message, historicoConversa });
+        const mudouDeIdeia = categoria === 'aceite';
         if (mudouDeIdeia) {
             nextEtapa = 'recep_lgpd_reapresentacao';
             updatedContext = { ...context, etapa: 'recep_lgpd_reapresentacao' };
@@ -275,11 +363,15 @@ export async function handleRecepcionista({ user, message, context, historicoCon
         }
 
     } else if (etapa === 'recep_lgpd_reapresentacao') {
-        // Usuário deu novo aceite explícito após reapresentação dos termos
-        lgpdAccepted = isLgpdAccepted(message);
-        lgpdRecusado = !lgpdAccepted && contemRecusa(message);
+        // Usuário deu novo aceite explícito após reapresentação dos termos —
+        // aguarda um "Sim" inequívoco; qualquer outra categoria é tratada como
+        // não aceito e encerra em lgpd_recusado (mesmo comportamento binário de
+        // antes, só troca o método de classificação).
+        const categoria = await classificarConsentimentoLgpd({ message, historicoConversa });
+        lgpdAccepted = categoria === 'aceite';
+        lgpdRecusado = !lgpdAccepted;
         nextEtapa = lgpdAccepted ? 'recep_lgpd' : 'lgpd_recusado';
-        updatedContext = { ...context, etapa: nextEtapa };
+        updatedContext = { ...context, etapa: nextEtapa, ...(lgpdAccepted ? { classificacao_lgpd: 'aceite' } : {}) };
 
     } else {
         // Fallback — reinicia o fluxo
