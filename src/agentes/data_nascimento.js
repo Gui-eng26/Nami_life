@@ -186,27 +186,27 @@ Responda APENAS com a mensagem que deve ser enviada ao usuário. Sem explicaçõ
         if (motivo === 'combinacao_invalida') {
             return `${base}${correcaoTexto}
 
-A combinação de dia/mês/ano que ${nome} informou não existe no calendário (ex: 31 de fevereiro). Explique gentilmente que a data não bate e peça o DIA de novo, com exemplo obrigatório de formato.
-Exemplo de tom: "Acho que essa data não existe no calendário! 😅 Vamos conferir de novo — em que dia do mês você nasceu? Por exemplo: 7"`;
+A combinação de dia/mês/ano que ${nome} informou não existe no calendário (ex: 31 de fevereiro). Explique gentilmente que a data não bate e peça o *DIA* de novo (negrito do WhatsApp — um asterisco de cada lado da palavra), com exemplo obrigatório de formato.
+Exemplo de tom: "Acho que essa data não existe no calendário! 😅 Vamos conferir de novo — em que *dia* do mês você nasceu? Por exemplo: 7"`;
         }
         return `${base}${correcaoTexto}${saudacaoTexto}
 
-Pergunte em que DIA do mês ${nome} nasceu. O exemplo de formato é OBRIGATÓRIO na pergunta.
-Exemplo: "Em que dia do mês você nasceu? Pode mandar só o número — por exemplo: 7"`;
+Pergunte em que *DIA* do mês ${nome} nasceu, com negrito do WhatsApp (um asterisco de cada lado) na palavra "dia". O exemplo de formato é OBRIGATÓRIO na pergunta.
+Exemplo: "Em que *dia* do mês você nasceu? Pode mandar só o número — por exemplo: 7"`;
     }
 
     if (etapa === 'nasc_mes') {
         return `${base}${correcaoTexto}${saudacaoTexto}
 
-Pergunte de qual MÊS ${nome} nasceu. O exemplo de formato é OBRIGATÓRIO na pergunta.
-Exemplo: "E de qual mês? Pode escrever o nome — por exemplo: março"`;
+Pergunte de qual *MÊS* ${nome} nasceu, com negrito do WhatsApp (um asterisco de cada lado) na palavra "mês". O exemplo de formato é OBRIGATÓRIO na pergunta.
+Exemplo: "E de qual *mês*? Pode escrever o nome — por exemplo: março"`;
     }
 
     if (etapa === 'nasc_ano') {
         return `${base}${correcaoTexto}${saudacaoTexto}
 
-Pergunte em que ANO ${nome} nasceu. O exemplo de formato é OBRIGATÓRIO na pergunta.
-Exemplo: "E em que ano? Os quatro números — por exemplo: 1958"`;
+Pergunte em que *ANO* ${nome} nasceu, com negrito do WhatsApp (um asterisco de cada lado) na palavra "ano". O exemplo de formato é OBRIGATÓRIO na pergunta.
+Exemplo: "E em que *ano*? Os quatro números — por exemplo: 1958"`;
     }
 
     if (etapa === 'nasc_confirmacao') {

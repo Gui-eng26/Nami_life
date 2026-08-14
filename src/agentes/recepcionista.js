@@ -11,6 +11,15 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 // classificarConsentimentoLgpd) — só indeterminado consome tentativa.
 const MAX_TENTATIVAS_LGPD = 3;
 
+// MH-072 Parte B: mesmo padrão de teto — nova_duvida NÃO conta (servir a
+// curiosidade é o propósito da etapa recep_apresentacao); só ruido consome.
+const MAX_TENTATIVAS_APRESENTACAO = 3;
+
+// MH-072 Parte B (BUG-30): teto de tentativas de coleta de nome antes de
+// encerrar em apresentacao_declinada — saudacao/recusa/indeterminado consomem;
+// contexto_saude e pergunta não (são respostas legítimas, não falhas).
+const MAX_TENTATIVAS_NOME = 3;
+
 // ============================================================
 // CLASSIFICADOR DE CONSENTIMENTO LGPD
 // ============================================================
@@ -64,36 +73,246 @@ Responda APENAS com uma palavra: aceite, recusa, duvida ou indeterminado. Sem po
 }
 
 // ============================================================
-// VALIDAÇÃO DE NOME
+// CLASSIFICADOR DE INTENÇÃO INICIAL (MH-072 Parte B, item 1)
 // ============================================================
+// Roda só no turno 1 (!context.etapa). Antes vivia embutido no mesmo prompt que
+// gera a resposta (buildSystemPrompt) — a classificação existia mas não tinha
+// poder de decisão sobre o fluxo, só ajustava o tom (princípio 14). Aqui ela
+// decide, antes de qualquer texto ser gerado, entre recep_boas_vindas (pede
+// nome direto) e recep_apresentacao (MH-074 — caminho do curioso).
+export async function classificarIntencaoInicial({ message }) {
+    const systemPrompt = `Você é um classificador de intenção inicial para uma assistente de saúde via WhatsApp (a Nami), que ajuda pessoas a não esquecerem seus medicamentos de uso contínuo.
 
-function pareceNome(message) {
-    if (!message) return false;
-    const msg = message.toLowerCase().trim();
+Esta é a PRIMEIRA mensagem que a pessoa envia. Classifique-a em UMA destas categorias:
 
-    // Sinais de que NÃO é um nome
-    const sinaisDeRemedio = [
-        /\d+\s*(mg|ml|mcg|g|%)/, // dosagem: "500mg", "0,5%"
-        /\d+\s*\/\s*\d+\s*(h|hora|horas)/, // posologia: "12/12h", "8/8 horas"
-        /de\s+\d+\s+em\s+\d+/, // "de 8 em 8 horas"
-        /tomei|tomo|preciso tomar|remédio|remedio|medicamento|comprimido/,
-        /nitroglicerina|nimesulida|losartana|metformina|atenolol|omeprazol|dipirona/
-    ];
+- cadastrar: pedido ativo de uso. Ex: "quero cadastrar meu remédio", "me ajuda com a losartana", "preciso tomar nimesulida de 12 em 12h".
+- descobrir: curiosidade sobre o que a Nami é ou faz, SEM pedido de uso. Ex: "pra que você serve?", "o que você faz?", "você serve pra cadastrar remédio?", "você consegue me ajudar com lembretes?", "me mandaram esse número".
+- neutro: saudação ou mensagem sem intenção discernível. Ex: "oi", "bom dia", "tudo bem?".
 
-    return !sinaisDeRemedio.some(pattern =>
-        typeof pattern === 'string'
-            ? msg.includes(pattern)
-            : pattern.test(msg)
-    );
+Fronteira importante: "você serve pra X?" é descobrir (pergunta sobre capacidade, especulação). "quero X" é cadastrar (pedido de uso).
+
+MENSAGEM: "${message}"
+
+Responda APENAS com uma palavra: cadastrar, descobrir ou neutro. Sem pontuação, sem explicação.`;
+
+    try {
+        const resposta = await anthropic.messages.create({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 8,
+            system: systemPrompt,
+            messages: [{ role: 'user', content: message || 'Olá' }]
+        });
+        const texto = (resposta.content[0]?.text || '').toLowerCase().trim();
+        const validos = ['cadastrar', 'descobrir', 'neutro'];
+        const achado = validos.find(v => texto.includes(v));
+        console.log(`👋 [RECEPCIONISTA] Classificador de intenção inicial: "${message}" -> ${achado || 'neutro (fallback)'}`);
+        return achado || 'neutro';
+    } catch (e) {
+        console.error(`❌ [RECEPCIONISTA] Erro no classificador de intenção inicial: ${e.message} — assumindo neutro`);
+        return await degradar({
+            origem: 'recepcionista',
+            motivo: 'classificador_intencao_inicial_falhou',
+            agent: 'recepcionista',
+            detalhe: { erro: e.name, status: e?.status ?? null },
+            fallback: 'neutro'
+        });
+    }
+}
+
+// ============================================================
+// CLASSIFICADOR DE RESPOSTA AO CONVITE (MH-074, item 3)
+// ============================================================
+// Roda nas etapas recep_apresentacao e apresentacao_declinada — a resposta é
+// sempre relativa ao convite (ou à despedida) do turno anterior, por isso o
+// histórico recente entra no prompt.
+export async function classificarRespostaConvite({ message, historicoConversa }) {
+    const historicoTexto = formatarHistoricoConversa(historicoConversa);
+
+    const systemPrompt = `Você é um classificador de resposta a um convite, para uma assistente de saúde via WhatsApp (a Nami).
+
+A Nami acabou de se apresentar (ou de reencontrar alguém que já conhecia) e convidar a pessoa a começar a usar — cadastrar um remédio. Classifique a resposta dela em UMA destas categorias:
+
+- afirmativo: aceita começar. Ex: "sim", "quero", "bora", "vamos lá", "pode ser", "como faço?", "quero cadastrar meu remédio".
+- negativo: recusa ou adia. Ex: "não", "agora não", "só estava olhando", "depois eu vejo".
+- nova_duvida: outra pergunta sobre a Nami, sem aceitar nem recusar. Ex: "e é de graça?", "funciona pra meu pai?", "precisa instalar app?".
+- ruido: incompreensível ou fora de contexto.
+
+CONVERSA RECENTE:
+${historicoTexto}
+
+MENSAGEM ATUAL: "${message}"
+
+Responda APENAS com uma palavra: afirmativo, negativo, nova_duvida ou ruido. Sem pontuação, sem explicação.`;
+
+    try {
+        const resposta = await anthropic.messages.create({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 8,
+            system: systemPrompt,
+            messages: [{ role: 'user', content: message || 'Olá' }]
+        });
+        const texto = (resposta.content[0]?.text || '').toLowerCase().trim();
+        const validos = ['afirmativo', 'negativo', 'nova_duvida', 'ruido'];
+        const achado = validos.find(v => texto.includes(v));
+        console.log(`👋 [RECEPCIONISTA] Classificador de resposta ao convite: "${message}" -> ${achado || 'ruido (fallback)'}`);
+        return achado || 'ruido';
+    } catch (e) {
+        console.error(`❌ [RECEPCIONISTA] Erro no classificador de resposta ao convite: ${e.message} — assumindo ruido`);
+        return await degradar({
+            origem: 'recepcionista',
+            motivo: 'classificador_resposta_convite_falhou',
+            agent: 'recepcionista',
+            detalhe: { erro: e.name, status: e?.status ?? null },
+            fallback: 'ruido'
+        });
+    }
+}
+
+// ============================================================
+// EXTRATOR DE NOME (BUG-30, MH-072 Parte B item 5)
+// ============================================================
+// Substitui pareceNome() — lista de exclusão que só sabia reconhecer sinais de
+// remédio, então qualquer outra coisa (inclusive "Sim, quero continuar") virava
+// nome. Devolve tipo semântico + valor (princípio 14: nunca booleano de
+// validade). Chamada uma única vez — a segunda checagem que existia na
+// gravação (reusando a mesma função que produziu o erro) some: o valor aqui já
+// sai normalizado e validado.
+export async function classificarNome({ message, historicoConversa }) {
+    const historicoTexto = formatarHistoricoConversa(historicoConversa);
+
+    const systemPrompt = `Você é um classificador para a etapa de coleta de nome no onboarding de uma assistente de saúde via WhatsApp (a Nami).
+
+A Nami acabou de perguntar "como posso te chamar?". Classifique a resposta em UMA destas categorias:
+
+- nome: a pessoa disse como quer ser chamada. Ex: "Guilherme", "pode me chamar de Gui", "meu nome é Ana Paula", "Ana".
+- saudacao: a pessoa só cumprimentou, sem dizer o nome. Ex: "oi", "olá", "bom dia", "tudo bem?".
+- contexto_saude: a pessoa mencionou um remédio, dosagem, posologia ou situação de saúde em vez do nome. Ex: "tomo losartana 50mg", "preciso de nimesulida de 12 em 12h", "é pra minha mãe".
+- pergunta: a pessoa fez uma pergunta em vez de responder. Ex: "por que você precisa disso?", "pra que serve isso?", "quanto custa?".
+- recusa: a pessoa não quer dizer o nome. Ex: "não quero dizer", "prefiro não falar", "não vou passar meu nome".
+- indeterminado: a resposta não se encaixa em nenhuma categoria acima — confusa ou fora de contexto.
+
+Quando a categoria for "nome", devolva também o nome NORMALIZADO que a pessoa quer usar — nunca a frase inteira. Ex: "pode me chamar de gui" -> "Gui". "meu nome é guilherme silveira" -> "Guilherme Silveira".
+
+CONVERSA RECENTE:
+${historicoTexto}
+
+MENSAGEM ATUAL: "${message}"
+
+Responda EXATAMENTE neste formato, sem explicação:
+- Se a categoria NÃO for "nome": só a categoria, uma palavra, uma linha.
+- Se a categoria FOR "nome": duas linhas — "nome" na primeira, o nome normalizado na segunda.`;
+
+    try {
+        const resposta = await anthropic.messages.create({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 30,
+            system: systemPrompt,
+            messages: [{ role: 'user', content: message || 'Olá' }]
+        });
+        const texto = (resposta.content[0]?.text || '').trim();
+        const linhas = texto.split('\n').map(l => l.trim()).filter(Boolean);
+        const categoriaBruta = (linhas[0] || '').toLowerCase();
+        const validos = ['nome', 'saudacao', 'contexto_saude', 'pergunta', 'recusa', 'indeterminado'];
+        const achado = validos.find(v => categoriaBruta.includes(v));
+
+        if (achado === 'nome') {
+            const valor = (linhas[1] || message || '').trim();
+            console.log(`👋 [RECEPCIONISTA] Classificador de nome: "${message}" -> nome: "${valor}"`);
+            return { tipo: 'nome', valor };
+        }
+
+        console.log(`👋 [RECEPCIONISTA] Classificador de nome: "${message}" -> ${achado || 'indeterminado (fallback)'}`);
+        return { tipo: achado || 'indeterminado', valor: null };
+    } catch (e) {
+        console.error(`❌ [RECEPCIONISTA] Erro no classificador de nome: ${e.message} — assumindo indeterminado`);
+        const fallback = await degradar({
+            origem: 'recepcionista',
+            motivo: 'classificador_nome_falhou',
+            agent: 'recepcionista',
+            detalhe: { erro: e.name, status: e?.status ?? null },
+            fallback: 'indeterminado'
+        });
+        return { tipo: fallback, valor: null };
+    }
 }
 
 // ============================================================
 // SYSTEM PROMPT
 // ============================================================
 
-function buildSystemPrompt(etapa, context) {
+function buildSystemPrompt(etapa, context, extras = {}) {
     const mensagemInicial = context.mensagem_inicial || '';
     const temContextoMedicamento = !!context.contexto_medicamento;
+    const intencaoInicial = context.intencao_inicial || 'neutro';
+
+    // --- Bloco recep_apresentacao (MH-074) ---
+    const apresentacaoTexto = extras.motivoApresentacao === 'ruido' ? `
+  A última mensagem do usuário não deu pra entender como resposta ao convite que você acabou de fazer. Repita o convite de forma gentil e mais curta, sem soar repetitiva ou impaciente.
+  NÃO peça o nome, NÃO mencione LGPD, NÃO inicie cadastro.` : extras.motivoApresentacao === 'nova_duvida' ? `
+  O usuário fez uma NOVA pergunta sobre a Nami, em vez de aceitar ou recusar o convite anterior. Responda a essa dúvida em uma ou duas frases objetivas e depois REOFEREÇA o convite para começar a usar — mais leve e mais curto do que da vez anterior (esta é a rodada ${extras.rodadasDuvida || 1} de reoferta: quanto mais rodadas, mais leve e menos insistente deve soar).
+  NÃO peça o nome, NÃO mencione LGPD, NÃO inicie cadastro.` : `
+  Esta é a primeira resposta da Nami a alguém que só quer entender o que ela faz — a pessoa ainda NÃO pediu para usar.
+  A pergunta feita está em "Mensagem original do usuário" acima. Responda ESPECIFICAMENTE a ela, citando-a — se a pergunta foi "você serve pra cadastrar remédio?", comece por algo como "sim, eu ajudo você a cadastrar os horários dos seus remédios".
+  Complemente com as demais capacidades da Nami: lembretes nos horários certos, confirmação de dose, controle de estoque, acompanhamento de adesão ao tratamento, e visibilidade para quem cuida de um familiar.
+  Feche com um convite explícito e caloroso para começar a usar — é uma oferta, não um funil. Sem pressão.
+
+  RESTRIÇÕES ABSOLUTAS NESTA ETAPA:
+  - NÃO peça o nome do usuário
+  - NÃO mencione LGPD, dados ou consentimento
+  - NÃO inicie o cadastro de medicamento`;
+
+    // --- Bloco apresentacao_declinada (MH-074) ---
+    const declinioTexto = extras.motivoDeclinio === 'retorno' ? `
+  O usuário já esteve aqui antes e não quis continuar (ou não deu uma resposta clara). Agora ele voltou a escrever, mas ainda não aceitou nem recusou de forma clara nesta mensagem. Acolha com calor, SEM cobrar, SEM recapitular a recusa anterior como se fosse uma cobrança pendente. Não insista — só mostre que a porta continua aberta.` : extras.motivoDeclinio === 'limite_tentativas' ? `
+  Depois de algumas tentativas, não foi possível entender as respostas do usuário. Encerre com uma despedida gentil e leve, sem cobrança, deixando claro que ele pode voltar quando quiser.` : `
+  O usuário decidiu, por ora, não continuar. Despeça-se de forma gentil e leve, SEM insistir e SEM tentar convencer. Deixe a porta aberta para ele voltar quando quiser.`;
+
+    // --- Bloco recep_boas_vindas ---
+    let boasVindasTexto;
+    if (extras.motivoNome) {
+        const motivoNomeTexto = extras.motivoNome === 'saudacao' ? `
+  A última resposta do usuário foi só um cumprimento (ex: "oi", "bom dia") — NÃO é o nome dele. Cumprimente de volta com calor e repita o pedido do nome.
+  Exemplo: "Oi! 😊 E como posso te chamar?"` : extras.motivoNome === 'pergunta' ? `
+  A última resposta do usuário foi uma pergunta, não o nome dele. Responda a essa pergunta de forma breve e depois repita o pedido do nome.` : extras.motivoNome === 'recusa' ? `
+  O usuário disse que não quer dizer o nome. Explique com empatia, em uma frase, por que o nome ajuda a Nami a personalizar a conversa — sem insistir ou pressionar — e repita o pedido de forma leve.` : `
+  A última resposta do usuário não deu pra entender como um nome. Repita o pedido do nome com um exemplo, de forma gentil.
+  Exemplo: "Não entendi direito — como posso te chamar? Pode ser só o primeiro nome mesmo 😊"`;
+        boasVindasTexto = `${motivoNomeTexto}
+
+  NÃO mencione LGPD ou coleta de dados neste momento.`;
+    } else if (temContextoMedicamento) {
+        boasVindasTexto = `  ATENÇÃO — o usuário acabou de informar um medicamento ou contexto de saúde
+  em vez do nome. Você deve:
+  1. Mostrar que entendeu o que ele disse (cite o remédio/contexto que está em contexto_medicamento)
+  2. Confirmar se é o remédio que quer cadastrar
+  3. Pedir o nome de forma natural para continuar
+  Exemplo: "Parece que você quer cadastrar a nimesulida, certo? 💊
+  Antes de registrar tudo, como posso te chamar?"
+
+  NÃO mencione LGPD ou coleta de dados neste momento.`;
+    } else if (extras.modoBoasVindas === 'pos_convite') {
+        boasVindasTexto = `  A pessoa já viu a apresentação da Nami e acabou de aceitar o convite para começar a usar${extras.retornoDeclinado ? ' (ela tinha adiado antes e voltou agora)' : ''}. NÃO se reapresente do zero e NÃO repita as capacidades já explicadas — reconheça a aceitação com calor, breve, e pergunte o nome direto.
+  Exemplo: "Que bom! 😊 Vamos começar então — como posso te chamar?"
+
+  NÃO mencione LGPD ou coleta de dados neste momento.`;
+    } else {
+        boasVindasTexto = `  Você está respondendo à PRIMEIRA mensagem que este usuário enviou para a Nami.
+  Essa mensagem está em mensagem_inicial. Leia-a com atenção ANTES de responder.
+  Você deve REAGIR ao conteúdo dela — não apenas se apresentar.
+
+  Se a intenção inicial for CADASTRAR (usuário mencionou remédio, posologia, horário, tratamento):
+    Mostre que você OUVIU. Cite o remédio ou situação mencionada pelo usuário.
+    Apresente-se brevemente e peça o nome como passo natural para continuar.
+    Exemplo: "Oi! Vi que você precisa tomar nimesulida de 12 em 12 horas —
+    posso te ajudar a organizar isso direitinho! 💊 Sou a Nami, sua assistente
+    de saúde pessoal. Como posso te chamar?"
+
+  Se a intenção inicial for NEUTRO (saudação simples, sem contexto):
+    Apresente-se com calor. Peça o nome.
+
+  Em todos os casos: termine pedindo o nome do usuário.
+  NÃO mencione LGPD ou coleta de dados neste momento.`;
+    }
 
     return `Você é a Nami, uma assistente de saúde pessoal que ajuda pessoas a não esquecerem seus medicamentos de uso contínuo.
 
@@ -109,70 +328,37 @@ Mensagem original do usuário (primeira mensagem): ${mensagemInicial}
 
 ---
 
-CLASSIFICAÇÃO DE INTENÇÃO:
-
-Antes de responder, classifique a mensagem_inicial em uma dessas categorias:
-
-- CADASTRAR: usuário quer cadastrar remédio, pedir ajuda com medicamentos,
-  ou mencionou remédio/tratamento de forma ativa.
-  Exemplos: "quero cadastrar meu remédio", "me ajuda com meus remédios",
-  "preciso registrar meu medicamento"
-
-- DESCOBRIR: usuário quer entender o que a Nami faz ou quem ela é.
-  Exemplos: "o que você faz?", "quem é você?", "como funciona?",
-  "me mandaram esse número"
-
-- NEUTRO: saudação simples ou sem intenção clara.
-  Exemplos: "oi", "olá", "bom dia", "preciso de ajuda"
-
-Use essa classificação para adaptar o TOM das suas respostas.
-O FLUXO de etapas é sempre o mesmo — o que muda são as pontes entre elas.
+INTENÇÃO INICIAL JÁ CLASSIFICADA: ${intencaoInicial}
+(cadastrar = pedido ativo de uso | descobrir = curiosidade sobre a Nami, sem pedido de uso | neutro = saudação sem intenção clara)
+A decisão de FLUXO (qual etapa vem a seguir) já foi tomada pelo código antes desta chamada — você só redige o texto do comportamento já decidido, nunca julga de novo intenção nem consentimento.
 
 ---
 
 INSTRUÇÕES POR ETAPA:
 
+SE etapa = 'recep_apresentacao':
+${apresentacaoTexto}
+
+SE etapa = 'apresentacao_declinada':
+${declinioTexto}
+  NÃO peça o nome, NÃO mencione LGPD, NÃO inicie cadastro.
+
 SE etapa = 'recep_boas_vindas':
 
-  Você está respondendo à PRIMEIRA mensagem que este usuário enviou para a Nami.
-  Essa mensagem está em mensagem_inicial. Leia-a com atenção ANTES de responder.
-  Você deve REAGIR ao conteúdo dela — não apenas se apresentar.
-
-${temContextoMedicamento ? `  ATENÇÃO — o usuário acabou de informar um medicamento ou contexto de saúde
-  em vez do nome. Você deve:
-  1. Mostrar que entendeu o que ele disse (cite o remédio/contexto que está em contexto_medicamento)
-  2. Confirmar se é o remédio que quer cadastrar
-  3. Pedir o nome de forma natural para continuar
-  Exemplo: "Parece que você quer cadastrar a nimesulida, certo? 💊
-  Antes de registrar tudo, como posso te chamar?"` :
-`  Se CADASTRAR (usuário mencionou remédio, posologia, horário, tratamento):
-    Mostre que você OUVIU. Cite o remédio ou situação mencionada pelo usuário.
-    Apresente-se brevemente e peça o nome como passo natural para continuar.
-    Exemplo: "Oi! Vi que você precisa tomar nimesulida de 12 em 12 horas —
-    posso te ajudar a organizar isso direitinho! 💊 Sou a Nami, sua assistente
-    de saúde pessoal. Como posso te chamar?"
-
-  Se DESCOBRIR (usuário perguntou o que a Nami faz ou quem ela é):
-    Responda à curiosidade com apresentação breve e envolvente. Peça o nome.
-
-  Se NEUTRO (saudação simples, sem contexto):
-    Apresente-se com calor. Peça o nome.`}
-
-  Em todos os casos: termine pedindo o nome do usuário.
-  NÃO mencione LGPD ou coleta de dados neste momento.
+${boasVindasTexto}
 
 SE etapa = 'recep_coleta_nome':
   Chame o usuário pelo nome.
   Apresente os termos LGPD de forma simples e humana.
   Adapte a justificativa ao que o usuário quer:
 
-  Se CADASTRAR:
+  Se a intenção inicial for CADASTRAR:
     "Para eu te ajudar nessa jornada e cadastrar seus medicamentos,
      preciso guardar seu nome, telefone e data de nascimento aqui
      comigo. Seus dados ficam protegidos e são usados só para
      personalizar seus lembretes. Você concorda?"
 
-  Se DESCOBRIR ou NEUTRO:
+  Se a intenção inicial for DESCOBRIR ou NEUTRO:
     "Para continuar, preciso guardar algumas informações suas — nome,
      telefone e data de nascimento — para personalizar seus lembretes.
      Seus dados ficam protegidos e são usados só para isso. Você
@@ -201,7 +387,7 @@ ${context.classificacao_lgpd === 'aceite' ? `  O usuário ACEITOU o consentiment
     perguntando em que DIA do mês {nome} nasceu, com exemplo obrigatório de
     formato (ex: "por exemplo: 7").
 
-    Se CADASTRAR e mensagem_inicial contém informações de medicamento
+    Se a intenção inicial for CADASTRAR e mensagem_inicial contém informações de medicamento
     (remédio, posologia, horário):
       Mostre que lembrou do contexto — cite o remédio/situação mencionada —
       mas NÃO avance para o cadastro ainda. Peça só mais um detalhe rápido
@@ -210,12 +396,12 @@ ${context.classificacao_lgpd === 'aceite' ? `  O usuário ACEITOU o consentiment
       {remédio} — vamos organizar isso já já 💊 Antes, só um detalhe
       rapidinho: em que dia do mês você nasceu? Por exemplo: 7"
 
-    Se CADASTRAR sem contexto rico:
+    Se a intenção inicial for CADASTRAR sem contexto rico:
       Exemplo: "Perfeito, {nome}! Antes de irmos para o cadastro, só
       preciso de um detalhe rapidinho: em que dia do mês você nasceu?
       Por exemplo: 7"
 
-    Se DESCOBRIR ou NEUTRO:
+    Se a intenção inicial for DESCOBRIR ou NEUTRO:
       Exemplo: "Ótimo, {nome}! Antes de te contar tudo que posso fazer,
       só um detalhe rapidinho: em que dia do mês você nasceu? Por
       exemplo: 7"` : ''}${context.classificacao_lgpd === 'recusa' ? `  O usuário RECUSOU o consentimento (ou não respondeu com clareza suficiente
@@ -283,36 +469,165 @@ export async function handleRecepcionista({ user, message, context, historicoCon
     let updatedContext = { ...context };
     let lgpdAccepted = false;
     let lgpdRecusado = false;
+    let extras = {};
 
     if (!etapa) {
-        // Primeira mensagem — inicializa o fluxo
-        nextEtapa = 'recep_boas_vindas';
-        updatedContext = {
-            etapa: 'recep_boas_vindas',
-            nome_coletado: null,
-            mensagem_inicial: context.mensagem_inicial
-        };
+        // Primeira mensagem — classifica a intenção antes de decidir o fluxo
+        // (MH-074): cadastrar/neutro pedem o nome direto; descobrir passa pela
+        // antessala recep_apresentacao antes de pedir qualquer dado.
+        const intencao = await classificarIntencaoInicial({ message: context.mensagem_inicial });
 
-    } else if (etapa === 'recep_boas_vindas') {
-        if (pareceNome(message)) {
-            // Resposta parece um nome — fluxo normal
-            nextEtapa = 'recep_coleta_nome';
+        if (intencao === 'descobrir') {
+            nextEtapa = 'recep_apresentacao';
             updatedContext = {
-                etapa: 'recep_coleta_nome',
-                nome_coletado: message.trim(),
-                mensagem_inicial: context.mensagem_inicial
+                etapa: 'recep_apresentacao',
+                mensagem_inicial: context.mensagem_inicial,
+                intencao_inicial: 'descobrir',
+                tentativas_ruido: 0,
+                rodadas_duvida: 0
             };
+            extras = { motivoApresentacao: 'primeira' };
         } else {
-            // Resposta parece um medicamento/contexto — NÃO salvar como nome.
-            // Atualiza mensagem_inicial com esse contexto mais rico e
-            // mantém na etapa boas_vindas para perguntar o nome de verdade.
             nextEtapa = 'recep_boas_vindas';
             updatedContext = {
                 etapa: 'recep_boas_vindas',
                 nome_coletado: null,
-                mensagem_inicial: message,          // substitui "Oi" por contexto mais rico
-                contexto_medicamento: message       // sinaliza ao prompt que há contexto de remédio
+                mensagem_inicial: context.mensagem_inicial,
+                intencao_inicial: intencao,
+                tentativas_nome: 0
             };
+        }
+
+    } else if (etapa === 'recep_apresentacao') {
+        const categoria = await classificarRespostaConvite({ message, historicoConversa });
+
+        if (categoria === 'afirmativo') {
+            nextEtapa = 'recep_boas_vindas';
+            updatedContext = {
+                etapa: nextEtapa,
+                nome_coletado: null,
+                mensagem_inicial: context.mensagem_inicial,
+                intencao_inicial: context.intencao_inicial,
+                tentativas_nome: 0
+            };
+            extras = { modoBoasVindas: 'pos_convite' };
+
+        } else if (categoria === 'negativo') {
+            nextEtapa = 'apresentacao_declinada';
+            updatedContext = {
+                etapa: nextEtapa,
+                mensagem_inicial: context.mensagem_inicial,
+                intencao_inicial: context.intencao_inicial
+            };
+            extras = { motivoDeclinio: 'declinado' };
+
+        } else if (categoria === 'nova_duvida') {
+            // Não conta para o teto — servir a curiosidade é o propósito da etapa.
+            nextEtapa = 'recep_apresentacao';
+            const rodadas = (context.rodadas_duvida || 0) + 1;
+            updatedContext = { ...context, etapa: nextEtapa, rodadas_duvida: rodadas };
+            extras = { motivoApresentacao: 'nova_duvida', rodadasDuvida: rodadas };
+
+        } else {
+            // ruido — único ramo que consome tentativa.
+            const tentativas = (context.tentativas_ruido || 0) + 1;
+            if (tentativas >= MAX_TENTATIVAS_APRESENTACAO) {
+                console.log(`👋 [RECEPCIONISTA] ${tentativas}ª tentativa de ruído em recep_apresentacao — encerrando em apresentacao_declinada (${user.phone})`);
+                nextEtapa = 'apresentacao_declinada';
+                updatedContext = {
+                    etapa: nextEtapa,
+                    mensagem_inicial: context.mensagem_inicial,
+                    intencao_inicial: context.intencao_inicial
+                };
+                extras = { motivoDeclinio: 'limite_tentativas' };
+            } else {
+                nextEtapa = 'recep_apresentacao';
+                updatedContext = { ...context, etapa: nextEtapa, tentativas_ruido: tentativas };
+                extras = { motivoApresentacao: 'ruido' };
+            }
+        }
+
+    } else if (etapa === 'apresentacao_declinada') {
+        const categoria = await classificarRespostaConvite({ message, historicoConversa });
+
+        if (categoria === 'afirmativo') {
+            // Retorno com aceite ou pedido novo — a retomada ancora no que a
+            // pessoa quer AGORA, não na curiosidade antiga (item 4 do briefing).
+            nextEtapa = 'recep_boas_vindas';
+            updatedContext = {
+                etapa: nextEtapa,
+                nome_coletado: null,
+                mensagem_inicial: message,
+                intencao_inicial: 'cadastrar',
+                tentativas_nome: 0
+            };
+            extras = { modoBoasVindas: 'pos_convite', retornoDeclinado: true };
+
+        } else if (categoria === 'nova_duvida') {
+            nextEtapa = 'recep_apresentacao';
+            updatedContext = {
+                etapa: nextEtapa,
+                mensagem_inicial: context.mensagem_inicial,
+                intencao_inicial: context.intencao_inicial,
+                tentativas_ruido: 0,
+                rodadas_duvida: 0
+            };
+            extras = { motivoApresentacao: 'primeira' };
+
+        } else {
+            // negativo / ruido — permanece, acolhe sem pressionar.
+            nextEtapa = 'apresentacao_declinada';
+            updatedContext = { ...context, etapa: nextEtapa };
+            extras = { motivoDeclinio: 'retorno' };
+        }
+
+    } else if (etapa === 'recep_boas_vindas') {
+        const classificacaoNome = await classificarNome({ message, historicoConversa });
+
+        if (classificacaoNome.tipo === 'nome') {
+            nextEtapa = 'recep_coleta_nome';
+            updatedContext = {
+                etapa: nextEtapa,
+                nome_coletado: classificacaoNome.valor,
+                mensagem_inicial: context.mensagem_inicial,
+                intencao_inicial: context.intencao_inicial
+            };
+
+        } else if (classificacaoNome.tipo === 'contexto_saude') {
+            // Não é nome — atualiza mensagem_inicial com o contexto mais rico e
+            // mantém na etapa boas_vindas para perguntar o nome de verdade.
+            nextEtapa = 'recep_boas_vindas';
+            updatedContext = {
+                ...context,
+                etapa: nextEtapa,
+                nome_coletado: null,
+                mensagem_inicial: message,
+                contexto_medicamento: message
+            };
+
+        } else if (classificacaoNome.tipo === 'pergunta') {
+            // Responde a dúvida e repede o nome — não consome tentativa.
+            nextEtapa = 'recep_boas_vindas';
+            updatedContext = { ...context, etapa: nextEtapa };
+            extras = { motivoNome: 'pergunta' };
+
+        } else {
+            // saudacao | recusa | indeterminado — contam para o teto.
+            const tentativas = (context.tentativas_nome || 0) + 1;
+            if (tentativas >= MAX_TENTATIVAS_NOME) {
+                console.log(`👋 [RECEPCIONISTA] ${tentativas}ª tentativa sem nome válido (${classificacaoNome.tipo}) — encerrando em apresentacao_declinada (${user.phone})`);
+                nextEtapa = 'apresentacao_declinada';
+                updatedContext = {
+                    etapa: nextEtapa,
+                    mensagem_inicial: context.mensagem_inicial,
+                    intencao_inicial: context.intencao_inicial
+                };
+                extras = { motivoDeclinio: 'limite_tentativas' };
+            } else {
+                nextEtapa = 'recep_boas_vindas';
+                updatedContext = { ...context, etapa: nextEtapa, tentativas_nome: tentativas };
+                extras = { motivoNome: classificacaoNome.tipo };
+            }
         }
 
     } else if (etapa === 'recep_coleta_nome' || etapa === 'recep_lgpd') {
@@ -379,11 +694,12 @@ export async function handleRecepcionista({ user, message, context, historicoCon
         updatedContext = {
             etapa: 'recep_boas_vindas',
             nome_coletado: null,
-            mensagem_inicial: context.mensagem_inicial
+            mensagem_inicial: context.mensagem_inicial,
+            tentativas_nome: 0
         };
     }
 
-    const systemPrompt = buildSystemPrompt(nextEtapa, updatedContext);
+    const systemPrompt = buildSystemPrompt(nextEtapa, updatedContext, extras);
     const response = await anthropic.messages.create({
         model: 'claude-sonnet-4-6',
         max_tokens: 512,
@@ -394,13 +710,11 @@ export async function handleRecepcionista({ user, message, context, historicoCon
     const responseText = response.content[0].text.trim();
 
     if (lgpdAccepted) {
-        // Correção 3: validar nome antes de salvar — nunca persistir medicamento como nome
-        const nomeParaSalvar = pareceNome(context.nome_coletado || '')
-            ? context.nome_coletado
-            : null;
-
+        // BUG-30: nome_coletado já chega tipado e normalizado por classificarNome
+        // — a segunda validação que existia aqui (reusando pareceNome, a mesma
+        // função que produziu o erro do BUG-30) foi removida.
         await updateUser(user.id, {
-            name: nomeParaSalvar,
+            name: context.nome_coletado || null,
             onboarded: true,
             lgpd_accepted: true,
             lgpd_accepted_at: new Date().toISOString()
