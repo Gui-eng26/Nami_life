@@ -314,6 +314,32 @@ function buildSystemPrompt(etapa, context, extras = {}) {
   NÃO mencione LGPD ou coleta de dados neste momento.`;
     }
 
+    // --- Bloco recep_nome_pos_lgpd (BUG-89) ---
+    // Sem teto de tentativas (seção 3.3 do briefing) — não há ramo de
+    // "limite_tentativas" aqui como em recep_boas_vindas.
+    let nomePosLgpdTexto;
+    if (extras.motivoNomePosLgpd === 'saudacao') {
+        nomePosLgpdTexto = `
+  A última resposta do usuário foi só um cumprimento (ex: "oi", "bom dia") — NÃO é o nome dele. Cumprimente de volta com calor e repita o pedido do nome.`;
+    } else if (extras.motivoNomePosLgpd === 'pergunta') {
+        nomePosLgpdTexto = `
+  A última resposta do usuário foi uma pergunta, não o nome dele. Responda a essa pergunta de forma breve e depois repita o pedido do nome.`;
+    } else if (extras.motivoNomePosLgpd === 'recusa') {
+        nomePosLgpdTexto = `
+  O usuário disse que não quer dizer o nome. Explique com empatia, em uma frase, por que o nome é necessário para continuar — sem insistir ou pressionar — e repita o pedido de forma leve.`;
+    } else if (extras.motivoNomePosLgpd === 'contexto_saude') {
+        nomePosLgpdTexto = `
+  ATENÇÃO — o usuário acabou de informar um medicamento ou contexto de saúde em vez do nome. Mostre que entendeu o que ele disse (cite o remédio/contexto que está em contexto_medicamento), confirme se é o que quer cadastrar, e peça o nome de forma natural para continuar.`;
+    } else if (extras.motivoNomePosLgpd === 'indeterminado') {
+        nomePosLgpdTexto = `
+  A última resposta do usuário não deu pra entender como um nome. Repita o pedido do nome com um exemplo, de forma gentil.
+  Exemplo: "Não entendi direito — como posso te chamar? Pode ser só o primeiro nome mesmo 😊"`;
+    } else {
+        nomePosLgpdTexto = `
+  O usuário ACABOU de dar consentimento (LGPD) após reconsiderar. Agradeça o consentimento com calor, em uma frase curta, e peça o nome dele para continuar — em uma única mensagem.
+  Exemplo: "Que bom que você topou! 😊 Antes de seguirmos, como posso te chamar?"`;
+    }
+
     return `Você é a Nami, uma assistente de saúde pessoal que ajuda pessoas a não esquecerem seus medicamentos de uso contínuo.
 
 Você está no momento de boas-vindas com um novo usuário.
@@ -446,6 +472,13 @@ SE etapa = 'recep_lgpd_reapresentacao':
   conforme a LGPD.
   Você concorda?"
   Aguarde um "Sim" explícito antes de continuar.
+
+SE etapa = 'recep_nome_pos_lgpd':
+${nomePosLgpdTexto}
+
+  NÃO repita os termos da LGPD nem peça consentimento de novo — o usuário já
+  concordou. NÃO mencione data de nascimento nem inicie o cadastro do
+  medicamento ainda.
 
 ---
 
@@ -680,13 +713,60 @@ export async function handleRecepcionista({ user, message, context, historicoCon
     } else if (etapa === 'recep_lgpd_reapresentacao') {
         // Usuário deu novo aceite explícito após reapresentação dos termos —
         // aguarda um "Sim" inequívoco; qualquer outra categoria é tratada como
-        // não aceito e encerra em lgpd_recusado (mesmo comportamento binário de
-        // antes, só troca o método de classificação).
+        // não aceito e encerra em lgpd_recusado. BUG-89: o aceite aqui NÃO grava
+        // mais direto — o nome foi apagado na recusa (seção 2 do briefing, decisão
+        // preservada) e precisa ser recoletado antes da gravação. lgpd_aceito_em
+        // marca o instante real do consentimento, para lgpd_accepted_at (seção
+        // 3.5) não confundir esse instante com o da gravação, que agora acontece
+        // um turno depois.
         const categoria = await classificarConsentimentoLgpd({ message, historicoConversa });
-        lgpdAccepted = categoria === 'aceite';
-        lgpdRecusado = !lgpdAccepted;
-        nextEtapa = lgpdAccepted ? 'recep_lgpd' : 'lgpd_recusado';
-        updatedContext = { ...context, etapa: nextEtapa, ...(lgpdAccepted ? { classificacao_lgpd: 'aceite' } : {}) };
+
+        if (categoria === 'aceite') {
+            nextEtapa = 'recep_nome_pos_lgpd';
+            updatedContext = {
+                ...context,
+                etapa: nextEtapa,
+                lgpd_aceito_em: new Date().toISOString()
+            };
+        } else {
+            lgpdRecusado = true;
+            nextEtapa = 'lgpd_recusado';
+            updatedContext = { ...context, etapa: nextEtapa };
+        }
+
+    } else if (etapa === 'recep_nome_pos_lgpd') {
+        // BUG-89: coleta de nome após retorno de LGPD. Reusa classificarNome —
+        // mesma função, mesmo contrato de recep_boas_vindas (princípio 14).
+        // SEM teto de tentativas (decisão de Guilherme na v31, seção 3.3): quem
+        // avança aqui é o usuário, que acabou de consentir duas vezes.
+        const classificacaoNome = await classificarNome({ message, historicoConversa });
+
+        if (classificacaoNome.tipo === 'nome') {
+            lgpdAccepted = true;
+            nextEtapa = 'recep_lgpd';
+            updatedContext = {
+                ...context,
+                etapa: nextEtapa,
+                nome_coletado: classificacaoNome.valor,
+                classificacao_lgpd: 'aceite'
+            };
+
+        } else if (classificacaoNome.tipo === 'contexto_saude') {
+            nextEtapa = 'recep_nome_pos_lgpd';
+            updatedContext = {
+                ...context,
+                etapa: nextEtapa,
+                mensagem_inicial: message,
+                contexto_medicamento: message
+            };
+            extras = { motivoNomePosLgpd: 'contexto_saude' };
+
+        } else {
+            // saudacao | pergunta | recusa | indeterminado — permanece, sem teto.
+            nextEtapa = 'recep_nome_pos_lgpd';
+            updatedContext = { ...context, etapa: nextEtapa };
+            extras = { motivoNomePosLgpd: classificacaoNome.tipo };
+        }
 
     } else {
         // Fallback — reinicia o fluxo
@@ -713,11 +793,16 @@ export async function handleRecepcionista({ user, message, context, historicoCon
         // BUG-30: nome_coletado já chega tipado e normalizado por classificarNome
         // — a segunda validação que existia aqui (reusando pareceNome, a mesma
         // função que produziu o erro do BUG-30) foi removida.
+        // BUG-89: leituras trocadas de `context` (o que ENTROU no turno) para
+        // `updatedContext` (o que foi decidido NESTE turno). Em recep_nome_pos_lgpd
+        // o nome é capturado no mesmo turno em que lgpdAccepted vira true — só
+        // existe em updatedContext. Como updatedContext = {...context, ...} em
+        // todos os ramos, ler dele nunca perde informação que ler de context teria.
         await updateUser(user.id, {
-            name: context.nome_coletado || null,
+            name: updatedContext.nome_coletado || null,
             onboarded: true,
             lgpd_accepted: true,
-            lgpd_accepted_at: new Date().toISOString()
+            lgpd_accepted_at: updatedContext.lgpd_aceito_em || new Date().toISOString()
         });
 
         // MH-072 Parte A: onboarding não termina mais aqui — segue para a coleta de
@@ -730,7 +815,7 @@ export async function handleRecepcionista({ user, message, context, historicoCon
             context: {
                 etapa: 'nasc_dia',
                 dia: null, mes: null, ano: null,
-                mensagem_inicial: context.mensagem_inicial || '',
+                mensagem_inicial: updatedContext.mensagem_inicial || '',
                 tentativas_indeterminado: 0
             }
         });
