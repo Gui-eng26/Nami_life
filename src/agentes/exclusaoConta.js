@@ -123,7 +123,6 @@ Se eu fizer isso, vou apagar *tudo* que temos aqui, sem como recuperar depois:
 • Seu cadastro (nome e telefone)
 • Todos os seus medicamentos e horários de lembrete
 • Seu histórico de doses e relatórios de adesão
-• Sua rede de cuidadores, se você tiver
 
 Se for isso mesmo, me responda com a palavra *CONFIRMAR*.
 Se mudou de ideia, é só me dizer qualquer outra coisa que eu deixo tudo como está. 💛`;
