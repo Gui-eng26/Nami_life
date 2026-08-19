@@ -176,6 +176,22 @@ export async function replaceMedication({ medicationId, dosagem, instrucoes, est
     });
     data.estoque_atual = estoqueNovo;
 
+    // MH-073: preserva quantidade_por_dose antes de recriar os horários — sem isso,
+    // uma substituição de cadastro zeraria a posologia silenciosamente.
+    const { data: schedulesAntigos } = await supabase
+        .from('schedules')
+        .select('horario, quantidade_por_dose')
+        .eq('medication_id', medicationId);
+
+    const quantidadePorHorario = new Map(
+        (schedulesAntigos || []).map(s => [
+            String(s.horario).substring(0, 5),
+            Number(s.quantidade_por_dose)
+        ])
+    );
+    const quantidadesDistintas = [...new Set(quantidadePorHorario.values())];
+    const quantidadePadrao = quantidadesDistintas.length === 1 ? quantidadesDistintas[0] : 1;
+
     // Apaga horários antigos e recria
     await supabase.from('schedules').delete().eq('medication_id', medicationId);
 
@@ -185,7 +201,11 @@ export async function replaceMedication({ medicationId, dosagem, instrucoes, est
                 horario = horario.horario || horario.hora || Object.values(horario)[0];
             }
             const horarioStr = String(horario).trim().substring(0, 5);
-            await saveSchedule({ medicationId, horario: horarioStr });
+            await saveSchedule({
+                medicationId,
+                horario: horarioStr,
+                quantidadePorDose: quantidadePorHorario.get(horarioStr) ?? quantidadePadrao
+            });
         }
     }
 
@@ -209,7 +229,7 @@ export async function getUserMedications(userId) {
         .from('medications')
         .select(`
             *,
-            schedules (id, horario, dias_semana, ativo)
+            schedules (id, horario, dias_semana, ativo, quantidade_por_dose)
         `)
         .eq('user_id', userId)
         .eq('ativo', true);
@@ -282,12 +302,13 @@ export async function registrarMovimentoEstoque({
 // HORÁRIOS
 // ============================================================
 
-export async function saveSchedule({ medicationId, horario }) {
+export async function saveSchedule({ medicationId, horario, quantidadePorDose = 1 }) {
     const { error } = await supabase
         .from('schedules')
         .insert({
             medication_id: medicationId,
-            horario
+            horario,
+            quantidade_por_dose: quantidadePorDose
         });
 
     if (error) throw new Error(`Erro ao salvar horário: ${error.message}`);
@@ -310,7 +331,7 @@ export async function getMedicamentoDosesPerDia(medicationId) {
 export async function createDoseLog({
     medicationId, scheduledAt, reminderSent, reminderSentAt,
     zapiMessageId = null, status = 'pendente',
-    horarioAgendado = null
+    horarioAgendado = null, scheduleId = null
 }) {
     const now = new Date().toISOString();
     const { data, error } = await supabase
@@ -324,7 +345,8 @@ export async function createDoseLog({
             ultima_tentativa_at: now,
             status: status,
             zapi_message_id: zapiMessageId,
-            horario_agendado: horarioAgendado
+            horario_agendado: horarioAgendado,
+            schedule_id: scheduleId
         })
         .select()
         .single();
@@ -332,6 +354,133 @@ export async function createDoseLog({
     if (error) throw new Error(`Erro ao criar log de dose: ${error.message}`);
     console.log(`📝 DoseLog criado — tentativas: ${data.tentativas}, status: ${data.status}${horarioAgendado ? `, horario: ${horarioAgendado}` : ''}`);
     return data;
+}
+
+// ============================================================
+// MH-073 Parte A — QUANTIDADE POR DOSE E CONVERSÃO PARA ESTOQUE
+// ============================================================
+
+// Resolve quantas unidades_dose uma dose representa, na ordem de confiabilidade
+// da evidência disponível. NUNCA infere: cada degrau é uma fonte determinística,
+// e o degrau final registra system_event em vez de chutar silenciosamente.
+//
+// 1. dose_logs.schedule_id  → fonte da verdade (doses criadas a partir da Parte A)
+// 2. dose_logs.horario_agendado casando com EXATAMENTE 1 schedule ativo
+// 3. todos os schedules ativos do medicamento têm a mesma quantidade → usa ela
+// 4. ambíguo → retorna 1 e registra degradação visível
+export async function resolverQuantidadePorDose(doseLog) {
+    const medicationId = doseLog.medication_id;
+
+    // Degrau 1 — vínculo direto
+    if (doseLog.schedule_id) {
+        const { data: sched } = await supabase
+            .from('schedules')
+            .select('quantidade_por_dose')
+            .eq('id', doseLog.schedule_id)
+            .maybeSingle();
+        if (sched) return Number(sched.quantidade_por_dose);
+    }
+
+    const { data: schedules } = await supabase
+        .from('schedules')
+        .select('id, horario, quantidade_por_dose')
+        .eq('medication_id', medicationId)
+        .eq('ativo', true);
+
+    const lista = schedules || [];
+    if (lista.length === 0) return 1;
+
+    // Degrau 2 — casamento por horário agendado, apenas se não ambíguo
+    if (doseLog.horario_agendado) {
+        const alvo = String(doseLog.horario_agendado).substring(0, 5);
+        const casados = lista.filter(s => String(s.horario).substring(0, 5) === alvo);
+        if (casados.length === 1) return Number(casados[0].quantidade_por_dose);
+    }
+
+    // Degrau 3 — quantidade uniforme entre todos os horários
+    const distintas = [...new Set(lista.map(s => Number(s.quantidade_por_dose)))];
+    if (distintas.length === 1) return distintas[0];
+
+    // Degrau 4 — ambíguo: não chuta em silêncio
+    await registrarEvento({
+        tipo: 'degradacao_silenciosa',
+        severidade: 'media',
+        origem: 'database',
+        agent: 'database',
+        titulo: 'Quantidade por dose ambígua — fallback para 1',
+        payload: {
+            funcao: 'resolverQuantidadePorDose',
+            dose_log_id: doseLog.id,
+            medication_id: medicationId,
+            schedule_id: doseLog.schedule_id ?? null,
+            horario_agendado: doseLog.horario_agendado ?? null,
+            quantidades_distintas: distintas
+        }
+    });
+    return 1;
+}
+
+// Converte a quantidade de uma dose para a unidade em que o estoque é contado.
+// Âncora definida na v33: gotas_por_ml é a ponte entre dose em gotas e estoque em ml.
+// Em Parte A todos os medicamentos são unidade→unidade, então esta função é
+// identidade na prática; existe para que as Partes B–E não precisem tocar o núcleo.
+export function converterDoseParaEstoque({ quantidade, unidade_dose, unidade_estoque, gotas_por_ml }) {
+    if (unidade_dose === 'gota' && unidade_estoque === 'ml') {
+        const fator = Number(gotas_por_ml) || 20;
+        return quantidade / fator;
+    }
+    return quantidade;
+}
+
+// Quantidade a debitar do estoque por uma dose confirmada, já na unidade de estoque.
+export async function calcularDeltaEstoqueDaDose(doseLog) {
+    const quantidade = await resolverQuantidadePorDose(doseLog);
+
+    const { data: med } = await supabase
+        .from('medications')
+        .select('unidade_dose, unidade_estoque, gotas_por_ml')
+        .eq('id', doseLog.medication_id)
+        .single();
+
+    if (!med) return quantidade;
+
+    return converterDoseParaEstoque({
+        quantidade,
+        unidade_dose: med.unidade_dose,
+        unidade_estoque: med.unidade_estoque,
+        gotas_por_ml: med.gotas_por_ml
+    });
+}
+
+// Consumo diário total do medicamento, na unidade de estoque — soma de todos os
+// horários ativos. Substitui a contagem de schedules como proxy de consumo.
+export async function calcularConsumoDiario(medicationId) {
+    const { data: med } = await supabase
+        .from('medications')
+        .select('unidade_dose, unidade_estoque, gotas_por_ml')
+        .eq('id', medicationId)
+        .single();
+
+    const { data: schedules } = await supabase
+        .from('schedules')
+        .select('quantidade_por_dose')
+        .eq('medication_id', medicationId)
+        .eq('ativo', true);
+
+    const lista = schedules || [];
+    if (!med || lista.length === 0) return { consumoDiario: 0, dosesPerDia: 0 };
+
+    const somaDoses = lista.reduce((acc, s) => acc + Number(s.quantidade_por_dose), 0);
+
+    return {
+        consumoDiario: converterDoseParaEstoque({
+            quantidade: somaDoses,
+            unidade_dose: med.unidade_dose,
+            unidade_estoque: med.unidade_estoque,
+            gotas_por_ml: med.gotas_por_ml
+        }),
+        dosesPerDia: lista.length
+    };
 }
 
 export async function confirmDose(medicationId) {
@@ -358,12 +507,13 @@ export async function confirmDose(medicationId) {
         .eq('id', log.id);
     console.log(`✅ Dose confirmada — log id: ${log.id}`);
 
-    // Decrementa o estoque
+    // Decrementa o estoque (MH-073: quantidade vem da posologia, não é mais fixa em 1)
+    const deltaDose = await calcularDeltaEstoqueDaDose(log);
     await registrarMovimentoEstoque({
         medicationId,
         tipo: 'dose_confirmada',
         origem: 'automatico',
-        delta: -1,
+        delta: -deltaDose,
         doseLogId: log.id
     });
 }
@@ -509,11 +659,12 @@ export async function confirmDoseByLogId(doseLogId) {
     if (updateError) throw new Error(`Erro ao confirmar dose: ${updateError.message}`);
     console.log(`✅ Dose confirmada por log id: ${doseLogId}`);
 
+    const deltaDose = await calcularDeltaEstoqueDaDose(log);
     await registrarMovimentoEstoque({
         medicationId: log.medication_id,
         tipo: 'dose_confirmada',
         origem: 'automatico',
-        delta: -1,
+        delta: -deltaDose,
         doseLogId
     });
 
@@ -686,11 +837,12 @@ export async function confirmarDoseRetroativa(doseLogId, motivo) {
     if (updateError) throw new Error(`Erro ao confirmar dose retroativa: ${updateError.message}`);
     console.log(`⏪ Dose confirmada retroativamente — log id: ${doseLogId}`);
 
+    const deltaDose = await calcularDeltaEstoqueDaDose(log);
     await registrarMovimentoEstoque({
         medicationId: log.medication_id,
         tipo: 'dose_retroativa',
         origem: 'automatico',
-        delta: -1,
+        delta: -deltaDose,
         doseLogId
     });
 
@@ -726,11 +878,12 @@ export async function reverterConfirmacao(doseLogId, motivo) {
     if (updateError) throw new Error(`Erro ao reverter confirmação: ${updateError.message}`);
     console.log(`↩️ Confirmação revertida — log id: ${doseLogId}, novo status: ${novoStatus}`);
 
+    const deltaDose = await calcularDeltaEstoqueDaDose(log);
     await registrarMovimentoEstoque({
         medicationId: log.medication_id,
         tipo: 'dose_revertida',
         origem: 'automatico',
-        delta: 1,
+        delta: deltaDose,
         doseLogId
     });
 
@@ -836,15 +989,42 @@ export async function adicionarSchedule(medicationId, horario) {
         throw new Error(`HORARIO_DUPLICADO: já existe lembrete ativo às ${horario}`);
     }
 
+    // MH-073: herda a quantidade_por_dose dos demais horários do medicamento quando
+    // ela for uniforme; caso contrário, não há como inferir e usa 1.
+    const { data: schedulesAtuais } = await supabase
+        .from('schedules')
+        .select('quantidade_por_dose')
+        .eq('medication_id', medicationId)
+        .eq('ativo', true);
+
+    const quantidadesDistintas = [...new Set((schedulesAtuais || []).map(s => Number(s.quantidade_por_dose)))];
+    const quantidadePorDose = quantidadesDistintas.length === 1 ? quantidadesDistintas[0] : 1;
+
     const { error } = await supabase
         .from('schedules')
-        .insert({ medication_id: medicationId, horario: horarioFormatado, ativo: true });
+        .insert({ medication_id: medicationId, horario: horarioFormatado, ativo: true, quantidade_por_dose: quantidadePorDose });
     if (error) throw new Error(`Erro ao adicionar schedule: ${error.message}`);
 
     console.log(`➕ Schedule adicionado — medication: ${medicationId}, horario: ${horarioFormatado}`);
 }
 
 export async function reativarComAtualizacao({ medicationId, estoque, tipo_tratamento, tratamento_dias, horarios, apenasHorarios = false }) {
+    // MH-073: preserva quantidade_por_dose antes de desativar os horários antigos —
+    // mesma blindagem de replaceMedication (seção 5.6 do briefing).
+    const { data: schedulesAntigos } = await supabase
+        .from('schedules')
+        .select('horario, quantidade_por_dose')
+        .eq('medication_id', medicationId);
+
+    const quantidadePorHorario = new Map(
+        (schedulesAntigos || []).map(s => [
+            String(s.horario).substring(0, 5),
+            Number(s.quantidade_por_dose)
+        ])
+    );
+    const quantidadesDistintas = [...new Set(quantidadePorHorario.values())];
+    const quantidadePadrao = quantidadesDistintas.length === 1 ? quantidadesDistintas[0] : 1;
+
     if (!apenasHorarios) {
         const { error: errMed } = await supabase
             .from('medications')
@@ -875,7 +1055,12 @@ export async function reativarComAtualizacao({ medicationId, estoque, tipo_trata
         const horarioStr = String(horario).trim().substring(0, 5);
         const { error: errSched } = await supabase
             .from('schedules')
-            .insert({ medication_id: medicationId, horario: `${horarioStr}:00`, ativo: true });
+            .insert({
+                medication_id: medicationId,
+                horario: `${horarioStr}:00`,
+                ativo: true,
+                quantidade_por_dose: quantidadePorHorario.get(horarioStr) ?? quantidadePadrao
+            });
         if (errSched) throw new Error(`Erro ao criar schedule: ${errSched.message}`);
     }
 
@@ -1300,8 +1485,13 @@ export async function calcularProgressoTratamento(userId) {
         const tratamentoFim = new Date(med.tratamento_fim);
         const diasRestantes = Math.max(0, Math.ceil((tratamentoFim - hoje) / (1000 * 60 * 60 * 24)));
         const diasDecorridos = Math.max(0, med.tratamento_dias - diasRestantes);
-        const dosesPorDia = (med.schedules || []).filter(s => s.ativo).length || 1;
+        const schedulesAtivos = (med.schedules || []).filter(s => s.ativo);
+        const dosesPorDia = schedulesAtivos.length || 1;
         const dosesRestantes = diasRestantes * dosesPorDia;
+        // MH-073: consumo diário na unidade de estoque (soma das quantidades por dose)
+        const consumoDiario = schedulesAtivos.reduce(
+            (acc, s) => acc + Number(s.quantidade_por_dose ?? 1), 0
+        ) || 1;
         const percentualDecorrido = Math.round((diasDecorridos / med.tratamento_dias) * 100);
 
         return {
@@ -1313,7 +1503,8 @@ export async function calcularProgressoTratamento(userId) {
             dosesRestantes,
             percentualDecorrido,
             estoqueAtual: med.estoque_atual,
-            dosesPorDia
+            dosesPorDia,
+            consumoDiario
         };
     });
 }
@@ -1374,21 +1565,19 @@ export async function getEstoqueInfoParaAlerta(medicationId) {
 
     if (!med) return null;
 
-    const { data: schedules } = await supabase
-        .from('schedules')
-        .select('id')
-        .eq('medication_id', medicationId)
-        .eq('ativo', true);
+    // MH-073: dias de cobertura dependem do CONSUMO diário (soma das quantidades),
+    // não do número de horários. Com 2 comprimidos por dose e 2 horários, o consumo
+    // é 4/dia — contar schedules daria 2 e dobraria a projeção de cobertura.
+    const { consumoDiario, dosesPerDia } = await calcularConsumoDiario(medicationId);
+    if (dosesPerDia === 0 || consumoDiario <= 0) return null;
 
-    const dosesPerDia = (schedules || []).length;
-    if (dosesPerDia === 0) return null;
-
-    const diasRestantes = Math.floor(med.estoque_atual / dosesPerDia);
+    const diasRestantes = Math.floor(Number(med.estoque_atual) / consumoDiario);
 
     return {
         medNome: med.nome,
         novoEstoque: med.estoque_atual,
         dosesPerDia,
+        consumoDiario,
         diasRestantes,
         tipo_tratamento: med.tipo_tratamento || 'continuo',
         tratamento_dias: med.tratamento_dias || null

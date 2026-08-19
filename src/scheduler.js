@@ -212,7 +212,8 @@ async function sendGroupedReminder(grupo) {
                 reminderSent: true,
                 reminderSentAt: new Date().toISOString(),
                 // zapiMessageId omitido de propósito (default null)
-                horarioAgendado
+                horarioAgendado,
+                scheduleId: reminder.schedule_id
             });
             await registrarEventoProativo({
                 userId: reminder.user_id,
@@ -332,7 +333,8 @@ async function sendReminder(reminder) {
                 reminderSent: true,
                 reminderSentAt: new Date().toISOString(),
                 status: 'sem_estoque',
-                horarioAgendado
+                horarioAgendado,
+                scheduleId: reminder.schedule_id
             });
             await registrarEventoProativo({
                 userId: reminder.user_id,
@@ -362,7 +364,8 @@ async function sendReminder(reminder) {
             reminderSent: true,
             reminderSentAt: new Date().toISOString(),
             zapiMessageId,
-            horarioAgendado
+            horarioAgendado,
+            scheduleId: reminder.schedule_id
         });
         await registrarEventoProativo({
             userId: reminder.user_id,

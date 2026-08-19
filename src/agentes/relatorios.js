@@ -551,7 +551,7 @@ async function montarRespostaAdesaoDireta(user, dados, periodo) {
 
 function montarBlocoIndividual(p) {
     const fase = escolherFaseProgresso(p.percentualDecorrido);
-    const diasCobertosPeloEstoque = Math.floor(p.estoqueAtual / p.dosesPorDia);
+    const diasCobertosPeloEstoque = Math.floor(p.estoqueAtual / (p.consumoDiario || 1));
     const suficiente = diasCobertosPeloEstoque >= p.diasRestantes;
     const blocoEstoque = montarBlocoEstoque({
         suficiente,
