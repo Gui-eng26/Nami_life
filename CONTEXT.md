@@ -1,6 +1,6 @@
-# 🌿 NAMI — Contexto do Projeto (v32 — FECHADA: MH-076 aviso de desenvolvimento/testes
-na abertura e nas capacidades, remoção de promessa de cuidador (funcionalidade sem
-interface), orientação de contato do desenvolvedor — validado em produção — 18/08/2026)
+# 🌿 NAMI — Contexto do Projeto (v33 — FECHADA: MH-073 Parte A — separação entre unidade
+de estoque e unidade de dose; quantidade_por_dose na posologia; dose_logs.schedule_id;
+correção de subcontabilização de estoque em doses multi-unidade — 19/08/2026)
 
 ---
 
@@ -2333,6 +2333,102 @@ favorável não planejado.
   reescrever histórico.
 - Restante das 4 frentes de beta: MH-040, MH-073, MH-009 — nenhuma iniciada.
 
+## Sessão v33 — MH-073 Parte A: separação entre unidade de estoque e unidade de dose
+
+**Data:** 19/08/2026 · **Status:** entregue, em validação
+
+### O problema
+
+Todo o sistema de estoque repousava sobre uma equação implícita que nunca foi escrita em
+lugar nenhum:
+
+    1 schedule disparado = 1 dose = 1 unidade de estoque
+
+Ela estava distribuída em quatro `delta: ±1` hardcoded (`confirmDose`,
+`confirmDoseByLogId`, `confirmarDoseRetroativa`, `reverterConfirmacao`) e em três cálculos
+de `estoque ÷ número_de_schedules`. `dosesPerDia` nunca foi um dado armazenado — era
+sempre derivado de `COUNT(schedules ativos)`.
+
+A equação é falsa para líquidos (dose em gotas/ml, estoque em ml) e **já era falsa para
+sólidos**.
+
+### Evidência que motivou o desenho
+
+Medicamento `Omega 3` em produção: `dosagem = "4 comprimidos por dia (2 às 10:00 e 2 às
+21:30)"`, 2 horários ativos, 15 confirmações, soma dos deltas **−15**. O usuário toma 2
+por dose; o sistema debitava 1. **Subcontabilização de 50%, em medicamento sólido.**
+
+Duas conclusões estruturais:
+1. A lacuna "quantidade por dose" nunca foi exclusiva de líquidos — líquidos apenas
+   tornaram impossível continuar ignorando.
+2. `dosagem` virou lixeira semântica: sem campo estruturado para "quanto se toma por vez",
+   o LLM despejou a posologia inteira num `text` que nenhum cálculo consome. Campo faltando,
+   não prompt ruim.
+
+### O que foi entregue
+
+- `schedules.quantidade_por_dose` (numeric, NOT NULL, default 1, CHECK > 0)
+- `medications.unidade_estoque` · `unidade_dose` · `gotas_por_ml`, com CHECKs de conjunto
+  fechado e de coerência entre os dois eixos
+- `estoque_atual`, `estoque_minimo` e as três colunas de `stock_movements` → `numeric`
+- `dose_logs.schedule_id` — o vínculo dose↔posologia, que **não existia**
+- `get_pending_reminders` recriada (o `RETURNS TABLE` declarava `estoque_atual int`; sem
+  recriar, quebraria na primeira execução do cron, não na migration)
+- Helpers determinísticos em `database.js`: `resolverQuantidadePorDose`,
+  `converterDoseParaEstoque`, `calcularDeltaEstoqueDaDose`, `calcularConsumoDiario`
+- Blindagem de `replaceMedication`, `reativarComAtualizacao` e `adicionarSchedule` contra
+  perda silenciosa da posologia
+- `getEstoqueInfoParaAlerta` e `calcularProgressoTratamento` passam a usar **consumo
+  diário** (soma das quantidades) em vez de contagem de horários
+
+Nenhuma alteração de fluxo conversacional nem de texto ao usuário. Comportamento externo
+idêntico ao anterior para medicamentos de 1 unidade por dose.
+
+### Decisões de arquitetura
+
+**Quantidade por dose mora em `schedules`, não em `medications`.** Posologia é um conjunto
+de tuplas `(quanto, quando)`, não um escalar — um campo único não representaria "2 de manhã
+e 1 à noite", realidade clínica confirmada em campo. `schedules` já é a tabela de posologia:
+guarda `horario` e `dias_semana`, ambos fatos de prescrição, não de agendamento. O disparo
+real é `get_pending_reminders` + node-cron.
+
+**A tabela `schedules` NÃO foi renomeada para `posologia`.** Avaliado e descartado. O ganho
+era só de clareza conceitual; o custo eram dois riscos desproporcionais: a chave do join
+aninhado do Supabase mudaria `med.schedules` → `med.posologia` em **10 pontos de leitura**
+que um grep por `from('schedules')` não encontra, e haveria janela de indisponibilidade
+entre migration e deploy com o cron rodando a cada minuto. **Não relitigar sem motivo novo.**
+
+**`forma_farmaceutica` é descritiva; `unidade_*` é chave de comportamento.** Ver princípio 45.
+
+**Gotas por ml: convenção 20, editável por medicamento.** RAG sobre o bulário da ANVISA foi
+avaliado e descartado — além do custo (scraping de PDF, normalização comercial→apresentação,
+vector store), faria inferência de LLM alimentar aritmética de dose. Evolução prevista, se
+houver demanda: tabela curada de 30-50 medicamentos versionada no repo — determinística e
+auditável.
+
+### Validação em produção
+
+- `Nimesulida` com `quantidade_por_dose = 3` no horário das 22:00: dose confirmada gerou
+  `stock_movements.quantidade_delta = -3` (28 → 25), resolvida pelo **degrau 1** de
+  `resolverQuantidadePorDose` (`dose_logs.schedule_id` preenchido)
+- Nenhum `system_event` de `degradacao_silenciosa` registrado
+- Demais medicamentos (quantidade 1) seguem com delta −1 — sem regressão
+
+**Ainda não observado:** débito de −2 no `Omega 3` (nenhuma dose confirmada desde a
+migration) e primeira dose de medicamento líquido real — só existirá após a Parte B.
+
+### Dívida deixada consciente
+
+- `dose_logs.schedule_id` **sem backfill retroativo**: das 978 linhas existentes, 311 (32%)
+  têm `horario_agendado` NULL, tornando impossível reconstruir o vínculo para um terço da
+  base. Reconstruir só os 67% criaria dado parcialmente confiável — pior que ausência
+  declarada. `NULL` significa, sem ambiguidade: dose anterior à Parte A, quantidade 1.
+- **Estoque do `Omega 3` segue inflado** em ~15 unidades (15 doses debitadas com 1 quando
+  deveriam ser 2). Não corrigido: a correção exige o valor real conferido pelo usuário, e
+  alterar estoque sem essa evidência violaria o princípio de causa raiz confirmada.
+- `cadastro.js:406-431` (pré-cálculo de `alerta_estoque_baixo`) **não tocado** — opera sobre
+  contexto pré-salvamento, sem `medication_id`. Depende da coleta; é Parte B.
+
 ## Backlog (BUG/FIX/MH/ACH)
 
 A partir de 07/07/2026, o backlog completo vive na tabela `backlog_items`
@@ -2642,6 +2738,29 @@ leve pro beta. A partir da v29:
     modelo em qualquer etapa — se o efeito colateral for indesejável, a regra precisa de
     uma condição explícita de etapa dentro do próprio texto; a estrutura "SE etapa = X"
     sugere isolamento visualmente, mas não o impõe.
+
+45. **Campo descritivo e chave de comportamento são papéis distintos — e só o segundo
+    precisa de barreira.** Um campo que apenas é renderizado como texto pode ser livre; um campo
+    sobre o qual o código faz `if`/`switch` precisa ser conjunto fechado, validado antes de
+    persistir. `forma_farmaceutica` é gerada por LLM em texto livre e já apresenta deriva em
+    produção (`cápsula` / `capsula` / `efervescente`, este último fora da lista sugerida no
+    prompt); é lida em **um único ponto** (`relatorios.js:336`) e apenas para compor texto.
+    Promovê-la a condicional de cálculo importaria toda a variabilidade do LLM para dentro da
+    aritmética de dose. Ela também não determina a unidade nem em teoria — colírio e xarope são
+    ambos líquidos mas dosam em gotas e ml respectivamente; "efervescente" é sólido apesar do
+    nome. Por isso o comportamento é governado por `unidade_dose`/`unidade_estoque` (conjunto
+    fechado, CHECK no schema) enquanto `forma_farmaceutica` permanece cosmética. Divergência
+    entre os dois produz **texto estranho, nunca cálculo errado** — falha barata por desenho.
+
+46. **Quando o dado não basta, degradar com evidência registrada — nunca com valor padrão
+    silencioso.** `resolverQuantidadePorDose` percorre quatro degraus em ordem decrescente de
+    confiabilidade: vínculo direto (`dose_logs.schedule_id`), casamento por `horario_agendado`
+    apenas quando não ambíguo, quantidade uniforme entre todos os horários, e — só então —
+    fallback para 1 **acompanhado de `system_event`**. Cada degrau é uma fonte determinística,
+    nunca uma inferência. O quarto degrau existe porque a função precisa ser total, mas ele
+    nunca é atingido em silêncio: se um valor padrão vira dado de saúde, isso tem que aparecer
+    na observabilidade. Complementa o princípio 24 — registrar a intenção não basta, é preciso
+    registrar quando a intenção não pôde ser cumprida.
 
 ---
 
