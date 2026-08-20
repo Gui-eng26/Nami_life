@@ -333,7 +333,7 @@ async function relatorioMeusRemedios(user) {
                 .sort((x, y) => x.localeCompare(y))
                 .join(' e ')
             : 'sem horário cadastrado';
-        const forma = med.forma_farmaceutica || 'comprimido';
+        const forma = med.forma_farmaceutica || 'unidade';
         // A-4 (v25): dosagem nula era exibida literalmente como "null".
         const dosagem = med.dosagem || 'dosagem não informada';
         msg += `${i + 1}. *${med.nome}* — ${dosagem} (${forma})\n`;

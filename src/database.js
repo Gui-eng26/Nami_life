@@ -109,7 +109,10 @@ function calcularTratamentoFim(tipo_tratamento, tratamento_dias) {
 
 export async function saveMedication({
     userId, nome, dosagem, instrucoes, estoque,
-    forma, tipo_tratamento, tratamento_dias
+    forma, tipo_tratamento, tratamento_dias,
+    unidade_dose = 'unidade',        // MH-073 Parte B
+    unidade_estoque = 'unidade',     // MH-073 Parte B
+    gotas_por_ml = null               // MH-073 Parte B
 }) {
     // Verifica se já existe medicamento com mesmo nome
     const { data: existing } = await supabase
@@ -137,10 +140,18 @@ export async function saveMedication({
             instrucoes: instrucoes || null,
             estoque_atual: 0,
             estoque_minimo: 7,
-            forma_farmaceutica: forma || 'comprimido',
+            // era: forma || 'comprimido' — derivarFormaFarmaceutica (cadastro.js) nunca
+            // devolve null, então este default é rede de segurança para chamadores
+            // futuros, nunca alcançado no fluxo normal (MH-073 Parte B, seção 2.3).
+            forma_farmaceutica: forma || 'unidade',
             tipo_tratamento: tipo_tratamento || 'continuo',
             tratamento_dias: tratamento_dias || null,
-            tratamento_fim: calcularTratamentoFim(tipo_tratamento, tratamento_dias)
+            tratamento_fim: calcularTratamentoFim(tipo_tratamento, tratamento_dias),
+            unidade_dose,
+            unidade_estoque,
+            // barreira redundante numa coluna com CHECK (medications_gotas_por_ml_exigido_check) —
+            // garante coerência mesmo se o chamador esquecer de passar gotas_por_ml.
+            gotas_por_ml: unidade_dose === 'gota' ? (gotas_por_ml ?? 20) : gotas_por_ml
         })
         .select()
         .single();

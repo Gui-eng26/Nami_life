@@ -107,6 +107,10 @@ const DEGRADACOES = {
     'estado_pos_onboarding:classificador_destino_falhou': {
         severidade: 'media',
         titulo: 'Classificador de destino pós-onboarding falhou — assumido outro (post_onboarding)'
+    },
+    'cadastro:classificador_posologia_falhou': {
+        severidade: 'media',
+        titulo: 'Classificador de posologia falhou — etapa repete a pergunta'
     }
 };
 
