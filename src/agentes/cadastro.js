@@ -1121,9 +1121,18 @@ async function decidirEtapa(etapaAtual, message, context, historicoConversa) {
         if (decisao.proximaEtapa === 'cad_confirma_forma') {
             const contextFinal = { ...context, ...decisao.contextUpdates };
             if (!contextFinal.forma_explicita) {
-                decisao.contextUpdates.forma_sugerida = await sugerirFormaFarmaceutica({ nomeMedicamento: context?.nome });
+                // O palpite precisa existir ANTES de renderizar o bloco: é ele que aparece
+                // na frase de confirmação, para o usuário poder corrigir. Decisão 2.2 da
+                // Parte B: a inferência NUNCA entra na pergunta (moldaria a resposta), mas
+                // SEMPRE é submetida ao usuário na confirmação. Guardar o palpite sem
+                // mostrá-lo é pior que os dois extremos — persiste inferência não validada.
+                contextFinal.forma_sugerida = await sugerirFormaFarmaceutica({ nomeMedicamento: context?.nome });
+                decisao.contextUpdates.forma_sugerida = contextFinal.forma_sugerida;
             }
-            const rotulo = rotuloDaDose(contextFinal.unidade_dose, null);
+            const rotulo = rotuloDaDose(
+                contextFinal.unidade_dose,
+                ROTULO_CANONICO[contextFinal.forma_sugerida] || null
+            );
             contextParaPrompt.blocoConfirmaForma = renderizarBlocoPosologia(contextFinal.pares_posologia, rotulo);
         }
 
