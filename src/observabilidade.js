@@ -111,6 +111,26 @@ const DEGRADACOES = {
     'cadastro:classificador_posologia_falhou': {
         severidade: 'media',
         titulo: 'Classificador de posologia falhou — etapa repete a pergunta'
+    },
+    'cadastro:classificador_campo_simples_falhou': {
+        severidade: 'media',
+        titulo: 'Classificador de campo simples (nome/dosagem) falhou — etapa repete a pergunta'
+    },
+    'cadastro:classificador_tipo_tratamento_falhou': {
+        severidade: 'media',
+        titulo: 'Classificador de tipo de tratamento falhou — etapa repete a pergunta'
+    },
+    'cadastro:classificador_confirmacao_falhou': {
+        severidade: 'alta',
+        titulo: 'Classificador de confirmação de cadastro falhou — usuário pode ter confirmado sem avançar'
+    },
+    'cadastro:classificador_forma_sugerida_falhou': {
+        severidade: 'baixa',
+        titulo: 'Sugestão de forma farmacêutica falhou — segue sem palpite'
+    },
+    'cadastro:salvamento_com_estado_incompleto': {
+        severidade: 'critica',
+        titulo: 'Cadastro salvo com posologia vazia ou estoque não resolvido'
     }
 };
 
