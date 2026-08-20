@@ -572,7 +572,7 @@ export async function getPendingFollowUps() {
         .select(`
             *,
             medications (
-                id, nome, dosagem, user_id,
+                id, nome, dosagem, forma_farmaceutica, user_id,
                 users (id, phone, name)
             )
         `)
@@ -591,6 +591,7 @@ export async function getPendingFollowUps() {
         ...log,
         med_nome: log.medications?.nome,
         med_dosagem: log.medications?.dosagem,
+        med_forma: log.medications?.forma_farmaceutica,
         user_id: log.medications?.user_id,
         phone: log.medications?.users?.phone,
         user_name: log.medications?.users?.name
@@ -1570,7 +1571,7 @@ export async function getUsuariosAtivos() {
 export async function getEstoqueInfoParaAlerta(medicationId) {
     const { data: med } = await supabase
         .from('medications')
-        .select('nome, estoque_atual, tipo_tratamento, tratamento_dias')
+        .select('nome, estoque_atual, tipo_tratamento, tratamento_dias, forma_farmaceutica')
         .eq('id', medicationId)
         .single();
 
@@ -1586,6 +1587,7 @@ export async function getEstoqueInfoParaAlerta(medicationId) {
 
     return {
         medNome: med.nome,
+        medForma: med.forma_farmaceutica,
         novoEstoque: med.estoque_atual,
         dosesPerDia,
         consumoDiario,

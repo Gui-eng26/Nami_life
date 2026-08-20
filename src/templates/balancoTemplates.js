@@ -1,3 +1,5 @@
+import { VERBO_MULTIPLO } from './verbos.js';
+
 // ============================================================
 // BLOCO FACTUAL DO BALANÇO DO DIA (v25)
 // Este bloco é renderizado 100% em código e inserido LITERALMENTE na mensagem final.
@@ -70,7 +72,7 @@ export function molduraPadrao({ nome, rotuloData, resumo }) {
     if (resumo.cenario === 'tudo_confirmado') {
         fechamento = 'Tudo certinho! Continue assim! 💪';
     } else if (resumo.faltantes > 0) {
-        fechamento = 'Se você tomou alguma dessas e só não me avisou, é só me dizer qual. 💊';
+        fechamento = `Se você ${VERBO_MULTIPLO.passado} alguma dessas e só não me avisou, é só me dizer qual. 💊`;
     }
     return { abertura, fechamento };
 }

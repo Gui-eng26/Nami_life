@@ -7,6 +7,7 @@ import { handleFollowUp } from './agentes/lembrete.js';
 import { enviarResumoSemanal } from './agentes/relatorios.js';
 import { registrarEvento, tituloEstavel } from './observabilidade.js';
 import { executarJuizOffline } from './juizOffline.js';
+import { verboDoMedicamento, VERBO_MULTIPLO } from './templates/verbos.js';
 
 // ============================================================
 // INICIA O SCHEDULER
@@ -248,8 +249,8 @@ function buildGroupedReminderMessage(firstName, horario, grupo) {
     return (
         `⏰ ${firstName}, hora dos seus remédios das *${horario}*! 💊\n\n` +
         `${lista}\n\n` +
-        `✅ Tomou todos? Responda *SIM*\n` +
-        `💬 Tomou só alguns? Me diga quais (ex: "só o ${grupo[0].med_nome}")`
+        `✅ Já ${VERBO_MULTIPLO.passado} todos? Responda *SIM*\n` +
+        `💬 ${capitalize(VERBO_MULTIPLO.passado)} só alguns? Me diga quais (ex: "só o ${grupo[0].med_nome}")`
     );
 }
 
@@ -307,8 +308,8 @@ function buildGroupedFollowUpMessage(tentativa, firstName, horario, grupo) {
         `${abertura}\n\n` +
         `Ainda não vi sua confirmação dos remédios das *${horario}*:\n` +
         `${lista}\n\n` +
-        `✅ Tomou todos? Responda *SIM*\n` +
-        `💬 Tomou só alguns? Me diga quais 🌿`
+        `✅ Já ${VERBO_MULTIPLO.passado} todos? Responda *SIM*\n` +
+        `💬 ${capitalize(VERBO_MULTIPLO.passado)} só alguns? Me diga quais 🌿`
     );
 }
 
@@ -398,8 +399,9 @@ function buildReminderMessage(firstName, reminder) {
     const dosagem = reminder.med_dosagem
         ? ` — ${reminder.med_dosagem}`
         : '';
+    const verbo = verboDoMedicamento(reminder.forma_farmaceutica);
 
-    return `⏰ Olá, ${firstName}!\n\nHora do seu *${reminder.med_nome}*${dosagem}.\n\nJá tomou? Responda *SIM* ou *NÃO* 💊`;
+    return `⏰ Olá, ${firstName}!\n\nHora do seu *${reminder.med_nome}*${dosagem}.\n\n${verbo.imperativoPergunta} Responda *SIM* ou *NÃO* 💊`;
 }
 
 // ============================================================
@@ -418,6 +420,10 @@ function buildEstoqueZeradoMessage(firstName, reminder) {
 // ============================================================
 // UTILITÁRIOS
 // ============================================================
+
+function capitalize(texto) {
+    return texto.charAt(0).toUpperCase() + texto.slice(1);
+}
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));

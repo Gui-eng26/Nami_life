@@ -10,6 +10,7 @@ import {
     registrarEventoProativo
 } from '../database.js';
 import { buildAlertaEstoqueNaoInformado } from '../templates/estoqueTemplates.js';
+import { verboDoMedicamento } from '../templates/verbos.js';
 
 // ============================================================
 // MENSAGENS DE FOLLOW-UP
@@ -20,12 +21,13 @@ function buildFollowUpMessage(tentativa, reminder) {
         ? reminder.user_name.split(' ')[0]
         : 'você';
     const remedio = reminder.med_nome || 'seu remédio';
+    const verbo = verboDoMedicamento(reminder.med_forma);
 
     if (tentativa === 2) {
         return (
             `⏰ ${nome}, só passando para lembrar!\n\n` +
             `Ainda não vi sua confirmação do *${remedio}*.\n` +
-            `Já tomou? Responda *SIM* ou *NÃO* 💊`
+            `${verbo.imperativoPergunta} Responda *SIM* ou *NÃO* 💊`
         );
     }
 
@@ -33,12 +35,16 @@ function buildFollowUpMessage(tentativa, reminder) {
         return (
             `💊 ${nome}, último aviso de hoje!\n\n` +
             `Seu *${remedio}* ainda está aguardando confirmação.\n` +
-            `Tomou? É só responder *SIM* ou *NÃO* 🌿`
+            `${capitalize(verbo.passado)}? É só responder *SIM* ou *NÃO* 🌿`
         );
     }
 
     // Fallback seguro (não deveria ser chamado fora de tentativa 2 ou 3)
-    return `💊 ${nome}, lembrete do *${remedio}*. Já tomou? Responda *SIM* ou *NÃO*`;
+    return `💊 ${nome}, lembrete do *${remedio}*. ${verbo.imperativoPergunta} Responda *SIM* ou *NÃO*`;
+}
+
+function capitalize(texto) {
+    return texto.charAt(0).toUpperCase() + texto.slice(1);
 }
 
 // ============================================================

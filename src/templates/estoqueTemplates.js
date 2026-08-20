@@ -1,4 +1,5 @@
 import { classificarNivelEstoquePorDias } from '../database.js';
+import { verboDoMedicamento } from './verbos.js';
 
 // ============================================================
 // TEMPLATES DETERMINÍSTICOS — ALERTA DE ESTOQUE PÓS-CONFIRMAÇÃO
@@ -7,13 +8,14 @@ import { classificarNivelEstoquePorDias } from '../database.js';
 // ============================================================
 
 export function buildAlertaEstoquePosConfirmacao(info) {
-    const { medNome, novoEstoque, diasRestantes } = info;
+    const { medNome, medForma, novoEstoque, diasRestantes } = info;
     const nivel = classificarNivelEstoquePorDias({ novoEstoque, diasRestantes });
     const unidade = novoEstoque === 1 ? 'unidade' : 'unidades';
+    const verbo = verboDoMedicamento(medForma);
 
     if (nivel === 'zerado') {
         return (
-            `\n\n⚠️ *Atenção:* você acabou de tomar o último comprimido do *${medNome}* disponível. ` +
+            `\n\n⚠️ *Atenção:* você acabou de ${verbo.infinitivo} a última dose do *${medNome}* disponível. ` +
             `Não esqueça de providenciar a recompra!\n` +
             `Quando comprar, me avise: *"Comprei 30 comprimidos de ${medNome}"* 💊`
         );
@@ -37,9 +39,10 @@ export function buildAlertaEstoquePosConfirmacao(info) {
 }
 
 export function buildAlertaEstoqueNaoInformado(firstName, info) {
-    const { medNome, novoEstoque, diasRestantes } = info;
+    const { medNome, medForma, novoEstoque, diasRestantes } = info;
     const nivel = classificarNivelEstoquePorDias({ novoEstoque, diasRestantes });
     const unidade = novoEstoque === 1 ? 'unidade' : 'unidades';
+    const verbo = verboDoMedicamento(medForma);
 
     const prazo = nivel === 'zerado'
         ? 'está esgotado'
@@ -50,6 +53,6 @@ export function buildAlertaEstoqueNaoInformado(firstName, info) {
     return (
         `⚠️ ${firstName}, não recebi confirmação da sua dose do *${medNome}*.\n\n` +
         `Seu estoque atual é de *${novoEstoque}* ${unidade} — ${prazo}.\n` +
-        `Quando puder, me avise se tomou, e não esqueça de providenciar a recompra! 💊`
+        `Quando puder, me avise se ${verbo.passado}, e não esqueça de providenciar a recompra! 💊`
     );
 }
