@@ -131,6 +131,22 @@ const DEGRADACOES = {
     'cadastro:salvamento_com_estado_incompleto': {
         severidade: 'critica',
         titulo: 'Cadastro salvo com posologia vazia ou estoque não resolvido'
+    },
+    'cadastro:classificador_estoque_falhou': {
+        severidade: 'alta',
+        titulo: 'Classificador de estoque sólido falhou — etapa repete a pergunta'
+    },
+    'cadastro:extracao_cadastro_completo_falhou': {
+        severidade: 'baixa',
+        titulo: 'Extração de cadastro completo (MH-80) falhou — fluxo segue etapa a etapa'
+    },
+    'cadastro:palpite_forma_incompativel': {
+        severidade: 'baixa',
+        titulo: 'Palpite de forma farmacêutica descartado por incompatibilidade com a unidade de dose'
+    },
+    'cadastro:forma_explicita_incompativel': {
+        severidade: 'media',
+        titulo: 'Usuário informou forma farmacêutica incompatível com a unidade de dose já resolvida'
     }
 };
 

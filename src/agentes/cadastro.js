@@ -48,6 +48,25 @@ const FORMAS_VALIDAS = new Set(['comprimido', 'capsula', 'colirio', 'gotas', 'po
 const UNIDADES_DOSE_VALIDAS = new Set(['unidade', 'gota', 'ml']);
 const HORARIO_REGEX = /^\d{2}:\d{2}$/;
 
+// BUG-99 (briefing Parte B.3, seção 4.2): as únicas formas coerentes com cada unidade
+// de dose já resolvida. Usado para descartar PALPITES incompatíveis — nunca para
+// descartar o que o usuário disse explicitamente (forma_explicita/forma_confirmada
+// vindas de fala literal só são sinalizadas, nunca sobrescritas — ver validarClassificacaoPosologia).
+const FORMAS_COMPATIVEIS = {
+    unidade: new Set(['comprimido', 'capsula', 'pomada', 'injetavel']),
+    gota: new Set(['colirio', 'gotas']),
+    ml: new Set(['xarope', 'colirio', 'gotas'])
+};
+
+// Sem forma ou sem unidade ainda resolvida, não há o que checar — compatível por
+// ausência de contradição. Ponto único usado tanto para sinalizar fala explícita
+// incoerente (nunca descartada) quanto para filtrar palpite incoerente (descartado).
+function formaCompativelComUnidade(forma, unidadeDose) {
+    if (!forma || !unidadeDose) return true;
+    const compativeis = FORMAS_COMPATIVEIS[unidadeDose];
+    return !compativeis || compativeis.has(forma);
+}
+
 // unidade_dose é chave de comportamento (princípio 45) e tem CHECK no schema.
 // Esta tabela é a ÚNICA fonte das outras duas colunas — nenhuma combinação
 // inválida é representável, então os CHECKs de coerência da Parte A
@@ -112,6 +131,67 @@ function remapearParesParaNovosHorarios(paresAntigos, novosHorarios) {
     if (paresAntigos.length !== novosHorarios.length) return null;
     const ordenados = [...paresAntigos].sort((a, b) => a.horario.localeCompare(b.horario));
     return [...novosHorarios].sort().map((h, i) => ({ horario: h, quantidade: ordenados[i].quantidade }));
+}
+
+// BUG-98 (briefing Parte B.3, seção 4.1): quando a posologia já é derivada de um
+// intervalo, corrigir o primeiro horário precisa RECALCULAR a grade inteira em código
+// a partir do novo início — nunca aceitar uma lista de horários "recalculada" pelo LLM,
+// que é exatamente o tipo de aritmética de dado de saúde que o LLM erra (BUG-94).
+// Devolve null só quando o próprio cálculo determinístico falha (entrada inválida);
+// quando o cálculo funciona mas o remapeamento de quantidades é ambíguo, `pares` vem
+// null e `horarios` traz a grade nova mesmo assim — o chamador decide o que fazer.
+function recalcularGradePorIntervalo(paresAntigos, horarioInicio, intervaloHoras) {
+    const novosHorarios = calcularHorariosPorIntervalo(horarioInicio, intervaloHoras);
+    if (novosHorarios.length === 0) return null;
+    const pares = remapearParesParaNovosHorarios(paresAntigos, novosHorarios);
+    return { horarios: novosHorarios, pares };
+}
+
+// Identifica qual horário da correção é o novo "início" do intervalo — NUNCA assume que
+// é simplesmente o mais cedo em relógio. Dois formatos chegam aqui: um único horário
+// (correção pontual em cad_confirma_forma, sem MODO CORREÇÃO) ou a lista completa que o
+// MODO CORREÇÃO devolve em cad_confirmacao (os que mudaram + os que a pessoa não
+// mencionou, mantidos como estavam). No segundo formato, só é seguro tratar como "troca
+// do início" quando o início antigo (horarioInicioAntigo) SUMIU da lista corrigida e
+// exatamente um horário genuinamente novo apareceu em troca — senão a correção é de
+// outra dose (ex: "a das 20h passa pra 21h"), que quebraria a grade se fosse recalculada
+// como se fosse um novo início. Nesses casos devolve null e o chamador cai no remapeamento
+// simples, que já lida bem com esse caso (a contagem bate, a ordenação resolve sozinha).
+function identificarNovoInicio(paresAntigos, novosPares, horarioInicioAntigo) {
+    const novosHorarios = novosPares.map(p => p.horario);
+    if (novosHorarios.length === 1) return novosHorarios[0];
+
+    if (horarioInicioAntigo && !novosHorarios.includes(horarioInicioAntigo)) {
+        const horariosAntigos = new Set((paresAntigos || []).map(p => p.horario));
+        const genuinamenteNovos = novosHorarios.filter(h => !horariosAntigos.has(h));
+        if (genuinamenteNovos.length === 1) return genuinamenteNovos[0];
+    }
+    return null;
+}
+
+// Compartilhado entre corrigirPosologiaEmConfirmacao e decidirCadConfirmaForma (BUG-95 +
+// BUG-98): uma correção horarios_apenas, quando dá para identificar com segurança que ela
+// trocou o início de um intervalo já declarado, recalcula a grade INTEIRA em código a
+// partir do novo início (nunca aceita a lista "recalculada" pelo LLM). Quando não dá —
+// correção mira outra dose, ou não há intervalo declarado — cai no remapeamento simples
+// por posição ordenada (BUG-91), que já preserva as quantidades corretamente nesse caso.
+// Ao cair no fallback tendo um intervalo declarado, limpa intervalo_horas/horario_inicio:
+// a grade resultante não é mais garantidamente uma progressão aritmética, então tentar
+// recalculá-la de novo numa correção futura produziria um resultado errado.
+function resolverCorrecaoHorariosApenas(paresAntigos, novosParesClassificados, intervaloHorasContexto, horarioInicioContexto) {
+    if (intervaloHorasContexto) {
+        const novoInicio = identificarNovoInicio(paresAntigos, novosParesClassificados, horarioInicioContexto);
+        if (novoInicio) {
+            const grade = recalcularGradePorIntervalo(paresAntigos, novoInicio, intervaloHorasContexto);
+            if (grade) {
+                return { horarios: grade.horarios, pares: grade.pares, extra: { intervalo_horas: intervaloHorasContexto, horario_inicio: novoInicio } };
+            }
+        }
+    }
+    const horarios = novosParesClassificados.map(p => p.horario);
+    const pares = remapearParesParaNovosHorarios(paresAntigos, horarios);
+    const extra = intervaloHorasContexto ? { intervalo_horas: null, horario_inicio: null } : {};
+    return { horarios, pares, extra };
 }
 
 function pluralizarRotulo(rotulo, quantidade) {
@@ -212,12 +292,93 @@ function calcularAlertaEstoque(context, estoqueFinal) {
     } : null;
 }
 
+// ============================================================
+// BUG-97 (briefing Parte B.3, seção 3.3) — CLASSIFICADOR DE ESTOQUE SÓLIDO
+// ============================================================
+//
+// REGRESSÃO da Parte B: `parseInt(message) || 0` colapsava "não consegui ler" e "o
+// usuário disse zero" no mesmo valor 0, e não entendia frase natural ("Tenho 30 cps",
+// "Caixa com 60"). Substituído por classificador dedicado, no mesmo padrão dos demais
+// desta etapa — zero é resposta LEGÍTIMA, mas só quando o classificador tem certeza
+// que foi isso que a pessoa disse, nunca como fallback de falha.
+
+function buildEstoqueSolidoSystemPrompt({ nomeMedicamento, historicoConversa, message }) {
+    return `Você é um classificador para uma assistente de saúde via WhatsApp (a Nami), que está
+cadastrando o medicamento "${nomeMedicamento || ''}" e perguntou quantas unidades a pessoa TEM EM
+ESTOQUE agora (comprimidos, cápsulas, drágeas etc — forma sólida ou contável).
+
+Sua tarefa é extrair o TOTAL em unidades, já multiplicado quando a pessoa descrever embalagens.
+
+CATEGORIAS (escolha exatamente UMA):
+- quantidade: dá para calcular um total em unidades. Exemplos:
+  "30" -> 30 | "Tenho 30 cps" -> 30 | "Caixa com 60" -> 60 | "2 caixas de 30" -> 60 |
+  "1 caixa com 30" -> 30 | "3 cartelas de 10" -> 30 | "meia caixa de 20" -> 10 |
+  "não tenho nenhum" -> 0 | "acabou" -> 0 | "zero" -> 0.
+- indeterminado: não há número reconhecível, ou a embalagem foi citada sem o conteúdo dela
+  ("uma caixa" sem dizer quantas unidades tem, "tenho bastante", "bastante coisa").
+
+Zero é uma resposta LEGÍTIMA e DIFERENTE de "não consegui entender" — só devolva "quantidade": 0
+quando a pessoa disser explicitamente que não tem nenhum. Nunca chute um número quando a mensagem
+não permitir calcular um total com segurança.
+
+CONVERSA RECENTE:
+${formatarHistoricoConversa(historicoConversa)}
+
+MENSAGEM ATUAL: "${message}"
+
+Responda APENAS com um objeto JSON válido, sem markdown, sem backticks, sem explicação:
+{ "categoria": "...", "quantidade": null }`;
+}
+
+function fallbackEstoqueSolidoIndeterminado() {
+    return { categoria: 'indeterminado', quantidade: null };
+}
+
+async function classificarEstoqueSolido({ message, nomeMedicamento, historicoConversa = [] }) {
+    const systemPrompt = buildEstoqueSolidoSystemPrompt({ nomeMedicamento, historicoConversa, message });
+
+    const response = await anthropic.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 200,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: message || '' }]
+    });
+
+    const rawText = response.content[0]?.text || '';
+    let parsed = null;
+    try {
+        parsed = JSON.parse(rawText);
+    } catch {
+        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            try { parsed = JSON.parse(jsonMatch[0]); } catch { /* fall through */ }
+        }
+    }
+
+    if (!parsed) {
+        console.error('❌ cadastro: classificador de estoque sólido não retornou JSON válido:', rawText);
+        return await degradar({
+            origem: 'cadastro',
+            motivo: 'classificador_estoque_falhou',
+            agent: 'cadastro',
+            detalhe: { stop_reason: response?.stop_reason ?? null, tamanho_raw: rawText.length },
+            fallback: fallbackEstoqueSolidoIndeterminado()
+        });
+    }
+
+    let quantidade = Number(parsed.quantidade);
+    quantidade = Number.isFinite(quantidade) && quantidade >= 0 ? quantidade : null;
+    const categoria = parsed.categoria === 'quantidade' && quantidade !== null ? 'quantidade' : 'indeterminado';
+
+    return { categoria, quantidade: categoria === 'quantidade' ? quantidade : null };
+}
+
 // Etapa cad_estoque / cad_estoque_volume, ramificada por unidade_estoque (já resolvida
 // três etapas antes). Só o CÓDIGO decide estoque, alerta e a próxima etapa — o LLM de
 // geração apenas fraseia (mesmo princípio da seção 6 do briefing). Substitui o bloco
 // pré-Parte B que dividia estoque por número de horários (BUG corrigido na Parte B,
 // seção 7 do briefing): agora usa converterDoseParaEstoque sobre a posologia real.
-function processarEstoque(etapaAtual, message, context) {
+async function processarEstoque(etapaAtual, message, context, historicoConversa) {
     const unidadeEstoque = context?.unidade_estoque || 'unidade';
 
     const finalizarComEstoque = (estoque, extra = {}) => {
@@ -249,14 +410,23 @@ function processarEstoque(etapaAtual, message, context) {
                 contextUpdates: { frascos: frascos ?? null }
             };
         }
-        const estoque = parseInt(message) || 0;
-        return finalizarComEstoque(estoque);
+        const classificacao = await classificarEstoqueSolido({ message, nomeMedicamento: context?.nome, historicoConversa });
+        if (classificacao.categoria === 'quantidade') {
+            return finalizarComEstoque(classificacao.quantidade);
+        }
+        // Falha de extração devolve indeterminado, NUNCA 0 (seção 3.3.b do briefing) —
+        // permanece em cad_estoque e reformula a pergunta, nunca chega a salvar estoque nulo.
+        return { acao: 'estoque_indeterminado', proximaEtapa: 'cad_estoque', contextUpdates: {} };
     }
 
-    // cad_estoque_volume — só existe para líquidos
+    // cad_estoque_volume — só existe para líquidos. Única mudança no ramo líquido: quando
+    // o volume não é reconhecido, repergunta em vez de assumir 0 (seção 3.3, "ramo líquido").
     const volume = extrairNumero(message);
+    if (volume === null) {
+        return { acao: 'volume_indeterminado', proximaEtapa: 'cad_estoque_volume', contextUpdates: {} };
+    }
     const frascos = Number(context?.frascos) || 1;
-    return finalizarComEstoque(frascos * (volume || 0), { volume_frasco: volume });
+    return finalizarComEstoque(frascos * volume, { volume_frasco: volume });
 }
 
 // ============================================================
@@ -396,7 +566,7 @@ function fallbackPosologiaIndeterminada() {
 
 // Validação determinística pós-parse (seção 4.6 do briefing). Nunca deixa passar
 // quantidade/horário chutado — cada par é validado individualmente.
-function validarClassificacaoPosologia(parsed) {
+function validarClassificacaoPosologia(parsed, unidadeDoseContexto = null) {
     const categoriasValidas = new Set([
         'posologia_completa', 'horarios_apenas', 'quantidade_apenas', 'frequencia_intervalo', 'indeterminado'
     ]);
@@ -441,8 +611,22 @@ function validarClassificacaoPosologia(parsed) {
 
     const formaExplicita = FORMAS_VALIDAS.has(parsed.forma_explicita) ? parsed.forma_explicita : null;
 
+    // BUG-99 (seção 4.2 do briefing): só SINALIZA incoerência entre o que o usuário disse
+    // e a unidade de dose — nunca descarta a fala do usuário. Se ele disse "comprimido" e a
+    // unidade ficou "ml", quem provavelmente está errado é a unidade, não a forma; descartar
+    // a forma explícita seria pior que os dois errados juntos.
+    //
+    // A checagem usa a unidade que esta mensagem indicou; quando ela não indicou nenhuma
+    // (ex: correção em cad_confirma_forma que só fala da forma, "REGRA 3" default o campo
+    // pra "unidade" mesmo sem a pessoa ter dito nada de unidade), cai na unidade JÁ
+    // RESOLVIDA no contexto — sem isso, uma correção que não repete a unidade nunca seria
+    // checada contra a unidade real, e a incoerência passaria batida.
+    const unidadeParaChecagem = unidadeDose || unidadeDoseContexto;
+    const formaExplicitaIncompativel = !formaCompativelComUnidade(formaExplicita, unidadeParaChecagem);
+
     return {
         paresDescartados,
+        formaExplicitaIncompativel,
         resultado: {
             categoria,
             pares,
@@ -456,7 +640,7 @@ function validarClassificacaoPosologia(parsed) {
     };
 }
 
-async function classificarPosologia({ message, campoEsperado, nomeMedicamento, horariosJaColetados = [], historicoConversa = [], emCorrecao = false }) {
+async function classificarPosologia({ message, campoEsperado, nomeMedicamento, horariosJaColetados = [], historicoConversa = [], emCorrecao = false, unidadeDoseContexto = null }) {
     const systemPrompt = buildPosologiaSystemPrompt({ nomeMedicamento, campoEsperado, horariosJaColetados, historicoConversa, message, emCorrecao });
 
     const response = await anthropic.messages.create({
@@ -488,7 +672,19 @@ async function classificarPosologia({ message, campoEsperado, nomeMedicamento, h
         });
     }
 
-    const { resultado, paresDescartados } = validarClassificacaoPosologia(parsed);
+    const { resultado, paresDescartados, formaExplicitaIncompativel } = validarClassificacaoPosologia(parsed, unidadeDoseContexto);
+
+    if (formaExplicitaIncompativel) {
+        // Fire-and-forget: é só registro (degradar nunca lança e o fallback é descartado),
+        // não há motivo pra bloquear a resposta do usuário nesse insert.
+        degradar({
+            origem: 'cadastro',
+            motivo: 'forma_explicita_incompativel',
+            agent: 'cadastro',
+            detalhe: { forma_explicita: resultado.formaExplicita, unidade_dose: resultado.unidadeDose || unidadeDoseContexto },
+            fallback: null
+        });
+    }
 
     if (paresDescartados) {
         return await degradar({
@@ -775,7 +971,7 @@ async function classificarConfirmacaoCadastro({ message, nomeMedicamento, histor
 function corrigirPosologiaEmConfirmacao(campoAlvo, classificacao, context) {
     const horariosAtuais = (context?.pares_posologia || []).map(p => p.horario);
 
-    const aplicarNovosPares = (pares) => {
+    const aplicarNovosPares = (pares, extra = {}) => {
         const unidades = derivarUnidades(classificacao.unidadeDose || context?.unidade_dose || 'unidade');
         const contextComPares = {
             ...context,
@@ -783,7 +979,8 @@ function corrigirPosologiaEmConfirmacao(campoAlvo, classificacao, context) {
             horarios: pares.map(p => p.horario),
             unidade_dose: unidades.unidade_dose,
             unidade_estoque: unidades.unidade_estoque,
-            gotas_por_ml: unidades.gotas_por_ml
+            gotas_por_ml: unidades.gotas_por_ml,
+            ...extra
         };
         const estoqueFinal = context?.estoque_resolvido ?? 0;
         const alerta = calcularAlertaEstoque(contextComPares, estoqueFinal);
@@ -793,7 +990,8 @@ function corrigirPosologiaEmConfirmacao(campoAlvo, classificacao, context) {
             unidade_dose: unidades.unidade_dose,
             unidade_estoque: unidades.unidade_estoque,
             gotas_por_ml: unidades.gotas_por_ml,
-            alerta_estoque_baixo: alerta
+            alerta_estoque_baixo: alerta,
+            ...extra
         };
         return {
             acao: 'posologia_corrigida',
@@ -803,18 +1001,45 @@ function corrigirPosologiaEmConfirmacao(campoAlvo, classificacao, context) {
         };
     };
 
+    // Ambíguo (contagem de horários não bate) — nunca chuta quantidade, avança para
+    // repreguntá-la (a etapa nunca trava, seção 6.3 do briefing).
+    const aplicarGradeAmbigua = (horarios, extra = {}) => ({
+        acao: 'horarios_corrigidos',
+        proximaEtapa: 'cad_quantidade_por_dose',
+        contextUpdates: { horarios, pares_posologia: null, ...extra }
+    });
+
     if (classificacao.categoria === 'posologia_completa') {
         return aplicarNovosPares(classificacao.pares);
     }
 
+    // BUG-98: quando dá pra identificar com segurança que a correção trocou o início de
+    // um intervalo já declarado, a grade INTEIRA é recalculada em código a partir do novo
+    // início — nunca a lista "recalculada" pelo LLM (dado de saúde, princípio 28). Quando
+    // não dá (correção mira outra dose, ou não há intervalo), cai no remapeamento simples.
     if (campoAlvo === 'horarios' && classificacao.categoria === 'horarios_apenas') {
-        const novosHorarios = classificacao.pares.map(p => p.horario);
-        const remapeados = remapearParesParaNovosHorarios(context?.pares_posologia, novosHorarios);
-        if (remapeados) return aplicarNovosPares(remapeados);
+        const { horarios, pares, extra } = resolverCorrecaoHorariosApenas(
+            context?.pares_posologia, classificacao.pares, context?.intervalo_horas, context?.horario_inicio
+        );
+        return pares ? aplicarNovosPares(pares, extra) : aplicarGradeAmbigua(horarios, extra);
+    }
+
+    // BUG-96: frequência/intervalo corrigida a partir da confirmação ("de 8 em 8hrs
+    // começando às 16hrs"). Com horário de início, recalcula a grade e remapeia as
+    // quantidades; sem início, avança para cad_horarios (que já sabe pedir só a
+    // primeira dose quando intervalo_horas está preenchido sem horario_inicio).
+    if (campoAlvo === 'horarios' && classificacao.categoria === 'frequencia_intervalo') {
+        if (classificacao.horarioInicio) {
+            const grade = recalcularGradePorIntervalo(context?.pares_posologia, classificacao.horarioInicio, classificacao.intervaloHoras);
+            if (grade) {
+                const extra = { intervalo_horas: classificacao.intervaloHoras, horario_inicio: classificacao.horarioInicio };
+                return grade.pares ? aplicarNovosPares(grade.pares, extra) : aplicarGradeAmbigua(grade.horarios, extra);
+            }
+        }
         return {
-            acao: 'horarios_corrigidos',
-            proximaEtapa: 'cad_quantidade_por_dose',
-            contextUpdates: { horarios: novosHorarios, pares_posologia: null }
+            acao: 'frequencia_sem_inicio',
+            proximaEtapa: 'cad_horarios',
+            contextUpdates: { intervalo_horas: classificacao.intervaloHoras }
         };
     }
 
@@ -880,6 +1105,136 @@ async function sugerirFormaFarmaceutica({ nomeMedicamento }) {
     }
 
     return FORMAS_VALIDAS.has(parsed.forma) ? parsed.forma : null;
+}
+
+// ============================================================
+// MH-80 (briefing MH-073 Parte B.3, seção 5) — EXTRAÇÃO COMPLETA NA
+// PRIMEIRA MENSAGEM DO CADASTRO
+// ============================================================
+
+function buildCadastroCompletoSystemPrompt({ historicoConversa, message }) {
+    return `Você é um classificador para uma assistente de saúde via WhatsApp (a Nami), que está
+começando o cadastro de um medicamento. O usuário pode ter enviado, numa única mensagem, várias
+informações além do nome do medicamento.
+
+Sua tarefa é extrair APENAS o que estiver EXPLÍCITO na mensagem. Campo ausente -> null. NUNCA
+infira dosagem a partir do nome, nem quantidade a partir do estoque, nem forma a partir do nome.
+
+Reaproveite estas regras (as mesmas usadas na coleta normal de posologia):
+- Números precedidos de "às"/"as" são HORÁRIOS, nunca quantidade.
+- Quando a dose é aplicada em mais de um sítio (ex: "em cada olho"), a quantidade já vem
+  multiplicada (ex: "2 gotas em cada olho" -> quantidade 4).
+- Resposta em mg/mcg/g/% é DOSAGEM (concentração), nunca quantidade por dose ou estoque.
+
+CAMPOS A EXTRAIR:
+- nome: nome do medicamento.
+- dosagem: a concentração, como no rótulo (ex: "50mg").
+- pares: lista de {"horario": "HH:MM", "quantidade": 0} — só quando horário E quantidade
+  estiverem explícitos juntos para o mesmo horário.
+- unidadeDose: "unidade" | "gota" | "ml", derivada do que a pessoa disse.
+- formaExplicita: comprimido | capsula | colirio | gotas | pomada | injetavel | xarope | null —
+  só quando a pessoa NOMEOU a forma.
+- estoqueQuantidade: total em unidades já multiplicado (ex: "1 caixa com 30" -> 30), só quando a
+  forma de estoque for sólida/contável.
+- frascos e volumeFrasco: só para estoque líquido (ex: "1 vidro de 100ml" -> frascos:1,
+  volumeFrasco:100).
+- tipoTratamento: "continuo" | "temporario" | null.
+- tratamentoDias: número de dias, só quando explícito e o tratamento for temporário.
+
+CONVERSA RECENTE:
+${formatarHistoricoConversa(historicoConversa)}
+
+MENSAGEM ATUAL: "${message}"
+
+Responda APENAS com um objeto JSON válido, sem markdown, sem backticks, sem explicação:
+{
+  "nome": null, "dosagem": null, "pares": [], "unidadeDose": null, "formaExplicita": null,
+  "estoqueQuantidade": null, "frascos": null, "volumeFrasco": null, "tipoTratamento": null,
+  "tratamentoDias": null
+}`;
+}
+
+function fallbackCadastroCompleto() {
+    return {
+        nome: null, dosagem: null, pares: [], unidadeDose: null, formaExplicita: null,
+        estoqueQuantidade: null, frascos: null, volumeFrasco: null, tipoTratamento: null,
+        tratamentoDias: null
+    };
+}
+
+// MH-80 é aceleração, nunca caminho obrigatório: se a extração falhar (degradar()), o
+// fallback devolve nome: null e o chamador (decidirEtapa) segue exatamente como hoje —
+// pergunta o nome de novo pelo classificador simples de sempre.
+async function extrairCadastroCompleto({ message, historicoConversa = [] }) {
+    const systemPrompt = buildCadastroCompletoSystemPrompt({ historicoConversa, message });
+
+    const response = await anthropic.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 500,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: message || '' }]
+    });
+
+    const rawText = response.content[0]?.text || '';
+    let parsed = null;
+    try {
+        parsed = JSON.parse(rawText);
+    } catch {
+        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            try { parsed = JSON.parse(jsonMatch[0]); } catch { /* fall through */ }
+        }
+    }
+
+    if (!parsed) {
+        console.error('❌ cadastro: extração de cadastro completo (MH-80) não retornou JSON válido:', rawText);
+        return await degradar({
+            origem: 'cadastro',
+            motivo: 'extracao_cadastro_completo_falhou',
+            agent: 'cadastro',
+            detalhe: { stop_reason: response?.stop_reason ?? null, tamanho_raw: rawText.length },
+            fallback: fallbackCadastroCompleto()
+        });
+    }
+
+    const paresBrutos = Array.isArray(parsed.pares) ? parsed.pares : [];
+    const pares = paresBrutos
+        .filter(p => horarioValido(p?.horario) && Number.isFinite(Number(p?.quantidade)) && Number(p.quantidade) > 0)
+        .map(p => ({ horario: p.horario, quantidade: Number(p.quantidade) }));
+
+    const unidadeDose = UNIDADES_DOSE_VALIDAS.has(parsed.unidadeDose) ? parsed.unidadeDose : null;
+    const formaExplicita = FORMAS_VALIDAS.has(parsed.formaExplicita) ? parsed.formaExplicita : null;
+
+    // Zero é estoque LEGÍTIMO (mesmo colapso do BUG-97) — `Number(null) === 0`, então o
+    // campo só é aceito quando realmente veio preenchido no JSON, nunca por conversão de
+    // ausência. Campo ausente tem que sobreviver como null até cad_estoque perguntar.
+    let estoqueQuantidade = null;
+    if (typeof parsed.estoqueQuantidade === 'number' || typeof parsed.estoqueQuantidade === 'string') {
+        const n = Number(parsed.estoqueQuantidade);
+        estoqueQuantidade = Number.isFinite(n) && n >= 0 ? n : null;
+    }
+
+    let frascos = Number(parsed.frascos);
+    frascos = Number.isFinite(frascos) && frascos > 0 ? frascos : null;
+    let volumeFrasco = Number(parsed.volumeFrasco);
+    volumeFrasco = Number.isFinite(volumeFrasco) && volumeFrasco > 0 ? volumeFrasco : null;
+
+    const tipoTratamento = ['continuo', 'temporario'].includes(parsed.tipoTratamento) ? parsed.tipoTratamento : null;
+    let tratamentoDias = Number(parsed.tratamentoDias);
+    tratamentoDias = Number.isFinite(tratamentoDias) && tratamentoDias > 0 ? tratamentoDias : null;
+
+    return {
+        nome: typeof parsed.nome === 'string' && parsed.nome.trim() ? parsed.nome.trim() : null,
+        dosagem: typeof parsed.dosagem === 'string' && parsed.dosagem.trim() ? parsed.dosagem.trim() : null,
+        pares,
+        unidadeDose,
+        formaExplicita,
+        estoqueQuantidade,
+        frascos,
+        volumeFrasco,
+        tipoTratamento,
+        tratamentoDias: tipoTratamento === 'temporario' ? tratamentoDias : null
+    };
 }
 
 // ============================================================
@@ -1040,6 +1395,11 @@ function respostaConfirmaSimples(message) {
 }
 
 // Etapa cad_confirma_forma NUNCA bloqueia (seção 6.3) — qualquer resposta avança.
+//
+// BUG-95 (briefing Parte B.3, seção 3.1): o classificador de posologia devolve 5
+// categorias possíveis nesta etapa, mas só `posologia_completa` era tratada — uma
+// correção de só horário ("na vdd vai começar às 16hrs") ou de frequência ("de 8 em
+// 8hrs") caía direto no fallback genérico e era descartada em silêncio.
 function decidirCadConfirmaForma(classificacao, message, context) {
     if (classificacao.categoria === 'posologia_completa' && classificacao.pares.length > 0) {
         return {
@@ -1051,6 +1411,59 @@ function decidirCadConfirmaForma(classificacao, message, context) {
             }
         };
     }
+
+    if (classificacao.categoria === 'horarios_apenas' && classificacao.pares.length > 0) {
+        // BUG-98: mesma lógica de corrigirPosologiaEmConfirmacao — recalcula em código a
+        // partir de um intervalo já declarado só quando dá pra identificar com segurança
+        // que foi o início que mudou; senão remapeia por posição ordenada.
+        const { horarios, pares, extra } = resolverCorrecaoHorariosApenas(
+            context?.pares_posologia, classificacao.pares, context?.intervalo_horas, context?.horario_inicio
+        );
+        if (pares) {
+            return {
+                acao: 'horarios_corrigidos',
+                proximaEtapa: 'cad_tipo_tratamento',
+                contextUpdates: {
+                    horarios,
+                    pares_posologia: pares,
+                    forma_confirmada: context?.forma_sugerida || null,
+                    ...extra
+                }
+            };
+        }
+        return {
+            acao: 'horarios_corrigidos_ambiguo',
+            proximaEtapa: 'cad_quantidade_por_dose',
+            contextUpdates: { horarios, pares_posologia: null, ...extra }
+        };
+    }
+
+    if (classificacao.categoria === 'frequencia_intervalo') {
+        if (classificacao.horarioInicio) {
+            const grade = recalcularGradePorIntervalo(context?.pares_posologia, classificacao.horarioInicio, classificacao.intervaloHoras);
+            if (grade) {
+                const extra = { intervalo_horas: classificacao.intervaloHoras, horario_inicio: classificacao.horarioInicio };
+                if (grade.pares) {
+                    return {
+                        acao: 'horarios_corrigidos',
+                        proximaEtapa: 'cad_tipo_tratamento',
+                        contextUpdates: { horarios: grade.horarios, pares_posologia: grade.pares, forma_confirmada: context?.forma_sugerida || null, ...extra }
+                    };
+                }
+                return {
+                    acao: 'horarios_corrigidos_ambiguo',
+                    proximaEtapa: 'cad_quantidade_por_dose',
+                    contextUpdates: { horarios: grade.horarios, pares_posologia: null, ...extra }
+                };
+            }
+        }
+        return {
+            acao: 'frequencia_sem_inicio',
+            proximaEtapa: 'cad_horarios',
+            contextUpdates: { intervalo_horas: classificacao.intervaloHoras }
+        };
+    }
+
     if (classificacao.formaExplicita) {
         return {
             acao: 'forma_corrigida',
@@ -1082,8 +1495,127 @@ function ehCancelamento(message) {
 // Dispatcher central: para CADA etapa, decide em código a próxima etapa e as
 // atualizações de contexto. contextParaPrompt carrega só dado efêmero de fraseio
 // (nunca persistido em conversation_state) — ver handleCadastro.
+// O palpite de forma precisa existir ANTES de renderizar o bloco de cad_confirma_forma —
+// compartilhado entre o fluxo normal (cad_horarios/cad_quantidade_por_dose) e o salto do
+// MH-80 (cad_nome). BUG-99: o palpite passa pela checagem de coerência com a unidade de
+// dose já resolvida antes de ser aceito — nunca chega a aparecer na confirmação se for
+// incompatível (ex: "comprimido" sugerido para uma unidade "ml").
+async function prepararContextoConfirmaForma(contextFinal, contextUpdates, nomeMedicamento) {
+    if (!contextFinal.forma_explicita) {
+        // Decisão 2.2 da Parte B: a inferência NUNCA entra na pergunta (moldaria a
+        // resposta), mas SEMPRE é submetida ao usuário na confirmação.
+        let palpite = await sugerirFormaFarmaceutica({ nomeMedicamento });
+        if (palpite && !formaCompativelComUnidade(palpite, contextFinal.unidade_dose)) {
+            // Fire-and-forget: é só registro (degradar nunca lança e o fallback é
+            // descartado), não há motivo pra bloquear a resposta do usuário nesse insert.
+            degradar({
+                origem: 'cadastro',
+                motivo: 'palpite_forma_incompativel',
+                agent: 'cadastro',
+                detalhe: { palpite, unidade_dose: contextFinal.unidade_dose },
+                fallback: null
+            });
+            palpite = null;
+        }
+        contextFinal.forma_sugerida = palpite;
+        contextUpdates.forma_sugerida = palpite;
+    }
+    const rotulo = rotuloDaDose(contextFinal.unidade_dose, ROTULO_CANONICO[contextFinal.forma_sugerida] || null);
+    return renderizarBlocoPosologia(contextFinal.pares_posologia, rotulo);
+}
+
+// MH-80 (briefing Parte B.3, seção 5): aproveita dados completos informados já na
+// primeira mensagem do cadastro, evitando repreguntar o que já veio explícito. NÃO pula
+// nenhuma etapa que ficou faltando no meio — cada campo extraído é gravado no contexto
+// independente de qual é a "próxima etapa"; a próxima etapa é sempre a primeira faltante
+// na ordem canônica, então nada do que já veio é reperguntado depois.
+function montarSaltoCadastroCompleto(completo) {
+    const contextUpdates = { nome: completo.nome };
+    if (completo.dosagem) contextUpdates.dosagem = completo.dosagem;
+
+    let unidades = null;
+    if (completo.pares.length > 0) {
+        unidades = derivarUnidades(completo.unidadeDose || 'unidade');
+        contextUpdates.horarios = completo.pares.map(p => p.horario);
+        contextUpdates.pares_posologia = completo.pares;
+        contextUpdates.unidade_dose = unidades.unidade_dose;
+        contextUpdates.unidade_estoque = unidades.unidade_estoque;
+        contextUpdates.gotas_por_ml = unidades.gotas_por_ml;
+        contextUpdates.forma_explicita = completo.formaExplicita || null;
+    }
+
+    if (completo.tipoTratamento === 'continuo') {
+        contextUpdates.tipo_tratamento = 'continuo';
+        contextUpdates.tratamento_dias = null;
+    } else if (completo.tipoTratamento === 'temporario' && completo.tratamentoDias) {
+        contextUpdates.tipo_tratamento = 'temporario';
+        contextUpdates.tratamento_dias = completo.tratamentoDias;
+    }
+
+    let estoqueResolvido = null;
+    if (unidades?.unidade_estoque === 'ml') {
+        if (completo.frascos && completo.volumeFrasco) {
+            estoqueResolvido = completo.frascos * completo.volumeFrasco;
+            contextUpdates.frascos = completo.frascos;
+            contextUpdates.volume_frasco = completo.volumeFrasco;
+        } else if (completo.frascos) {
+            contextUpdates.frascos = completo.frascos;
+        }
+    } else if (completo.estoqueQuantidade !== null) {
+        estoqueResolvido = completo.estoqueQuantidade;
+    }
+
+    // Primeira etapa FALTANTE, na ordem canônica — nunca a última etapa preenchida.
+    if (!completo.dosagem) {
+        return { proximaEtapa: 'cad_dosagem', contextUpdates };
+    }
+    if (completo.pares.length === 0) {
+        return { proximaEtapa: 'cad_horarios', contextUpdates };
+    }
+    if (!completo.formaExplicita) {
+        return { proximaEtapa: 'cad_confirma_forma', contextUpdates };
+    }
+    if (!contextUpdates.tipo_tratamento) {
+        if (completo.tipoTratamento === 'temporario' && !completo.tratamentoDias) {
+            contextUpdates.tipo_tratamento_pendente = true;
+        }
+        return { proximaEtapa: 'cad_tipo_tratamento', contextUpdates };
+    }
+    if (estoqueResolvido === null) {
+        if (unidades.unidade_estoque === 'ml' && contextUpdates.frascos) {
+            return { proximaEtapa: 'cad_estoque_volume', contextUpdates };
+        }
+        return { proximaEtapa: 'cad_estoque', contextUpdates };
+    }
+
+    contextUpdates.estoque_resolvido = estoqueResolvido;
+    contextUpdates.alerta_estoque_baixo = calcularAlertaEstoque(contextUpdates, estoqueResolvido);
+    return {
+        proximaEtapa: 'cad_confirmacao',
+        contextUpdates,
+        contextParaPrompt: { resumoRenderizado: renderizarResumo(contextUpdates, estoqueResolvido) }
+    };
+}
+
 async function decidirEtapa(etapaAtual, message, context, historicoConversa) {
     if (etapaAtual === 'cad_nome') {
+        // MH-80: só dispara a extração completa quando a mensagem tem indício de
+        // conteúdo além do nome (dígito ou mais de 6 palavras) — evita uma chamada extra
+        // em mensagens simples como "Claritin".
+        const pareceCompleto = /\d/.test(message) || String(message).trim().split(/\s+/).filter(Boolean).length > 6;
+        if (pareceCompleto) {
+            const completo = await extrairCadastroCompleto({ message, historicoConversa });
+            if (completo.nome) {
+                const decisao = montarSaltoCadastroCompleto(completo);
+                const contextParaPrompt = { ...(decisao.contextParaPrompt || {}) };
+                if (decisao.proximaEtapa === 'cad_confirma_forma') {
+                    const contextFinal = { ...context, ...decisao.contextUpdates };
+                    contextParaPrompt.blocoConfirmaForma = await prepararContextoConfirmaForma(contextFinal, decisao.contextUpdates, completo.nome);
+                }
+                return { proximaEtapa: decisao.proximaEtapa, contextUpdates: decisao.contextUpdates, contextParaPrompt };
+            }
+        }
+
         const c = await extrairCampoSimples({ campo: 'nome', message, historicoConversa });
         if (c.categoria === 'valor') {
             return { proximaEtapa: 'cad_dosagem', contextUpdates: { nome: c.valor } };
@@ -1106,7 +1638,8 @@ async function decidirEtapa(etapaAtual, message, context, historicoConversa) {
             campoEsperado,
             nomeMedicamento: context?.nome,
             horariosJaColetados: context?.horarios || [],
-            historicoConversa
+            historicoConversa,
+            unidadeDoseContexto: context?.unidade_dose
         });
 
         const decisao = etapaAtual === 'cad_horarios'
@@ -1120,20 +1653,7 @@ async function decidirEtapa(etapaAtual, message, context, historicoConversa) {
 
         if (decisao.proximaEtapa === 'cad_confirma_forma') {
             const contextFinal = { ...context, ...decisao.contextUpdates };
-            if (!contextFinal.forma_explicita) {
-                // O palpite precisa existir ANTES de renderizar o bloco: é ele que aparece
-                // na frase de confirmação, para o usuário poder corrigir. Decisão 2.2 da
-                // Parte B: a inferência NUNCA entra na pergunta (moldaria a resposta), mas
-                // SEMPRE é submetida ao usuário na confirmação. Guardar o palpite sem
-                // mostrá-lo é pior que os dois extremos — persiste inferência não validada.
-                contextFinal.forma_sugerida = await sugerirFormaFarmaceutica({ nomeMedicamento: context?.nome });
-                decisao.contextUpdates.forma_sugerida = contextFinal.forma_sugerida;
-            }
-            const rotulo = rotuloDaDose(
-                contextFinal.unidade_dose,
-                ROTULO_CANONICO[contextFinal.forma_sugerida] || null
-            );
-            contextParaPrompt.blocoConfirmaForma = renderizarBlocoPosologia(contextFinal.pares_posologia, rotulo);
+            contextParaPrompt.blocoConfirmaForma = await prepararContextoConfirmaForma(contextFinal, decisao.contextUpdates, context?.nome);
         }
 
         return { proximaEtapa: decisao.proximaEtapa, contextUpdates: decisao.contextUpdates, contextParaPrompt };
@@ -1145,10 +1665,18 @@ async function decidirEtapa(etapaAtual, message, context, historicoConversa) {
             campoEsperado: 'quantidade',
             nomeMedicamento: context?.nome,
             horariosJaColetados: (context?.pares_posologia || []).map(p => p.horario),
-            historicoConversa
+            historicoConversa,
+            unidadeDoseContexto: context?.unidade_dose
         });
         const decisao = decidirCadConfirmaForma(classificacao, message, context);
-        return { proximaEtapa: decisao.proximaEtapa, contextUpdates: decisao.contextUpdates, contextParaPrompt: {} };
+        // decisao.acao vira acaoPosologia quando o salto sai para cad_horarios/
+        // cad_quantidade_por_dose (ex: frequencia_sem_inicio) — o mesmo mecanismo que
+        // decidirCadHorarios usa, para que montarBlocoEtapa saiba fazer a pergunta certa
+        // em vez da pergunta genérica de horários.
+        const contextParaPrompt = decisao.proximaEtapa !== 'cad_tipo_tratamento'
+            ? { acaoPosologia: decisao.acao }
+            : {};
+        return { proximaEtapa: decisao.proximaEtapa, contextUpdates: decisao.contextUpdates, contextParaPrompt };
     }
 
     if (etapaAtual === 'cad_tipo_tratamento') {
@@ -1159,13 +1687,13 @@ async function decidirEtapa(etapaAtual, message, context, historicoConversa) {
     }
 
     if (etapaAtual === 'cad_estoque' || etapaAtual === 'cad_estoque_volume') {
-        const decisao = processarEstoque(etapaAtual, message, context);
+        const decisao = await processarEstoque(etapaAtual, message, context, historicoConversa);
         return {
             proximaEtapa: decisao.proximaEtapa,
             contextUpdates: decisao.contextUpdates,
             contextParaPrompt: decisao.proximaEtapa === 'cad_confirmacao'
                 ? { resumoRenderizado: decisao.resumoRenderizado || null }
-                : {}
+                : { acaoEstoque: decisao.acao }
         };
     }
 
@@ -1194,7 +1722,8 @@ async function decidirEtapa(etapaAtual, message, context, historicoConversa) {
                         nomeMedicamento: context?.nome,
                         horariosJaColetados: (context?.pares_posologia || []).map(p => p.horario),
                         historicoConversa,
-                        emCorrecao: classificacao.campoAlvo === 'horarios'
+                        emCorrecao: classificacao.campoAlvo === 'horarios',
+                        unidadeDoseContexto: context?.unidade_dose
                     });
                     const r = corrigirPosologiaEmConfirmacao(classificacao.campoAlvo, posologia, context);
                     return {
@@ -1239,6 +1768,11 @@ function montarBlocoEtapa(etapaDaPergunta, context, nome) {
             if (context?.acaoPosologia === 'frequencia_sem_inicio') {
                 return `Pergunte apenas: "Qual o horário da primeira dose do dia?"`;
             }
+            if (context?.acaoPosologia === 'indeterminado') {
+                return `Desculpe, não peguei direito 😊 Pergunte de novo em quais **HORÁRIOS** a
+pessoa toma ou usa o ${nome}. Não cite nenhum horário ou quantidade — nem os que apareceram antes
+na conversa.`;
+            }
             return `Pergunte em quais **HORÁRIOS** a pessoa toma ou usa o ${nome}. Ex: "Agora vamos
 à **FORMA DE USO**. Em quais **HORÁRIOS** você toma ou usa o ${nome}?"`;
 
@@ -1249,6 +1783,11 @@ quantidade por dose. Distinga os dois: "Essa é a dosagem do remédio (a concent
 preciso saber agora é **QUANTO** você toma de cada vez — por exemplo, 1 comprimido, 2 comprimidos,
 20 gotas."`;
             }
+            if (context?.acaoPosologia === 'indeterminado') {
+                return `Desculpe, não peguei direito 😊 Pergunte de novo **QUANTO** de ${nome} a
+pessoa toma ou usa em cada horário — por exemplo, 1 comprimido, 2 comprimidos, 20 gotas. Não cite
+horários nem quantidades — nem os que apareceram antes na conversa.`;
+            }
             return `Pergunte **QUANTO** de ${nome} a pessoa toma ou usa em cada horário. Ex: "Ainda
 sobre a **FORMA DE USO**: **QUANTO** de ${nome} você toma ou usa em cada horário? (ex: 2
 comprimidos, 1 cápsula, 20 gotas, 5ml)"`;
@@ -1257,22 +1796,39 @@ comprimidos, 1 cápsula, 20 gotas, 5ml)"`;
             return `A mensagem deve ser EXATAMENTE: "${nome}, só confirmando: ${context?.blocoConfirmaForma || ''}?" — não altere nada desse trecho, é dado de saúde renderizado em código.`;
 
         case 'cad_tipo_tratamento':
-            if (context?.acaoTipoTratamento === 'temporario_sem_dias') {
+            if (context?.acaoTipoTratamento === 'indeterminado') {
+                return `Desculpe, não peguei direito 😊 Pergunte de novo: "O ${nome} é de uso
+**CONTÍNUO** (sem previsão de parada) ou **TEMPORÁRIO**, com prazo definido — como um antibiótico
+ou anti-inflamatório?" Não repita horários nem quantidade coletados antes.`;
+            }
+            if (context?.acaoTipoTratamento === 'temporario_sem_dias' || context?.tipo_tratamento_pendente) {
                 return `O usuário já disse que o tratamento é temporário mas não disse por quantos
-dias. Pergunte: "Por quantos dias, aproximadamente, é o tratamento com ${nome}?"`;
+dias. Pergunte: "Por quantos dias, aproximadamente, é o tratamento com ${nome}?" Não repita
+horários nem quantidade coletados antes.`;
             }
             return `Pergunte: "O ${nome} é de uso **CONTÍNUO** (sem previsão de parada) ou
 **TEMPORÁRIO**, com prazo definido — como um antibiótico ou anti-inflamatório?" Se o usuário já
-puder responder com o número de dias na mesma mensagem, tudo bem — a extração é feita em código.`;
+puder responder com o número de dias na mesma mensagem, tudo bem — a extração é feita em código.
+Não repita horários nem quantidade coletados antes.`;
 
         case 'cad_estoque':
+            if (context?.acaoEstoque === 'estoque_indeterminado') {
+                return `Desculpe, não peguei direito 😊 Repita a pergunta, sem citar nenhum número:
+"Quantas unidades de ${nome} você tem agora?" Não mencione horários nem posologia.`;
+            }
             if (context?.unidade_estoque === 'ml') {
                 return `Pergunte: "Quantos **FRASCOS** fechados de ${nome} você tem agora?" — a
-palavra "fechados" é OBRIGATÓRIA (frasco aberto não é tratado como cheio).`;
+palavra "fechados" é OBRIGATÓRIA (frasco aberto não é tratado como cheio). Não mencione horários
+nem posologia.`;
             }
-            return `Pergunte: "Quantas unidades de ${nome} você tem agora?"`;
+            return `Pergunte: "Quantas unidades de ${nome} você tem agora?" Não mencione horários
+nem posologia.`;
 
         case 'cad_estoque_volume':
+            if (context?.acaoEstoque === 'volume_indeterminado') {
+                return `Desculpe, não peguei direito 😊 Repita, sem citar números: "Qual o
+**VOLUME** de cada frasco, em ml? (está no rótulo — ex: 10ml, 100ml)"`;
+            }
             return `Pergunte: "E qual o **VOLUME** de cada frasco, em ml? (está no rótulo — ex:
 10ml, 100ml)"`;
 
@@ -1287,14 +1843,28 @@ aproximadamente ${alerta.dias_restantes} dias de estoque. Depois disso, `
 em código, nunca reescreva os números):\n${context.resumoRenderizado}\nFinalize perguntando "Está
 tudo certinho?"`;
             }
-            return `O usuário tentou corrigir algo, mas não ficou claro o quê. Pergunte, sem repetir
-o resumo: "Não entendi bem o que você quer corrigir. Pode me dizer qual informação está errada —
-nome, dosagem, horários, quantidade, tratamento ou estoque?"`;
+            return `O usuário tentou corrigir algo, mas não ficou claro o quê. Pergunte, com
+acolhimento e sem repetir o resumo nem citar nenhum número: "Desculpe, não peguei direito 😊 Pode
+me dizer qual informação está errada — nome, dosagem, horários, quantidade, tratamento ou
+estoque?"`;
 
-        case 'cad_salvo':
+        case 'cad_salvo': {
+            // BUG-94: a mensagem de sucesso só pode citar horário/quantidade a partir de um
+            // bloco renderizado em código — nunca do que o LLM leu na CONVERSA RECENTE (foi
+            // assim que "Com 60 unidades e 3 comprimidos por dia... 20 dias" saiu com estoque
+            // real = 0). Sem bloco, a mensagem não cita nenhum desses dados.
+            const pares = context?.pares_posologia || [];
+            const forma = derivarFormaFarmaceutica(context?.forma_explicita, context?.forma_confirmada, context?.unidade_dose);
+            const rotulo = rotuloDaDose(context?.unidade_dose, forma);
+            const blocoHorarios = pares.length > 0 ? renderizarBlocoPosologia(pares, rotulo) : null;
+            const instrucaoHorarios = blocoHorarios
+                ? ` Se quiser citar os horários, use EXATAMENTE este trecho, sem alterar nada: "${blocoHorarios}".`
+                : ' Não cite horários, quantidade nem estoque — nenhum bloco renderizado está disponível para esta mensagem.';
             return `O usuário confirmou os dados e o cadastro FOI SALVO com sucesso pelo código.
-Gere uma mensagem de sucesso carinhosa. Ex: "Ótimo! ${nome} foi cadastrado com sucesso 💊✅ Vou te
-lembrar nos horários certos!"`;
+Gere uma mensagem de sucesso carinhosa, sem inventar nem recalcular horário, quantidade ou
+estoque.${instrucaoHorarios} Ex: "Ótimo! ${nome} foi cadastrado com sucesso 💊✅ Vou te lembrar nos
+horários certos!"`;
+        }
 
         default:
             return `Pergunte o **NOME** do medicamento.`;
@@ -1322,8 +1892,10 @@ REGRAS DE TEXTO:
 - O nome do medicamento (${nome}) SEMPRE aparece na pergunta.
 - O rótulo do dado pedido vem em NEGRITO e MAIÚSCULA: **NOME**, **DOSAGEM**, **HORÁRIOS**,
   **QUANTO**, **CONTÍNUO**/**TEMPORÁRIO**, **FRASCOS**, **VOLUME**.
-- Nunca invente nem recalcule dado de saúde (quantidade, horário, estoque). Quando a instrução
-  abaixo fornecer um trecho pronto, insira-o exatamente como está.
+- Você NUNCA escreve horário, quantidade, unidade ou número de estoque de próprio punho — nem
+  recalculando, nem repetindo o que apareceu na CONVERSA RECENTE. Esses valores só podem vir de um
+  trecho pronto indicado explicitamente na instrução abaixo. Se a instrução não fornecer nenhum
+  trecho pronto, não mencione esses dados de jeito nenhum, mesmo que eles apareçam na conversa.
 
 O QUE ESCREVER AGORA (etapa: ${etapaDaPergunta}):
 ${blocoEtapa}
