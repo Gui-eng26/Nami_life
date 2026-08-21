@@ -7,7 +7,7 @@ import { handleFollowUp } from './agentes/lembrete.js';
 import { enviarResumoSemanal } from './agentes/relatorios.js';
 import { registrarEvento, tituloEstavel } from './observabilidade.js';
 import { executarJuizOffline } from './juizOffline.js';
-import { verboDoMedicamento, VERBO_MULTIPLO } from './templates/verbos.js';
+import { verboDoMedicamento, verboDoGrupo } from './templates/verbos.js';
 
 // ============================================================
 // INICIA O SCHEDULER
@@ -241,6 +241,7 @@ async function sendGroupedReminder(grupo) {
 }
 
 function buildGroupedReminderMessage(firstName, horario, grupo) {
+    const verbo = verboDoGrupo(grupo.map(r => r.forma_farmaceutica));
     const lista = grupo.map(r => {
         const dosagem = r.med_dosagem ? ` — ${r.med_dosagem}` : '';
         return `• *${r.med_nome}*${dosagem}`;
@@ -249,8 +250,8 @@ function buildGroupedReminderMessage(firstName, horario, grupo) {
     return (
         `⏰ ${firstName}, hora dos seus remédios das *${horario}*! 💊\n\n` +
         `${lista}\n\n` +
-        `✅ Já ${VERBO_MULTIPLO.passado} todos? Responda *SIM*\n` +
-        `💬 ${capitalize(VERBO_MULTIPLO.passado)} só alguns? Me diga quais (ex: "só o ${grupo[0].med_nome}")`
+        `✅ Já ${verbo.passado} todos? Responda *SIM*\n` +
+        `💬 ${capitalize(verbo.passado)} só alguns? Me diga quais (ex: "só o ${grupo[0].med_nome}")`
     );
 }
 
@@ -299,6 +300,7 @@ async function handleGroupedFollowUp(grupo) {
 }
 
 function buildGroupedFollowUpMessage(tentativa, firstName, horario, grupo) {
+    const verbo = verboDoGrupo(grupo.map(r => r.med_forma));
     const lista = grupo.map(r => `• *${r.med_nome}*`).join('\n');
     const abertura = tentativa === 3
         ? `💊 ${firstName}, último aviso de hoje!`
@@ -308,8 +310,8 @@ function buildGroupedFollowUpMessage(tentativa, firstName, horario, grupo) {
         `${abertura}\n\n` +
         `Ainda não vi sua confirmação dos remédios das *${horario}*:\n` +
         `${lista}\n\n` +
-        `✅ Já ${VERBO_MULTIPLO.passado} todos? Responda *SIM*\n` +
-        `💬 ${capitalize(VERBO_MULTIPLO.passado)} só alguns? Me diga quais 🌿`
+        `✅ Já ${verbo.passado} todos? Responda *SIM*\n` +
+        `💬 ${capitalize(verbo.passado)} só alguns? Me diga quais 🌿`
     );
 }
 

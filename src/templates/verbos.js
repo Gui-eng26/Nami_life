@@ -26,3 +26,11 @@ export function verboDoMedicamento(formaFarmaceutica) {
 // Mensagens que cobrem VÁRIOS medicamentos de formas diferentes não podem
 // escolher um verbo — usam o neutro sempre.
 export const VERBO_MULTIPLO = VERBO_NEUTRO;
+
+// Grupo homogêneo usa o verbo próprio; só mistura de formas cai no neutro.
+// "Já tomou todos?" é bem mais natural que "Já tomou ou usou todos?" — e a
+// maioria dos agrupamentos na prática é só de comprimidos.
+export function verboDoGrupo(formas) {
+    const verbos = [...new Set((formas || []).map(f => verboDoMedicamento(f).passado))];
+    return verbos.length === 1 ? { passado: verbos[0] } : VERBO_MULTIPLO;
+}
