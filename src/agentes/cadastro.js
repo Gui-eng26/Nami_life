@@ -1307,17 +1307,18 @@ function decidirCadHorarios(classificacao, context) {
             const unidades = derivarUnidades(context?.unidade_dose_pendente || 'unidade');
             const pares = montarParesPosologia(horarios, quantidadePendente);
             const formaExplicita = context?.forma_explicita_pendente || null;
+            const upd = {
+                horarios, pares_posologia: pares,
+                unidade_dose: unidades.unidade_dose,
+                unidade_estoque: unidades.unidade_estoque,
+                gotas_por_ml: unidades.gotas_por_ml,
+                forma_explicita: formaExplicita,
+                quantidade_pendente: null, unidade_dose_pendente: null, forma_explicita_pendente: null
+            };
             return {
                 acao: 'horarios_completados_com_quantidade_pendente',
-                proximaEtapa: formaExplicita ? 'cad_tipo_tratamento' : 'cad_confirma_forma',
-                contextUpdates: {
-                    horarios, pares_posologia: pares,
-                    unidade_dose: unidades.unidade_dose,
-                    unidade_estoque: unidades.unidade_estoque,
-                    gotas_por_ml: unidades.gotas_por_ml,
-                    forma_explicita: formaExplicita,
-                    quantidade_pendente: null, unidade_dose_pendente: null, forma_explicita_pendente: null
-                }
+                proximaEtapa: primeiraEtapaFaltante({ ...context, ...upd }),
+                contextUpdates: upd
             };
         }
         return {
@@ -1352,18 +1353,15 @@ function decidirCadHorarios(classificacao, context) {
     switch (classificacao.categoria) {
         case 'posologia_completa': {
             const unidades = derivarUnidades(classificacao.unidadeDose || 'unidade');
-            return {
-                acao: 'posologia_completa',
-                proximaEtapa: classificacao.formaExplicita ? 'cad_tipo_tratamento' : 'cad_confirma_forma',
-                contextUpdates: {
-                    horarios: classificacao.pares.map(p => p.horario),
-                    pares_posologia: classificacao.pares,
-                    unidade_dose: unidades.unidade_dose,
-                    unidade_estoque: unidades.unidade_estoque,
-                    gotas_por_ml: unidades.gotas_por_ml,
-                    forma_explicita: classificacao.formaExplicita || null
-                }
+            const upd = {
+                horarios: classificacao.pares.map(p => p.horario),
+                pares_posologia: classificacao.pares,
+                unidade_dose: unidades.unidade_dose,
+                unidade_estoque: unidades.unidade_estoque,
+                gotas_por_ml: unidades.gotas_por_ml,
+                forma_explicita: classificacao.formaExplicita || null
             };
+            return { acao: 'posologia_completa', proximaEtapa: primeiraEtapaFaltante({ ...context, ...upd }), contextUpdates: upd };
         }
         case 'horarios_apenas':
             return resolverComHorarios(classificacao.pares.map(p => p.horario));
@@ -1405,32 +1403,26 @@ function decidirCadQuantidade(classificacao, context) {
         case 'quantidade_apenas': {
             const unidades = derivarUnidades(classificacao.unidadeDose || 'unidade');
             const pares = montarParesPosologia(horariosJaColetados, classificacao.quantidadeUnica);
-            return {
-                acao: 'quantidade_apenas',
-                proximaEtapa: classificacao.formaExplicita ? 'cad_tipo_tratamento' : 'cad_confirma_forma',
-                contextUpdates: {
-                    pares_posologia: pares,
-                    unidade_dose: unidades.unidade_dose,
-                    unidade_estoque: unidades.unidade_estoque,
-                    gotas_por_ml: unidades.gotas_por_ml,
-                    forma_explicita: classificacao.formaExplicita || null
-                }
+            const upd = {
+                pares_posologia: pares,
+                unidade_dose: unidades.unidade_dose,
+                unidade_estoque: unidades.unidade_estoque,
+                gotas_por_ml: unidades.gotas_por_ml,
+                forma_explicita: classificacao.formaExplicita || null
             };
+            return { acao: 'quantidade_apenas', proximaEtapa: primeiraEtapaFaltante({ ...context, ...upd }), contextUpdates: upd };
         }
         case 'posologia_completa': {
             const unidades = derivarUnidades(classificacao.unidadeDose || 'unidade');
-            return {
-                acao: 'posologia_completa',
-                proximaEtapa: classificacao.formaExplicita ? 'cad_tipo_tratamento' : 'cad_confirma_forma',
-                contextUpdates: {
-                    horarios: classificacao.pares.map(p => p.horario),
-                    pares_posologia: classificacao.pares,
-                    unidade_dose: unidades.unidade_dose,
-                    unidade_estoque: unidades.unidade_estoque,
-                    gotas_por_ml: unidades.gotas_por_ml,
-                    forma_explicita: classificacao.formaExplicita || null
-                }
+            const upd = {
+                horarios: classificacao.pares.map(p => p.horario),
+                pares_posologia: classificacao.pares,
+                unidade_dose: unidades.unidade_dose,
+                unidade_estoque: unidades.unidade_estoque,
+                gotas_por_ml: unidades.gotas_por_ml,
+                forma_explicita: classificacao.formaExplicita || null
             };
+            return { acao: 'posologia_completa', proximaEtapa: primeiraEtapaFaltante({ ...context, ...upd }), contextUpdates: upd };
         }
         case 'horarios_apenas':
             return {
@@ -1694,7 +1686,7 @@ function montarSaltoCadastroCompleto(completo) {
     };
 }
 
-async function decidirEtapa(etapaAtual, message, context, historicoConversa) {
+async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConversa) {
     if (etapaAtual === 'cad_nome') {
         // MH-80: só dispara a extração completa quando a mensagem tem indício de
         // conteúdo além do nome (dígito ou mais de 6 palavras) — evita uma chamada extra
@@ -1841,6 +1833,49 @@ async function decidirEtapa(etapaAtual, message, context, historicoConversa) {
 
     // Fallback de segurança — etapa desconhecida não deveria ocorrer.
     return { proximaEtapa: 'cad_nome', contextUpdates: {} };
+}
+
+// ADENDO 2 MH-80 (25/08/2026), DEFEITO 1 — pré-condição de cad_confirmacao. A etapa
+// não pode ser alcançada sem o resumo montado: era a ausência disso que fazia o prompt
+// cair no ramo de "correção não compreendida" e produzir o laço observado em 25/08
+// (o roteamento novo do ADENDO 1 passou a saltar direto para cad_confirmacao por fora
+// do único ponto — dentro de processarEstoque — que antes sempre renderizava o resumo).
+// Aplicada UMA vez, no despacho (ponto único, Princípio 30), em vez de espalhada pelas
+// transições que levam até a etapa.
+async function garantirResumo(proximaEtapa, contextCompleto, contextParaPrompt) {
+    if (proximaEtapa !== 'cad_confirmacao') return contextParaPrompt;
+    if (contextParaPrompt?.resumoRenderizado) return contextParaPrompt;
+
+    const estoque = contextCompleto?.estoque_resolvido;
+    // estoque === null || === undefined, NUNCA !estoque: zero é estoque legítimo (BUG-97).
+    if (estoque === null || estoque === undefined || !contextCompleto?.pares_posologia?.length) {
+        return degradar({
+            origem: 'cadastro',
+            motivo: 'confirmacao_sem_resumo',
+            agent: 'cadastro',
+            detalhe: {
+                estoque_resolvido: estoque ?? null,
+                pares_posologia_len: contextCompleto?.pares_posologia?.length ?? 0
+            },
+            fallback: contextParaPrompt
+        });
+    }
+    return {
+        ...contextParaPrompt,
+        resumoRenderizado: renderizarResumo(contextCompleto, estoque)
+    };
+}
+
+// Ponto ÚNICO de dispatch (Princípio 30): calcula a decisão em calcularDecisaoEtapa e
+// garante, aqui e só aqui, que cad_confirmacao nunca é devolvida sem resumo — cobre
+// TODOS os retornos da função interna, não apenas alguns.
+async function decidirEtapa(etapaAtual, message, context, historicoConversa) {
+    const resultado = await calcularDecisaoEtapa(etapaAtual, message, context, historicoConversa);
+    const contextCompleto = { ...context, ...resultado.contextUpdates };
+    return {
+        ...resultado,
+        contextParaPrompt: await garantirResumo(resultado.proximaEtapa, contextCompleto, resultado.contextParaPrompt)
+    };
 }
 
 // ============================================================

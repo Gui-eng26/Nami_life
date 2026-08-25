@@ -147,6 +147,10 @@ const DEGRADACOES = {
     'cadastro:forma_explicita_incompativel': {
         severidade: 'media',
         titulo: 'Usuário informou forma farmacêutica incompatível com a unidade de dose já resolvida'
+    },
+    'cadastro:confirmacao_sem_resumo': {
+        severidade: 'critica',
+        titulo: 'cad_confirmacao alcançada sem resumo montado — posologia ou estoque incompletos'
     }
 };
 
