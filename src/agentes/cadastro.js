@@ -843,20 +843,38 @@ async function classificarTipoTratamento({ message, nomeMedicamento, aguardandoD
     return { categoria, dias };
 }
 
-function decidirCadTipoTratamento(classificacao) {
+// ADENDO MH-80 (25/08/2026), DEFEITO 2 — ponto único de decisão de avanço. Tanto o
+// salto do MH-80 quanto as transições passo a passo (dosagem, confirma_forma, tipo de
+// tratamento) consultam esta função, para que nenhuma etapa já resolvida no contexto
+// seja perguntada de novo. Caminhos de indeterminado/repergunta NÃO a usam — eles
+// devolvem a própria etapa de propósito, e substituí-los faria o fluxo avançar sem
+// ter coletado o dado.
+function primeiraEtapaFaltante(ctx) {
+    if (!ctx?.nome) return 'cad_nome';
+    if (!ctx?.dosagem) return 'cad_dosagem';
+    if (!ctx?.pares_posologia?.length) return 'cad_horarios';
+    if (!ctx?.forma_explicita && !ctx?.forma_confirmada) return 'cad_confirma_forma';
+    if (!ctx?.tipo_tratamento || ctx?.tipo_tratamento_pendente) return 'cad_tipo_tratamento';
+    // estoque_resolvido === null/undefined — NUNCA `!ctx.estoque_resolvido`: zero é
+    // estoque legítimo (BUG-97) e `!0` é `true`, o que repergunta eternamente um
+    // estoque zerado válido.
+    if (ctx?.estoque_resolvido === null || ctx?.estoque_resolvido === undefined) {
+        if (ctx?.unidade_estoque === 'ml' && ctx?.frascos && !ctx?.volume_frasco) return 'cad_estoque_volume';
+        return 'cad_estoque';
+    }
+    return 'cad_confirmacao';
+}
+
+function decidirCadTipoTratamento(classificacao, context) {
     switch (classificacao.categoria) {
-        case 'continuo':
-            return {
-                acao: 'continuo',
-                proximaEtapa: 'cad_estoque',
-                contextUpdates: { tipo_tratamento: 'continuo', tratamento_dias: null, tipo_tratamento_pendente: false }
-            };
-        case 'dias':
-            return {
-                acao: 'dias_informado',
-                proximaEtapa: 'cad_estoque',
-                contextUpdates: { tipo_tratamento: 'temporario', tratamento_dias: classificacao.dias, tipo_tratamento_pendente: false }
-            };
+        case 'continuo': {
+            const upd = { tipo_tratamento: 'continuo', tratamento_dias: null, tipo_tratamento_pendente: false };
+            return { acao: 'continuo', proximaEtapa: primeiraEtapaFaltante({ ...context, ...upd }), contextUpdates: upd };
+        }
+        case 'dias': {
+            const upd = { tipo_tratamento: 'temporario', tratamento_dias: classificacao.dias, tipo_tratamento_pendente: false };
+            return { acao: 'dias_informado', proximaEtapa: primeiraEtapaFaltante({ ...context, ...upd }), contextUpdates: upd };
+        }
         case 'temporario':
             return {
                 acao: 'temporario_sem_dias',
@@ -1126,11 +1144,32 @@ Reaproveite estas regras (as mesmas usadas na coleta normal de posologia):
   multiplicada (ex: "2 gotas em cada olho" -> quantidade 4).
 - Resposta em mg/mcg/g/% é DOSAGEM (concentração), nunca quantidade por dose ou estoque.
 
+REGRAS ADICIONAIS:
+- intervaloHoras: quando a pessoa disser frequência regular sem horários explícitos.
+  "de 12 em 12 horas" / "12/12 hrs" -> 12    "de 8 em 8h" -> 8
+  "3 vezes ao dia" -> 8                      "2x ao dia" -> 12
+  "uma vez ao dia" -> 24
+- horarioInicio: só quando a pessoa disser onde a grade começa ("começando às 8h",
+  "a primeira às 7"). Se ela não disser, deixe null — NUNCA invente o início.
+- quantidadeUnica: a quantidade por dose quando ela NÃO estiver amarrada a um horário
+  específico. "vou tomar 5ml de 12/12 hrs" -> quantidadeUnica: 5, unidadeDose: "ml".
+  Se a quantidade já estiver em "pares", deixe quantidadeUnica null.
+- tipoTratamento: expressão de duração JÁ determina o tipo.
+  "por 6 dias" / "durante 6 dias" / "por 6 dias seguidos" -> temporario, tratamentoDias 6
+  "por uma semana" -> temporario, 7      "por 15 dias" -> temporario, 15
+  "todo dia" / "de uso contínuo" / "sempre" / "pra sempre" -> continuo, tratamentoDias null
+  Sem indicação de duração -> null.
+
 CAMPOS A EXTRAIR:
 - nome: nome do medicamento.
 - dosagem: a concentração, como no rótulo (ex: "50mg").
 - pares: lista de {"horario": "HH:MM", "quantidade": 0} — só quando horário E quantidade
   estiverem explícitos juntos para o mesmo horário.
+- intervaloHoras: número de horas entre doses (ver REGRAS ADICIONAIS), só quando NÃO houver
+  horários explícitos.
+- horarioInicio: "HH:MM" do início da grade, só quando dito explicitamente (ver REGRAS
+  ADICIONAIS).
+- quantidadeUnica: quantidade por dose sem horário associado (ver REGRAS ADICIONAIS).
 - unidadeDose: "unidade" | "gota" | "ml", derivada do que a pessoa disse.
 - formaExplicita: comprimido | capsula | colirio | gotas | pomada | injetavel | xarope | null —
   só quando a pessoa NOMEOU a forma.
@@ -1138,7 +1177,7 @@ CAMPOS A EXTRAIR:
   forma de estoque for sólida/contável.
 - frascos e volumeFrasco: só para estoque líquido (ex: "1 vidro de 100ml" -> frascos:1,
   volumeFrasco:100).
-- tipoTratamento: "continuo" | "temporario" | null.
+- tipoTratamento: "continuo" | "temporario" | null (ver REGRAS ADICIONAIS).
 - tratamentoDias: número de dias, só quando explícito e o tratamento for temporário.
 
 CONVERSA RECENTE:
@@ -1148,7 +1187,8 @@ MENSAGEM ATUAL: "${message}"
 
 Responda APENAS com um objeto JSON válido, sem markdown, sem backticks, sem explicação:
 {
-  "nome": null, "dosagem": null, "pares": [], "unidadeDose": null, "formaExplicita": null,
+  "nome": null, "dosagem": null, "pares": [], "intervaloHoras": null, "horarioInicio": null,
+  "quantidadeUnica": null, "unidadeDose": null, "formaExplicita": null,
   "estoqueQuantidade": null, "frascos": null, "volumeFrasco": null, "tipoTratamento": null,
   "tratamentoDias": null
 }`;
@@ -1156,7 +1196,8 @@ Responda APENAS com um objeto JSON válido, sem markdown, sem backticks, sem exp
 
 function fallbackCadastroCompleto() {
     return {
-        nome: null, dosagem: null, pares: [], unidadeDose: null, formaExplicita: null,
+        nome: null, dosagem: null, pares: [], intervaloHoras: null, horarioInicio: null,
+        quantidadeUnica: null, unidadeDose: null, formaExplicita: null,
         estoqueQuantidade: null, frascos: null, volumeFrasco: null, tipoTratamento: null,
         tratamentoDias: null
     };
@@ -1223,10 +1264,25 @@ async function extrairCadastroCompleto({ message, historicoConversa = [] }) {
     let tratamentoDias = Number(parsed.tratamentoDias);
     tratamentoDias = Number.isFinite(tratamentoDias) && tratamentoDias > 0 ? tratamentoDias : null;
 
+    // intervaloHoras/horarioInicio/quantidadeUnica (briefing MH-80 correção, seção 3.1):
+    // mesmos limites determinísticos usados em validarClassificacaoPosologia. Zero NÃO é
+    // quantidade de dose válida (diferente de estoque, onde zero é legítimo — BUG-97).
+    let intervaloHoras = Number(parsed.intervaloHoras);
+    intervaloHoras = Number.isFinite(intervaloHoras) && intervaloHoras > 0 && intervaloHoras <= 24
+        ? intervaloHoras : null;
+
+    const horarioInicio = horarioValido(parsed.horarioInicio) ? parsed.horarioInicio : null;
+
+    let quantidadeUnica = Number(parsed.quantidadeUnica);
+    quantidadeUnica = Number.isFinite(quantidadeUnica) && quantidadeUnica > 0 ? quantidadeUnica : null;
+
     return {
         nome: typeof parsed.nome === 'string' && parsed.nome.trim() ? parsed.nome.trim() : null,
         dosagem: typeof parsed.dosagem === 'string' && parsed.dosagem.trim() ? parsed.dosagem.trim() : null,
         pares,
+        intervaloHoras,
+        horarioInicio,
+        quantidadeUnica,
         unidadeDose,
         formaExplicita,
         estoqueQuantidade,
@@ -1465,17 +1521,24 @@ function decidirCadConfirmaForma(classificacao, message, context) {
     }
 
     if (classificacao.formaExplicita) {
+        const upd = { forma_confirmada: classificacao.formaExplicita };
         return {
             acao: 'forma_corrigida',
-            proximaEtapa: 'cad_tipo_tratamento',
-            contextUpdates: { forma_confirmada: classificacao.formaExplicita }
+            proximaEtapa: primeiraEtapaFaltante({ ...context, ...upd }),
+            contextUpdates: upd
         };
     }
-    // confirmação explícita OU qualquer outra coisa (rótulo genérico, nunca trava)
+    // confirmação explícita OU qualquer outra coisa (rótulo genérico, nunca trava).
+    // forma_confirmada pode legitimamente ser null (rótulo genérico) — o objeto passado
+    // a primeiraEtapaFaltante usa um marcador que CONTA como truthy (o check ali é
+    // `!ctx?.forma_confirmada`; '' também é falsy em JS e cairia de volta em
+    // cad_confirma_forma, travando o fluxo — por isso não usar string vazia). O
+    // contextUpdates persistido continua com o valor real (null).
+    const upd = { forma_confirmada: context?.forma_sugerida || null };
     return {
         acao: respostaConfirmaSimples(message) ? 'confirmado' : 'avanca_sem_confirmacao_clara',
-        proximaEtapa: 'cad_tipo_tratamento',
-        contextUpdates: { forma_confirmada: context?.forma_sugerida || null }
+        proximaEtapa: primeiraEtapaFaltante({ ...context, ...upd, forma_confirmada: upd.forma_confirmada ?? 'generico' }),
+        contextUpdates: upd
     };
 }
 
@@ -1533,15 +1596,49 @@ function montarSaltoCadastroCompleto(completo) {
     const contextUpdates = { nome: completo.nome };
     if (completo.dosagem) contextUpdates.dosagem = completo.dosagem;
 
-    let unidades = null;
-    if (completo.pares.length > 0) {
-        unidades = derivarUnidades(completo.unidadeDose || 'unidade');
-        contextUpdates.horarios = completo.pares.map(p => p.horario);
-        contextUpdates.pares_posologia = completo.pares;
+    // A unidade de dose é conhecida sempre que a pessoa disser QUANTO ("5ml"),
+    // mesmo sem horário. Amarrar isso a `pares` descartava estoque líquido já
+    // extraído — foi o que perdeu "1 vidro de 100ml" no teste de 21/08.
+    const temInfoDose = completo.pares.length > 0 || completo.quantidadeUnica !== null
+        || completo.unidadeDose !== null;
+    const unidades = temInfoDose ? derivarUnidades(completo.unidadeDose || 'unidade') : null;
+
+    if (unidades) {
         contextUpdates.unidade_dose = unidades.unidade_dose;
         contextUpdates.unidade_estoque = unidades.unidade_estoque;
         contextUpdates.gotas_por_ml = unidades.gotas_por_ml;
         contextUpdates.forma_explicita = completo.formaExplicita || null;
+    }
+
+    // Reaproveita a função determinística do BUG-041 — nunca recalcular a grade aqui.
+    let pares = completo.pares;
+    if (pares.length === 0 && completo.intervaloHoras && completo.horarioInicio) {
+        const horarios = calcularHorariosPorIntervalo(completo.horarioInicio, completo.intervaloHoras);
+        if (completo.quantidadeUnica !== null) {
+            pares = horarios.map(h => ({ horario: h, quantidade: completo.quantidadeUnica }));
+        } else {
+            contextUpdates.horarios = horarios;
+        }
+    }
+    if (pares.length > 0) {
+        contextUpdates.horarios = pares.map(p => p.horario);
+        contextUpdates.pares_posologia = pares;
+    }
+
+    // Sem horário de início, a grade não pode ser montada — mas o intervalo e a
+    // quantidade já ditos precisam sobreviver, senão cad_horarios repergunta tudo.
+    if (completo.intervaloHoras && !completo.horarioInicio) {
+        contextUpdates.intervalo_horas = completo.intervaloHoras;
+    }
+    if (pares.length === 0 && completo.quantidadeUnica !== null) {
+        // Mesmo trio de campos que decidirCadHorarios grava no caso 'quantidade_apenas'
+        // (unidade_dose_pendente + forma_explicita_pendente ao lado de quantidade_pendente):
+        // quando os horários forem completados depois, resolverComHorarios deriva a
+        // unidade e a forma a partir DESTES campos — sem eles, cairia no default
+        // ('unidade', forma null) e descartaria o que já foi extraído aqui.
+        contextUpdates.quantidade_pendente = completo.quantidadeUnica;
+        contextUpdates.unidade_dose_pendente = completo.unidadeDose;
+        contextUpdates.forma_explicita_pendente = completo.formaExplicita;
     }
 
     if (completo.tipoTratamento === 'continuo') {
@@ -1552,43 +1649,43 @@ function montarSaltoCadastroCompleto(completo) {
         contextUpdates.tratamento_dias = completo.tratamentoDias;
     }
 
+    if (completo.tipoTratamento === 'temporario' && !completo.tratamentoDias) {
+        contextUpdates.tipo_tratamento_pendente = true;
+    }
+
+    // A checagem de unidade_estoque === 'ml' sai daqui: quem diz "1 vidro de 100ml"
+    // já indicou o formato do estoque, sem depender da unidade de dose ter sido
+    // resolvida antes.
     let estoqueResolvido = null;
-    if (unidades?.unidade_estoque === 'ml') {
-        if (completo.frascos && completo.volumeFrasco) {
-            estoqueResolvido = completo.frascos * completo.volumeFrasco;
-            contextUpdates.frascos = completo.frascos;
-            contextUpdates.volume_frasco = completo.volumeFrasco;
-        } else if (completo.frascos) {
-            contextUpdates.frascos = completo.frascos;
-        }
+    if (completo.frascos && completo.volumeFrasco) {
+        estoqueResolvido = completo.frascos * completo.volumeFrasco;
+        contextUpdates.frascos = completo.frascos;
+        contextUpdates.volume_frasco = completo.volumeFrasco;
+    } else if (completo.frascos) {
+        contextUpdates.frascos = completo.frascos;
     } else if (completo.estoqueQuantidade !== null) {
         estoqueResolvido = completo.estoqueQuantidade;
     }
 
-    // Primeira etapa FALTANTE, na ordem canônica — nunca a última etapa preenchida.
-    if (!completo.dosagem) {
-        return { proximaEtapa: 'cad_dosagem', contextUpdates };
-    }
-    if (completo.pares.length === 0) {
-        return { proximaEtapa: 'cad_horarios', contextUpdates };
-    }
-    if (!completo.formaExplicita) {
-        return { proximaEtapa: 'cad_confirma_forma', contextUpdates };
-    }
-    if (!contextUpdates.tipo_tratamento) {
-        if (completo.tipoTratamento === 'temporario' && !completo.tratamentoDias) {
-            contextUpdates.tipo_tratamento_pendente = true;
-        }
-        return { proximaEtapa: 'cad_tipo_tratamento', contextUpdates };
-    }
-    if (estoqueResolvido === null) {
-        if (unidades.unidade_estoque === 'ml' && contextUpdates.frascos) {
-            return { proximaEtapa: 'cad_estoque_volume', contextUpdates };
-        }
-        return { proximaEtapa: 'cad_estoque', contextUpdates };
+    // ADENDO MH-80, DEFEITO 1: o estoque precisa entrar no contexto AGORA, não só no
+    // caminho completo — qualquer saída antecipada (dosagem, horários, forma, tipo de
+    // tratamento) descartaria um valor já extraído corretamente. `!== null` (nunca
+    // truthy): zero é estoque legítimo (BUG-97).
+    if (estoqueResolvido !== null) {
+        contextUpdates.estoque_resolvido = estoqueResolvido;
     }
 
-    contextUpdates.estoque_resolvido = estoqueResolvido;
+    // ADENDO MH-80, DEFEITO 2: ponto único de decisão de avanço (Princípio 30) — a
+    // mesma ordem canônica usada nas transições passo a passo, para que nenhuma etapa
+    // já resolvida aqui seja perguntada de novo depois.
+    const proximaEtapa = primeiraEtapaFaltante(contextUpdates);
+    if (proximaEtapa !== 'cad_confirmacao') {
+        return { proximaEtapa, contextUpdates };
+    }
+
+    // alerta_estoque_baixo só é calculado no caminho completo, onde a posologia já
+    // existe — calculá-lo sem posologia produziria dias-restantes errado (o defeito
+    // original do cadastro.js:409, corrigido na Parte B).
     contextUpdates.alerta_estoque_baixo = calcularAlertaEstoque(contextUpdates, estoqueResolvido);
     return {
         proximaEtapa: 'cad_confirmacao',
@@ -1626,7 +1723,7 @@ async function decidirEtapa(etapaAtual, message, context, historicoConversa) {
     if (etapaAtual === 'cad_dosagem') {
         const c = await extrairCampoSimples({ campo: 'dosagem', message, historicoConversa });
         if (c.categoria === 'valor') {
-            return { proximaEtapa: 'cad_horarios', contextUpdates: { dosagem: c.valor } };
+            return { proximaEtapa: primeiraEtapaFaltante({ ...context, dosagem: c.valor }), contextUpdates: { dosagem: c.valor } };
         }
         return { proximaEtapa: 'cad_dosagem', contextUpdates: {} };
     }
@@ -1682,7 +1779,7 @@ async function decidirEtapa(etapaAtual, message, context, historicoConversa) {
     if (etapaAtual === 'cad_tipo_tratamento') {
         const aguardandoDias = !!context?.tipo_tratamento_pendente;
         const classificacao = await classificarTipoTratamento({ message, nomeMedicamento: context?.nome, aguardandoDias, historicoConversa });
-        const decisao = decidirCadTipoTratamento(classificacao);
+        const decisao = decidirCadTipoTratamento(classificacao, context);
         return { proximaEtapa: decisao.proximaEtapa, contextUpdates: decisao.contextUpdates, contextParaPrompt: { acaoTipoTratamento: decisao.acao } };
     }
 
