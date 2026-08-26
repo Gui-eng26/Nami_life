@@ -151,6 +151,10 @@ const DEGRADACOES = {
     'cadastro:confirmacao_sem_resumo': {
         severidade: 'critica',
         titulo: 'cad_confirmacao alcançada sem resumo montado — posologia ou estoque incompletos'
+    },
+    'cadastro:classificador_falha_indeterminado': {
+        severidade: 'baixa',
+        titulo: 'Classificador de falha (camada 2, MH-073 B.1) falhou — assumido ruido'
     }
 };
 

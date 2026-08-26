@@ -7,7 +7,7 @@ import { registrarEvento, registrarFeedback } from './observabilidade.js';
 import { buildAlertaEstoquePosConfirmacao } from './templates/estoqueTemplates.js';
 import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
-import { handleCadastro } from './agentes/cadastro.js';
+import { handleCadastro, repetirPerguntaCadastro } from './agentes/cadastro.js';
 import { handleRelatorios, classificarIntencaoRelatorio, extrairPeriodo } from './agentes/relatorios.js';
 import { handleConfiguracao } from './agentes/configuracao.js';
 import { handleExclusaoConta, confirmarIntencaoExclusaoConta } from './agentes/exclusaoConta.js';
@@ -513,6 +513,53 @@ async function despacharRelatorio({ user, message, image, historicoConversa,
 }
 
 // ============================================================
+// DESPACHO DE CADASTRO (MH-073 Parte B.1) — ponto ÚNICO de chamada de handleCadastro.
+// Encapsula a interceptação de { escalarParaRoteador: true }, que antes não existia para
+// este agente. Instrumentar call site a call site é a causa raiz do BUG-069 (1 de 6
+// pontos esquecido) — Princípio 30.
+//
+// REGRA DE REENTRADA (seção 3.3 do briefing): quando o classificador central devolve
+// 'cadastro' de novo, ele está CONCORDANDO que o usuário não saiu do fluxo — o estado e o
+// contexto são mantidos como estão e a pergunta pendente é repetida (via
+// repetirPerguntaCadastro, sem reclassificar a mensagem — ver justificativa em
+// cadastro.js). Nenhum dado coletado é descartado. Só destinos diferentes de cadastro
+// passam pelo despacharEscalada.
+// ============================================================
+async function despacharCadastro({ user, message, image, state, context, historicoConversa,
+                                   contextoProativo = null }) {
+    const resultado = await handleCadastro({ user, message, state, context, historicoConversa });
+
+    if (!resultado?.escalarParaRoteador) {
+        return { agentName: 'cadastro', response: resultado };
+    }
+
+    const { agente: agenteSelecionado } = await classificarIntencaoComContexto({
+        message,
+        currentState: state?.state || 'adding_med',
+        historicoConversa,
+        contextoProativo
+    });
+
+    if (agenteSelecionado === 'cadastro') {
+        // Ainda é cadastro — repete a pergunta pendente sem reiniciar nada.
+        console.log(`💊 [ESCALADA-CADASTRO] Classificador confirmou cadastro — mantendo fluxo — ${user.phone}`);
+        const retomada = await repetirPerguntaCadastro({ context, userName: user.name, historicoConversa });
+        return { agentName: 'cadastro', response: retomada };
+    }
+
+    const escalada = await despacharEscalada({
+        user, message, image, historicoConversa, contextoProativo,
+        contextoPreservado: null
+    });
+    return {
+        agentName: escalada.agentName,
+        response: escalada.response,
+        feedback: escalada.feedback,
+        intencaoNaoSuportadaDetectada: escalada.intencaoNaoSuportadaDetectada
+    };
+}
+
+// ============================================================
 // DESPACHO DE ESCALADA — usado quando um agente devolve
 // { escalarParaRoteador: true } em vez de uma resposta de texto
 // ============================================================
@@ -546,6 +593,9 @@ async function despacharEscalada({ user, message, image, contextoPreservado, his
 
         if (agenteSelecionado === 'cadastro') {
             console.log(`💊 [ESCALADA] Roteando para cadastro — ${user.phone}`);
+            // MH-073 Parte B.1: chama handleCadastro DIRETO, não despacharCadastro —
+            // despacharEscalada já É o destino de uma escalada; despachar de dentro do
+            // despacho criaria recursão (despacharCadastro chama despacharEscalada).
             response = await handleCadastro({
                 user, message, state: idleState, historicoConversa,
                 context: { etapa: 'cad_nome' }
@@ -710,15 +760,13 @@ export async function routeMessage({ user, message, image, messageId, referenceM
     // 4. Usuário concluiu onboarding agora — respondendo "por onde quer começar?"
     } else if (currentState === 'post_onboarding') {
         if (detectarIntencaoCadastro(message) || isAffirmativeSimple(message)) {
-            agentName = 'cadastro';
             console.log(`💊 Roteando para cadastro (pós-onboarding) — ${user.phone}`);
-            response = await handleCadastro({
-                user,
-                message,
-                state,
-                historicoConversa,
-                context: { etapa: 'cad_nome' }
-            });
+            const rCad = await despacharCadastro({ user, message, image, state, historicoConversa,
+                                                   contextoProativo, context: { etapa: 'cad_nome' } });
+            agentName = rCad.agentName;
+            response = rCad.response;
+            feedbackDetectado = rCad.feedback ?? feedbackDetectado;
+            if (rCad.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
         } else {
             agentName = 'principal';
             console.log(`🤖 Roteando para principal (pós-onboarding) — ${user.phone}`);
@@ -783,10 +831,12 @@ export async function routeMessage({ user, message, image, messageId, referenceM
 
                 if (agenteSelecionado === 'cadastro') {
                     console.log(`💊 [CLASSIFICADOR] Roteando para cadastro (saiu de aguardando_periodo_adesao) — ${user.phone}`);
-                    response = await handleCadastro({
-                        user, message, state: idleState, historicoConversa,
-                        context: { etapa: 'cad_nome' }
-                    });
+                    const rCad = await despacharCadastro({ user, message, image, state: idleState, historicoConversa,
+                                                           contextoProativo, context: { etapa: 'cad_nome' } });
+                    agentName = rCad.agentName;
+                    response = rCad.response;
+                    feedbackDetectado = rCad.feedback ?? feedbackDetectado;
+                    if (rCad.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
                 } else if (agenteSelecionado === 'relatorios') {
                     console.log(`📊 [CLASSIFICADOR] Roteando para relatorios (${subtipoRelatorio}, saiu de aguardando_periodo_adesao) — ${user.phone}`);
                     const r = await despacharRelatorio({ user, message, image, historicoConversa,
@@ -870,10 +920,12 @@ export async function routeMessage({ user, message, image, messageId, referenceM
 
                 if (agenteSelecionado === 'cadastro') {
                     console.log(`💊 [CLASSIFICADOR] Roteando para cadastro (saiu de aguardando_escolha_tratamento) — ${user.phone}`);
-                    response = await handleCadastro({
-                        user, message, state: idleState, historicoConversa,
-                        context: { etapa: 'cad_nome' }
-                    });
+                    const rCad = await despacharCadastro({ user, message, image, state: idleState, historicoConversa,
+                                                           contextoProativo, context: { etapa: 'cad_nome' } });
+                    agentName = rCad.agentName;
+                    response = rCad.response;
+                    feedbackDetectado = rCad.feedback ?? feedbackDetectado;
+                    if (rCad.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
                 } else if (agenteSelecionado === 'relatorios') {
                     console.log(`📊 [CLASSIFICADOR] Roteando para relatorios (${subtipoRelatorio}, saiu de aguardando_escolha_tratamento) — ${user.phone}`);
                     const r = await despacharRelatorio({ user, message, image, historicoConversa,
@@ -960,40 +1012,34 @@ export async function routeMessage({ user, message, image, messageId, referenceM
 
     // 9. Usuário já está em fluxo de cadastro → agente_cadastro
     } else if (currentState === 'adding_med') {
-        agentName = 'cadastro';
         console.log(`💊 Roteando para cadastro (estado adding_med) — ${user.phone}`);
-        response = await handleCadastro({
-            user,
-            message,
-            state,
-            historicoConversa,
-            context: state?.context || {}
-        });
+        const rCad = await despacharCadastro({ user, message, image, state, historicoConversa,
+                                               contextoProativo, context: state?.context || {} });
+        agentName = rCad.agentName;
+        response = rCad.response;
+        feedbackDetectado = rCad.feedback ?? feedbackDetectado;
+        if (rCad.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
 
     // 10. Handler para estado fantasma criado pelo agente_principal
     // Redireciona para o fluxo estruturado do agente_cadastro
     } else if (currentState === 'cadastrando_medicamento') {
-        agentName = 'cadastro';
         console.log(`💊 Roteando para cadastro (estado cadastrando_medicamento corrigido) — ${user.phone}`);
-        response = await handleCadastro({
-            user,
-            message,
-            state,
-            historicoConversa,
-            context: { etapa: 'cad_nome' }  // reinicia do zero de forma estruturada
-        });
+        const rCad = await despacharCadastro({ user, message, image, state, historicoConversa,
+                                               contextoProativo, context: { etapa: 'cad_nome' } }); // reinicia do zero de forma estruturada
+        agentName = rCad.agentName;
+        response = rCad.response;
+        feedbackDetectado = rCad.feedback ?? feedbackDetectado;
+        if (rCad.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
 
     // 11. Usuário idle com intenção explícita de cadastro → agente_cadastro
     } else if (currentState === 'idle' && detectarIntencaoCadastro(message)) {
-        agentName = 'cadastro';
         console.log(`💊 Roteando para cadastro (intenção detectada) — ${user.phone}`);
-        response = await handleCadastro({
-            user,
-            message,
-            state,
-            historicoConversa,
-            context: { etapa: 'cad_nome' }
-        });
+        const rCad = await despacharCadastro({ user, message, image, state, historicoConversa,
+                                               contextoProativo, context: { etapa: 'cad_nome' } });
+        agentName = rCad.agentName;
+        response = rCad.response;
+        feedbackDetectado = rCad.feedback ?? feedbackDetectado;
+        if (rCad.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
 
     // 12. PRIORIDADE: confirmação de dose — só intercepta se mensagem É confirmação E há dose real pendente
     } else if (currentState === 'idle'
@@ -1043,10 +1089,12 @@ export async function routeMessage({ user, message, image, messageId, referenceM
 
         if (agenteSelecionado === 'cadastro') {
             console.log(`💊 [CLASSIFICADOR] Roteando para cadastro — ${user.phone}`);
-            response = await handleCadastro({
-                user, message, state, historicoConversa,
-                context: { etapa: 'cad_nome' }
-            });
+            const rCad = await despacharCadastro({ user, message, image, state, historicoConversa,
+                                                   contextoProativo, context: { etapa: 'cad_nome' } });
+            agentName = rCad.agentName;
+            response = rCad.response;
+            feedbackDetectado = rCad.feedback ?? feedbackDetectado;
+            if (rCad.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
         } else if (agenteSelecionado === 'relatorios') {
             console.log(`📊 [CLASSIFICADOR] Roteando para relatorios (${subtipoRelatorio}) — ${user.phone}`);
             const r = await despacharRelatorio({ user, message, image, historicoConversa,

@@ -1686,6 +1686,80 @@ function montarSaltoCadastroCompleto(completo) {
     };
 }
 
+// ============================================================
+// MH-073 Parte B.1 — CLASSIFICADOR DE FALHA (camada 2 do modelo canônico)
+// ============================================================
+//
+// Roda SÓ quando a camada 1 (classificador de campo/parser da etapa) já falhou.
+// Não julga domínio — julga POR QUE a mensagem não foi reconhecida. Mesma forma do
+// classificarIndeterminado de data_nascimento.js (MH-072), agora declarada como
+// modelo canônico de escalada do projeto (v35).
+//
+// Ponto ÚNICO de definição das categorias de falha (Princípio 30): nenhum dos 6
+// classificadores de campo existentes tem prompt ou contrato alterado por esta parte.
+//
+// nova_intencao é DELIBERADAMENTE ESTREITA: só "quer fazer algo FORA do cadastro".
+// Correção dentro do cadastro — inclusive trocar de medicamento — é 'ruido', e a
+// etapa repete a pergunta. Ver seção 3.4 do briefing e o MH de reset parcial.
+
+async function classificarIndeterminadoCadastro({ message, etapa, nomeMedicamento, historicoConversa = [] }) {
+    const systemPrompt = `Você é um classificador para uma assistente de saúde via WhatsApp (a Nami),
+que está no meio do cadastro de um medicamento${nomeMedicamento ? ` ("${nomeMedicamento}")` : ''} e fez
+uma pergunta ao usuário. A mensagem do usuário NÃO foi reconhecida como resposta a essa pergunta.
+
+Classifique-a em UMA destas categorias:
+
+- recusa: o usuário não quer continuar o cadastro agora, está incomodado, ou pede para parar.
+  Ex: "não quero mais", "chega", "deixa isso pra depois", "para com isso".
+- duvida: o usuário pergunta o motivo da pergunta ou questiona a necessidade dela, sem recusar
+  e sem mudar de assunto. Ex: "pra que você precisa disso?", "por que essa pergunta?",
+  "isso é obrigatório?".
+- nova_intencao: o usuário quer fazer OUTRA COISA, FORA do cadastro de medicamento.
+  Ex: "quero ver meus remédios", "qual meu estoque de atenolol?", "tomei o remédio das 8",
+  "quero pausar os lembretes da dipirona", "quanto tempo falta pro meu tratamento acabar".
+  ATENÇÃO — o seguinte NÃO é nova_intencao, é ruido:
+    * corrigir qualquer informação DO PRÓPRIO cadastro em andamento (nome do remédio,
+      dosagem, horário, quantidade, estoque);
+    * dizer que o medicamento está errado ou que quer cadastrar outro
+      (ex: "não é esse remédio, é outro", "na verdade é o losartana");
+    * qualquer coisa que continue sendo sobre o cadastro que está acontecendo agora.
+- ruido: a mensagem não se encaixa em nenhuma das anteriores — resposta confusa,
+  incompreensível, fora de contexto, ou que simplesmente não responde à pergunta.
+
+CONVERSA RECENTE:
+${formatarHistoricoConversa(historicoConversa)}
+
+ETAPA ATUAL DO CADASTRO: ${etapa}
+
+MENSAGEM ATUAL: "${message}"
+
+Responda APENAS com uma palavra: recusa, duvida, nova_intencao ou ruido.
+Sem pontuação, sem explicação.`;
+
+    try {
+        const resposta = await anthropic.messages.create({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 8,
+            system: systemPrompt,
+            messages: [{ role: 'user', content: message || '' }]
+        });
+        const texto = (resposta.content[0]?.text || '').toLowerCase().trim();
+        const validos = ['recusa', 'duvida', 'nova_intencao', 'ruido'];
+        const achado = validos.find(v => texto.includes(v));
+        console.log(`💊 [CADASTRO] Classificador de falha (etapa ${etapa}): "${message}" -> ${achado || 'ruido (fallback)'}`);
+        return achado || 'ruido';
+    } catch (e) {
+        console.error(`❌ [CADASTRO] Erro no classificador de falha: ${e.message} — assumindo ruido`);
+        return await degradar({
+            origem: 'cadastro',
+            motivo: 'classificador_falha_indeterminado',
+            agent: 'cadastro',
+            detalhe: { erro: e.name, status: e?.status ?? null, etapa },
+            fallback: 'ruido'
+        });
+    }
+}
+
 async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConversa) {
     if (etapaAtual === 'cad_nome') {
         // MH-80: só dispara a extração completa quando a mensagem tem indício de
@@ -1709,7 +1783,7 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
         if (c.categoria === 'valor') {
             return { proximaEtapa: 'cad_dosagem', contextUpdates: { nome: c.valor } };
         }
-        return { proximaEtapa: 'cad_nome', contextUpdates: {} };
+        return { proximaEtapa: 'cad_nome', contextUpdates: {}, acao: 'indeterminado' };
     }
 
     if (etapaAtual === 'cad_dosagem') {
@@ -1717,7 +1791,7 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
         if (c.categoria === 'valor') {
             return { proximaEtapa: primeiraEtapaFaltante({ ...context, dosagem: c.valor }), contextUpdates: { dosagem: c.valor } };
         }
-        return { proximaEtapa: 'cad_dosagem', contextUpdates: {} };
+        return { proximaEtapa: 'cad_dosagem', contextUpdates: {}, acao: 'indeterminado' };
     }
 
     if (etapaAtual === 'cad_horarios' || etapaAtual === 'cad_quantidade_por_dose') {
@@ -1745,7 +1819,11 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
             contextParaPrompt.blocoConfirmaForma = await prepararContextoConfirmaForma(contextFinal, decisao.contextUpdates, context?.nome);
         }
 
-        return { proximaEtapa: decisao.proximaEtapa, contextUpdates: decisao.contextUpdates, contextParaPrompt };
+        // MH-073 Parte B.1: propaga acao no nível de topo (não só dentro de
+        // contextParaPrompt.acaoPosologia) para que decidirEtapa detecte a falha da
+        // camada 1 e acione a camada 2. Valores de sucesso (ex: horarios_completos) não
+        // batem em ACOES_DE_FALHA e seguem inertes.
+        return { proximaEtapa: decisao.proximaEtapa, contextUpdates: decisao.contextUpdates, contextParaPrompt, acao: decisao.acao };
     }
 
     if (etapaAtual === 'cad_confirma_forma') {
@@ -1772,17 +1850,20 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
         const aguardandoDias = !!context?.tipo_tratamento_pendente;
         const classificacao = await classificarTipoTratamento({ message, nomeMedicamento: context?.nome, aguardandoDias, historicoConversa });
         const decisao = decidirCadTipoTratamento(classificacao, context);
-        return { proximaEtapa: decisao.proximaEtapa, contextUpdates: decisao.contextUpdates, contextParaPrompt: { acaoTipoTratamento: decisao.acao } };
+        // MH-073 Parte B.1: acao no nível de topo — ver comentário no ramo cad_horarios.
+        return { proximaEtapa: decisao.proximaEtapa, contextUpdates: decisao.contextUpdates, contextParaPrompt: { acaoTipoTratamento: decisao.acao }, acao: decisao.acao };
     }
 
     if (etapaAtual === 'cad_estoque' || etapaAtual === 'cad_estoque_volume') {
         const decisao = await processarEstoque(etapaAtual, message, context, historicoConversa);
+        // MH-073 Parte B.1: acao no nível de topo — ver comentário no ramo cad_horarios.
         return {
             proximaEtapa: decisao.proximaEtapa,
             contextUpdates: decisao.contextUpdates,
             contextParaPrompt: decisao.proximaEtapa === 'cad_confirmacao'
                 ? { resumoRenderizado: decisao.resumoRenderizado || null }
-                : { acaoEstoque: decisao.acao }
+                : { acaoEstoque: decisao.acao },
+            acao: decisao.acao
         };
     }
 
@@ -1828,7 +1909,7 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
             }
         }
 
-        return { proximaEtapa: 'cad_confirmacao', contextUpdates: {} };
+        return { proximaEtapa: 'cad_confirmacao', contextUpdates: {}, acao: 'indeterminado' };
     }
 
     // Fallback de segurança — etapa desconhecida não deveria ocorrer.
@@ -1866,11 +1947,42 @@ async function garantirResumo(proximaEtapa, contextCompleto, contextParaPrompt) 
     };
 }
 
+// Ações que significam "a camada 1 não reconheceu a mensagem". Ponto único de
+// definição (Princípio 30) — acrescentar aqui, nunca espalhar checagens por etapa.
+const ACOES_DE_FALHA = new Set(['indeterminado', 'estoque_indeterminado', 'volume_indeterminado']);
+
 // Ponto ÚNICO de dispatch (Princípio 30): calcula a decisão em calcularDecisaoEtapa e
 // garante, aqui e só aqui, que cad_confirmacao nunca é devolvida sem resumo — cobre
 // TODOS os retornos da função interna, não apenas alguns.
+//
+// MH-073 Parte B.1: também é o ponto único onde a camada 1 (falhou) escala para a
+// camada 2 (classificarIndeterminadoCadastro). Só roda quando a camada 1 falhou; no
+// caminho feliz não há chamada de LLM adicional.
 async function decidirEtapa(etapaAtual, message, context, historicoConversa) {
     const resultado = await calcularDecisaoEtapa(etapaAtual, message, context, historicoConversa);
+
+    if (ACOES_DE_FALHA.has(resultado.acao)) {
+        const motivo = await classificarIndeterminadoCadastro({
+            message,
+            etapa: etapaAtual,
+            nomeMedicamento: context?.nome,
+            historicoConversa
+        });
+
+        if (motivo === 'nova_intencao') {
+            return { escalarParaRoteador: true };
+        }
+
+        // recusa: encerra o cadastro pelo mesmo caminho já usado por ehCancelamento.
+        if (motivo === 'recusa') {
+            return { encerrarCadastro: true };
+        }
+
+        // duvida e ruido seguem o fluxo normal (repetem a pergunta da etapa), com
+        // motivoFalha disponível para o gerador de texto fraseá-la adequadamente.
+        resultado.contextParaPrompt = { ...(resultado.contextParaPrompt || {}), motivoFalha: motivo };
+    }
+
     const contextCompleto = { ...context, ...resultado.contextUpdates };
     return {
         ...resultado,
@@ -2007,6 +2119,15 @@ function buildSystemPrompt(etapaDaPergunta, context, userName, historicoConversa
     const nome = context?.nome || '{nome}';
     const blocoEtapa = montarBlocoEtapa(etapaDaPergunta, context, nome);
 
+    // MH-073 Parte B.1 — Princípio 44: entra no bloco base compartilhado, não dentro de
+    // montarBlocoEtapa (que fica isolado só com o bloco da etapa ativa desde a B.2).
+    const blocoMotivoFalha = context?.motivoFalha === 'duvida'
+        ? `\n\nA pessoa perguntou POR QUE você precisa dessa informação. Antes de repetir a
+pergunta, responda com honestidade e em uma frase curta: você precisa desse dado para
+montar os lembretes certos e acompanhar o tratamento dela. Não insista, não negocie e não
+minimize a pergunta dela.`
+        : '';
+
     return `Você é a Nami, assistente de saúde. Você está no fluxo de cadastro de um novo medicamento.
 
 Sua única função agora é escrever UMA mensagem para o usuário — uma pergunta ou uma confirmação.
@@ -2030,7 +2151,7 @@ REGRAS DE TEXTO:
   trecho pronto, não mencione esses dados de jeito nenhum, mesmo que eles apareçam na conversa.
 
 O QUE ESCREVER AGORA (etapa: ${etapaDaPergunta}):
-${blocoEtapa}
+${blocoEtapa}${blocoMotivoFalha}
 
 FORMATO DE RESPOSTA — JSON válido, sem markdown, sem backticks:
 { "message": "mensagem para o usuário" }`;
@@ -2157,6 +2278,19 @@ export async function handleCadastro({ user, message, state, context, historicoC
     }
 
     const decisao = await decidirEtapa(etapaAtual, message, context, historicoConversa);
+
+    // MH-073 Parte B.1 — camada 3. O sinal sobe para o router, que despacha.
+    if (decisao?.escalarParaRoteador) {
+        console.log(`💊 [CADASTRO] Nova intenção fora do cadastro — escalando ao roteador — ${user.phone}`);
+        return { escalarParaRoteador: true };
+    }
+
+    if (decisao?.encerrarCadastro) {
+        console.log(`💊 [CADASTRO] Recusa explícita — encerrando cadastro — ${user.phone}`);
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        return `Tudo bem, parei o cadastro por aqui 🌿 Se quiser retomar depois, é só me chamar!`;
+    }
+
     const contextResolvido = { ...(context || {}), ...decisao.contextUpdates, ...(decisao.contextParaPrompt || {}) };
 
     const systemPrompt = buildSystemPrompt(decisao.proximaEtapa, contextResolvido, user.name, historicoConversa);
@@ -2273,4 +2407,40 @@ export async function handleCadastro({ user, message, state, context, historicoC
         context: { ...novoContext, etapa: proximaEtapa }
     });
     return mensagemFinal;
+}
+
+// ============================================================
+// MH-073 Parte B.1 — REPETIÇÃO DA PERGUNTA PENDENTE (regra de reentrada, seção 3.3)
+// ============================================================
+//
+// Usada por despacharCadastro (router.js) quando { escalarParaRoteador: true } sobe e o
+// classificador central, ao reclassificar, devolve 'cadastro' de novo — ele está
+// CONCORDANDO que o usuário não saiu do fluxo. Chama buildSystemPrompt/callClaude
+// DIRETO, sem passar por decidirEtapa: a mensagem que causou a escalada já foi julgada
+// nova_intencao pela camada 2 (classificarIndeterminadoCadastro) e reclassificá-la de
+// novo aqui arriscaria um segundo veredito divergente, além de dobrar a chamada de LLM
+// no caminho de falha. Não há nada novo para decidir — só repetir a pergunta.
+//
+// resumoRenderizado (cad_confirmacao) e blocoConfirmaForma (cad_confirma_forma) não
+// ficam persistidos no contexto salvo (são só contextParaPrompt, descartado após o uso)
+// — por isso são recompostos aqui a partir do contexto já coletado, sem reclassificar
+// nada: garantirResumo é puro código (renderizarResumo), e prepararContextoConfirmaForma
+// só chama LLM para sugerir forma farmacêutica quando ainda não há forma_explicita —
+// mesmo custo que a primeira vez que a etapa foi montada.
+export async function repetirPerguntaCadastro({ context, userName, historicoConversa = [] }) {
+    const etapa = context?.etapa || 'cad_nome';
+    let contextParaPrompt = {};
+
+    if (etapa === 'cad_confirma_forma') {
+        // Cópia rasa: prepararContextoConfirmaForma muta o objeto recebido
+        // (forma_sugerida) — mesma disciplina de calcularDecisaoEtapa, nunca passar o
+        // context original do chamador.
+        contextParaPrompt.blocoConfirmaForma = await prepararContextoConfirmaForma({ ...context }, {}, context?.nome);
+    }
+    contextParaPrompt = await garantirResumo(etapa, context, contextParaPrompt);
+
+    const contextResolvido = { ...(context || {}), ...contextParaPrompt };
+    const systemPrompt = buildSystemPrompt(etapa, contextResolvido, userName, historicoConversa);
+    const claudeResponse = await callClaude({ systemPrompt, message: '' });
+    return claudeResponse.message;
 }
