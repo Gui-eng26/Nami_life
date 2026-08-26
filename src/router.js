@@ -533,12 +533,15 @@ async function despacharCadastro({ user, message, image, state, context, histori
         return { agentName: 'cadastro', response: resultado };
     }
 
-    const { agente: agenteSelecionado } = await classificarIntencaoComContexto({
+    // BUG-101: guarda o objeto INTEIRO — subtipoRelatorio/params/feedback são consumidos
+    // por despacharEscalada e se perderiam se só o agente fosse propagado.
+    const classificacao = await classificarIntencaoComContexto({
         message,
         currentState: state?.state || 'adding_med',
         historicoConversa,
         contextoProativo
     });
+    const agenteSelecionado = classificacao.agente;
 
     if (agenteSelecionado === 'cadastro') {
         // Ainda é cadastro — repete a pergunta pendente sem reiniciar nada.
@@ -549,7 +552,8 @@ async function despacharCadastro({ user, message, image, state, context, histori
 
     const escalada = await despacharEscalada({
         user, message, image, historicoConversa, contextoProativo,
-        contextoPreservado: null
+        contextoPreservado: null,
+        classificacaoPreResolvida: classificacao
     });
     return {
         agentName: escalada.agentName,
@@ -564,19 +568,26 @@ async function despacharCadastro({ user, message, image, state, context, histori
 // { escalarParaRoteador: true } em vez de uma resposta de texto
 // ============================================================
 
-async function despacharEscalada({ user, message, image, contextoPreservado, historicoConversa, contextoProativo = null }) {
+async function despacharEscalada({ user, message, image, contextoPreservado, historicoConversa,
+                                   contextoProativo = null, classificacaoPreResolvida = null }) {
     // MH-065: recebe o contextoProativo JÁ BUSCADO pelo roteador — nenhuma query nova
     // (princípio 6: buscar uma vez, propagar).
-    const { agente: agenteSelecionado, subtipoRelatorio, params, feedback } = await classificarIntencaoComContexto({
-        message, currentState: 'configurando', historicoConversa, contextoProativo
-    });
+    //
+    // BUG-101: quem já classificou a mensagem passa o resultado INTEIRO aqui e evita a
+    // segunda chamada de LLM. Propagar o objeto completo, nunca só o agente — subtipoRelatorio,
+    // params e feedback são consumidos abaixo (ver seção 3 do briefing). Quando o parâmetro
+    // é null, o comportamento é byte a byte idêntico ao anterior (mitigação MH-065).
+    const { agente: agenteSelecionado, subtipoRelatorio, params, feedback } =
+        classificacaoPreResolvida ?? await classificarIntencaoComContexto({
+            message, currentState: 'configurando', historicoConversa, contextoProativo
+        });
 
     let agentName = agenteSelecionado;
     let response;
     let intencaoNaoSuportadaDetectada = false;
 
     if (agenteSelecionado === 'configuracao') {
-        console.log(`⚙️ [ESCALADA] Ainda é configuração — reentra preservando medicamento — ${user.phone}`);
+        console.log(`⚙️ [ESCALADA] Destino: configuração — reentra em identif_intencao${contextoPreservado?.medicationNome ? ` preservando ${contextoPreservado.medicationNome}` : ' sem medicamento preservado'} — ${user.phone}`);
         response = await handleConfiguracao({
             user, message, historicoConversa,
             state: { state: 'configurando', context: { etapa: 'identif_intencao' } },
