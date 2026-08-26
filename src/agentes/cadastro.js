@@ -217,6 +217,46 @@ function renderizarListaPosologia(pares, rotulo) {
         .join('\n');
 }
 
+// MH-073 Parte C, seção 7 — três variantes de resumo de estoque, escolhidas em código
+// a partir de `estoque_motivo` (closed set gravado por processarEstoque). O LLM nunca
+// escreve o número nem decide a variante.
+const DESCRICAO_FRACAO_ESTOQUE = {
+    recem_aberto: 'que está recém-aberto',
+    tres_quartos: 'que ainda tem 3/4',
+    metade: 'que está pela metade',
+    um_quarto: 'que tem 1/4',
+    quase_acabando: 'que está quase acabando'
+};
+
+function arredondarParaExibicao(n) {
+    return Math.round(n * 10) / 10;
+}
+
+function renderizarLinhaEstoque(context, estoqueFinal) {
+    const motivo = context?.estoque_motivo || null;
+    const volume = context?.volume_frasco || null;
+
+    if (motivo === 'aberto_fracao_nao_informada') {
+        return `comecei com uma quantidade baixa (frasco de ${volume}ml), porque você ainda `
+            + `não sabia quanto tinha sobrando — é só me atualizar assim que souber`;
+    }
+
+    if (typeof motivo === 'string' && motivo.startsWith('aberto_fracao:')) {
+        const bucket = motivo.split(':')[1];
+        const descricao = DESCRICAO_FRACAO_ESTOQUE[bucket] || 'que você descreveu';
+        return `aproximadamente ${arredondarParaExibicao(estoqueFinal)}ml (frasco de ${volume}ml, `
+            + `você disse ${descricao}) — vou guardar como estimativa, você pode corrigir quando quiser`;
+    }
+
+    // frascos_fechados, aberto_valor_exato, ou estoque sólido (motivo null) — texto
+    // igual ao que já existia, sem qualquer menção a estimativa (variante 1).
+    let linha = `${estoqueFinal} ${context?.unidade_estoque === 'ml' ? 'ml' : 'unidades'}`;
+    if (context?.unidade_estoque === 'ml' && context?.frascos && volume) {
+        linha += ` (${context.frascos} frasco${Number(context.frascos) === 1 ? '' : 's'} de ${volume}ml)`;
+    }
+    return linha;
+}
+
 function renderizarResumo(context, estoqueFinal) {
     const pares = context?.pares_posologia || [];
     const forma = derivarFormaFarmaceutica(context?.forma_explicita, context?.forma_confirmada, context?.unidade_dose);
@@ -225,17 +265,12 @@ function renderizarResumo(context, estoqueFinal) {
         ? `${context?.tratamento_dias} dias`
         : 'contínuo';
 
-    let linhaEstoque = `${estoqueFinal} ${context?.unidade_estoque === 'ml' ? 'ml' : 'unidades'}`;
-    if (context?.unidade_estoque === 'ml' && context?.frascos && context?.volume_frasco) {
-        linhaEstoque += ` (${context.frascos} frasco${Number(context.frascos) === 1 ? '' : 's'} de ${context.volume_frasco}ml)`;
-    }
-
     return `💊 Remédio: ${context?.nome}\n`
         + `📏 Dosagem: ${context?.dosagem}\n`
         + `💉 Forma: ${forma}\n`
         + `⏰ Posologia:\n${renderizarListaPosologia(pares, rotuloDose)}\n`
         + `🔄 Tratamento: ${tratamento}\n`
-        + `📦 Estoque: ${linhaEstoque}`;
+        + `📦 Estoque: ${renderizarLinhaEstoque(context, estoqueFinal)}`;
 }
 
 // ============================================================
@@ -245,6 +280,14 @@ function renderizarResumo(context, estoqueFinal) {
 function extrairNumero(texto) {
     const m = String(texto).match(/\d+(?:[.,]\d+)?/);
     return m ? parseFloat(m[0].replace(',', '.')) : null;
+}
+
+// MH-073 Parte C: mesma extração de extrairNumero, mas recusa notação de fração
+// ("3/4") — sem a guarda, "3/4" seria lido como valor exato "3ml" em vez de cair no
+// classificador de fração (classificarFracaoEstoque), que já entende esse formato.
+function extrairValorExatoEstoque(texto) {
+    if (/\d\s*\/\s*\d/.test(String(texto))) return null;
+    return extrairNumero(texto);
 }
 
 // "2 frascos de 10ml" -> {frascos:2, volume:10}. "2" -> {frascos:2, volume:null}.
@@ -373,19 +416,173 @@ async function classificarEstoqueSolido({ message, nomeMedicamento, historicoCon
     return { categoria, quantidade: categoria === 'quantidade' ? quantidade : null };
 }
 
-// Etapa cad_estoque / cad_estoque_volume, ramificada por unidade_estoque (já resolvida
-// três etapas antes). Só o CÓDIGO decide estoque, alerta e a próxima etapa — o LLM de
-// geração apenas fraseia (mesmo princípio da seção 6 do briefing). Substitui o bloco
-// pré-Parte B que dividia estoque por número de horários (BUG corrigido na Parte B,
-// seção 7 do briefing): agora usa converterDoseParaEstoque sobre a posologia real.
+// ============================================================
+// MH-073 Parte C — CLASSIFICADOR DE STATUS DO FRASCO (aberto/fechado)
+// ============================================================
+
+function buildStatusFrascoSystemPrompt({ nomeMedicamento, historicoConversa, message }) {
+    return `Você é um classificador para uma assistente de saúde via WhatsApp (a Nami), que está
+cadastrando o medicamento líquido "${nomeMedicamento || ''}" e perguntou se o frasco já está
+ABERTO (a pessoa já está usando) ou ainda FECHADO (nunca foi aberto, lacrado).
+
+CATEGORIAS (escolha exatamente UMA):
+- aberto: o frasco já está em uso, já foi aberto, já tem algo faltando. Ex: "já uso", "já tá
+  aberto", "tô usando faz um tempo", "já abri", "tá pela metade", "uso desde semana passada".
+- fechado: o frasco nunca foi aberto, ainda está lacrado, novo. Ex: "fechado", "lacrado",
+  "ainda não abri", "novinho", "nunca usei".
+- indeterminado: a resposta não permite decidir entre aberto e fechado.
+
+CONVERSA RECENTE:
+${formatarHistoricoConversa(historicoConversa)}
+
+MENSAGEM ATUAL: "${message}"
+
+Responda APENAS com um objeto JSON válido, sem markdown, sem backticks, sem explicação:
+{ "categoria": "..." }`;
+}
+
+function fallbackStatusFrascoIndeterminado() {
+    return { categoria: 'indeterminado' };
+}
+
+async function classificarStatusFrasco({ message, nomeMedicamento, historicoConversa = [] }) {
+    const systemPrompt = buildStatusFrascoSystemPrompt({ nomeMedicamento, historicoConversa, message });
+
+    const response = await anthropic.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 50,
+        temperature: 0,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: message || '' }]
+    });
+
+    const rawText = response.content[0]?.text || '';
+    let parsed = null;
+    try {
+        parsed = JSON.parse(rawText);
+    } catch {
+        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            try { parsed = JSON.parse(jsonMatch[0]); } catch { /* fall through */ }
+        }
+    }
+
+    if (!parsed) {
+        console.error('❌ cadastro: classificador de status do frasco não retornou JSON válido:', rawText);
+        return await degradar({
+            origem: 'cadastro',
+            motivo: 'classificador_status_frasco_falhou',
+            agent: 'cadastro',
+            detalhe: { stop_reason: response?.stop_reason ?? null, tamanho_raw: rawText.length },
+            fallback: fallbackStatusFrascoIndeterminado()
+        });
+    }
+
+    const categoriasValidas = new Set(['aberto', 'fechado', 'indeterminado']);
+    const categoria = categoriasValidas.has(parsed.categoria) ? parsed.categoria : 'indeterminado';
+    return { categoria };
+}
+
+// ============================================================
+// MH-073 Parte C — CLASSIFICADOR DE FRAÇÃO DE ESTOQUE (frasco já aberto)
+// ============================================================
+
+// Tabela de conversão fração -> número, em código, nunca no LLM (Princípio 4).
+const FRACOES_ESTOQUE = {
+    recem_aberto:   1.00,
+    tres_quartos:   0.75,
+    metade:         0.50,
+    um_quarto:      0.25,
+    quase_acabando: 0.10,
+};
+
+function buildFracaoEstoqueSystemPrompt({ nomeMedicamento, historicoConversa, message }) {
+    return `Você é um classificador para uma assistente de saúde via WhatsApp (a Nami), que está
+cadastrando o medicamento líquido "${nomeMedicamento || ''}" e perguntou quanto ainda resta no
+frasco JÁ ABERTO (não é a primeira vez que a pessoa usa).
+
+CATEGORIAS (escolha exatamente UMA):
+- recem_aberto: o frasco foi aberto agora, praticamente cheio. Ex: "recém-aberto", "acabei de
+  abrir", "tá quase cheio ainda".
+- tres_quartos: resta cerca de 3/4. Ex: "3/4", "uns 3 quartos".
+- metade: resta cerca da metade. Ex: "metade", "meio frasco", "50%".
+- um_quarto: resta cerca de 1/4. Ex: "1/4", "um quarto", "só um quartinho".
+- quase_acabando: está quase no fim. Ex: "quase acabando", "tá no fim", "pouquinho só".
+- nao_sei: a pessoa não sabe quanto resta. Ex: "não sei", "não faço ideia", "não tenho certeza".
+- indeterminado: a resposta não permite decidir nenhuma das categorias acima (não responde à
+  pergunta, ou é confusa).
+
+CONVERSA RECENTE:
+${formatarHistoricoConversa(historicoConversa)}
+
+MENSAGEM ATUAL: "${message}"
+
+Responda APENAS com um objeto JSON válido, sem markdown, sem backticks, sem explicação:
+{ "categoria": "..." }`;
+}
+
+function fallbackFracaoEstoqueIndeterminada() {
+    return { categoria: 'indeterminado' };
+}
+
+async function classificarFracaoEstoque({ message, nomeMedicamento, historicoConversa = [] }) {
+    const systemPrompt = buildFracaoEstoqueSystemPrompt({ nomeMedicamento, historicoConversa, message });
+
+    const response = await anthropic.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 50,
+        temperature: 0,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: message || '' }]
+    });
+
+    const rawText = response.content[0]?.text || '';
+    let parsed = null;
+    try {
+        parsed = JSON.parse(rawText);
+    } catch {
+        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            try { parsed = JSON.parse(jsonMatch[0]); } catch { /* fall through */ }
+        }
+    }
+
+    if (!parsed) {
+        console.error('❌ cadastro: classificador de fração de estoque não retornou JSON válido:', rawText);
+        return await degradar({
+            origem: 'cadastro',
+            motivo: 'classificador_fracao_estoque_falhou',
+            agent: 'cadastro',
+            detalhe: { stop_reason: response?.stop_reason ?? null, tamanho_raw: rawText.length },
+            fallback: fallbackFracaoEstoqueIndeterminada()
+        });
+    }
+
+    const categoriasValidas = new Set([...Object.keys(FRACOES_ESTOQUE), 'nao_sei', 'indeterminado']);
+    const categoria = categoriasValidas.has(parsed.categoria) ? parsed.categoria : 'indeterminado';
+    return { categoria };
+}
+
+// Etapa cad_estoque / cad_estoque_fracao / cad_estoque_volume, ramificada por
+// unidade_estoque (já resolvida três etapas antes). Só o CÓDIGO decide estoque, alerta
+// e a próxima etapa — o LLM de geração apenas fraseia (mesmo princípio da seção 6 do
+// briefing MH-073 Parte C). MH-073 Parte C: o ramo líquido ganhou um sub-estado
+// (status_frasco) dentro da própria etapa cad_estoque — a primeira mensagem responde
+// "aberto ou fechado?", a segunda (só no ramo fechado) responde "quantos frascos?",
+// exatamente como a etapa única funcionava antes desta Parte.
 async function processarEstoque(etapaAtual, message, context, historicoConversa) {
     const unidadeEstoque = context?.unidade_estoque || 'unidade';
 
+    // estimado é derivado do motivo (closed set, seção 6 do briefing): tudo que nasce
+    // de um frasco JÁ ABERTO é estimativa, mesmo o valor exato autorrelatado — só a
+    // contagem de frascos fechados é medida exata.
     const finalizarComEstoque = (estoque, extra = {}) => {
-        const contextComExtra = { ...context, ...extra };
+        const estimado = !!extra.estoque_motivo && extra.estoque_motivo !== 'frascos_fechados';
+        const contextComExtra = { ...context, ...extra, estoque_estimado: estimado };
         const contextUpdates = {
             estoque_resolvido: estoque,
             ...extra,
+            estoque_estimado: estimado,
             alerta_estoque_baixo: calcularAlertaEstoque(contextComExtra, estoque)
         };
 
@@ -399,34 +596,117 @@ async function processarEstoque(etapaAtual, message, context, historicoConversa)
 
     if (etapaAtual === 'cad_estoque') {
         if (unidadeEstoque === 'ml') {
-            const { frascos, volume } = extrairFrascosEVolume(message);
-            if (frascos !== null && volume !== null) {
-                // resposta única ("2 frascos de 10ml") — salta cad_estoque_volume (seção 2.5)
-                return finalizarComEstoque(frascos * volume, { frascos, volume_frasco: volume });
+            // Fase 2: status já resolvido como 'fechado' nesta mesma etapa — esta
+            // mensagem responde à contagem de frascos (nova pergunta, sem mais exigir a
+            // palavra "fechados" — seção 3 do briefing). Extração e cálculo idênticos ao
+            // que já existia antes da Parte C.
+            if (context?.status_frasco === 'fechado') {
+                const { frascos, volume } = extrairFrascosEVolume(message);
+                if (frascos !== null && volume !== null) {
+                    return finalizarComEstoque(frascos * volume, { frascos, volume_frasco: volume, estoque_motivo: 'frascos_fechados' });
+                }
+                return {
+                    acao: 'frascos_apenas',
+                    proximaEtapa: 'cad_estoque_volume',
+                    contextUpdates: { frascos: frascos ?? null }
+                };
             }
-            return {
-                acao: 'frascos_apenas',
-                proximaEtapa: 'cad_estoque_volume',
-                contextUpdates: { frascos: frascos ?? null }
-            };
+
+            const statusClassificacao = await classificarStatusFrasco({ message, nomeMedicamento: context?.nome, historicoConversa });
+
+            if (statusClassificacao.categoria === 'fechado') {
+                return { acao: 'status_frasco_fechado', proximaEtapa: 'cad_estoque', contextUpdates: { status_frasco: 'fechado' } };
+            }
+            if (statusClassificacao.categoria === 'aberto') {
+                return { acao: 'status_frasco_aberto', proximaEtapa: 'cad_estoque_fracao', contextUpdates: { status_frasco: 'aberto' } };
+            }
+            return { acao: 'status_frasco_indeterminado', proximaEtapa: 'cad_estoque', contextUpdates: {} };
         }
         const classificacao = await classificarEstoqueSolido({ message, nomeMedicamento: context?.nome, historicoConversa });
         if (classificacao.categoria === 'quantidade') {
-            return finalizarComEstoque(classificacao.quantidade);
+            return finalizarComEstoque(classificacao.quantidade, { estoque_motivo: null });
         }
         // Falha de extração devolve indeterminado, NUNCA 0 (seção 3.3.b do briefing) —
         // permanece em cad_estoque e reformula a pergunta, nunca chega a salvar estoque nulo.
         return { acao: 'estoque_indeterminado', proximaEtapa: 'cad_estoque', contextUpdates: {} };
     }
 
-    // cad_estoque_volume — só existe para líquidos. Única mudança no ramo líquido: quando
-    // o volume não é reconhecido, repergunta em vez de assumir 0 (seção 3.3, "ramo líquido").
+    if (etapaAtual === 'cad_estoque_fracao') {
+        // Camada 1, determinística: um número solto ("tem uns 40ml") é usado DIRETO como
+        // valor exato de estoque, sem passar pelo classificador (seção 4 do briefing,
+        // Princípio 1 — informação melhor que o usuário já deu nunca é substituída por
+        // aproximação).
+        const valorExato = extrairValorExatoEstoque(message);
+        if (valorExato !== null) {
+            const volume = Number(context?.volume_frasco) || null;
+            if (volume !== null) {
+                return finalizarComEstoque(valorExato, { estoque_motivo: 'aberto_valor_exato' });
+            }
+            return {
+                acao: 'valor_exato_pendente',
+                proximaEtapa: 'cad_estoque_volume',
+                contextUpdates: { estoque_valor_exato_pendente: valorExato }
+            };
+        }
+
+        const classificacao = await classificarFracaoEstoque({ message, nomeMedicamento: context?.nome, historicoConversa });
+        const volume = Number(context?.volume_frasco) || null;
+
+        if (classificacao.categoria === 'nao_sei') {
+            // Aceita imediatamente, NUNCA repete a pergunta (seção 4 do briefing) — o
+            // percentual do piso é detalhe interno, nunca mencionado ao usuário.
+            if (volume !== null) {
+                return finalizarComEstoque(volume * 0.10, { estoque_motivo: 'aberto_fracao_nao_informada' });
+            }
+            return {
+                acao: 'fracao_nao_informada_pendente',
+                proximaEtapa: 'cad_estoque_volume',
+                contextUpdates: { estoque_fracao_pendente: 'nao_informada' }
+            };
+        }
+
+        if (FRACOES_ESTOQUE[classificacao.categoria] !== undefined) {
+            const bucket = classificacao.categoria;
+            if (volume !== null) {
+                return finalizarComEstoque(volume * FRACOES_ESTOQUE[bucket], { estoque_motivo: `aberto_fracao:${bucket}` });
+            }
+            return {
+                acao: 'fracao_pendente',
+                proximaEtapa: 'cad_estoque_volume',
+                contextUpdates: { estoque_fracao_pendente: bucket }
+            };
+        }
+
+        return { acao: 'fracao_indeterminada', proximaEtapa: 'cad_estoque_fracao', contextUpdates: {} };
+    }
+
+    // cad_estoque_volume — reordenada para vir sempre por último (seção 5 do briefing).
+    // Chega aqui tanto pelo ramo fechado (frascos já contados, faltava só o volume)
+    // quanto pelo ramo aberto (fração/valor exato já resolvidos, faltava só o volume).
     const volume = extrairNumero(message);
     if (volume === null) {
         return { acao: 'volume_indeterminado', proximaEtapa: 'cad_estoque_volume', contextUpdates: {} };
     }
+
+    if (context?.estoque_valor_exato_pendente !== undefined && context?.estoque_valor_exato_pendente !== null) {
+        return finalizarComEstoque(context.estoque_valor_exato_pendente, {
+            volume_frasco: volume, estoque_motivo: 'aberto_valor_exato', estoque_valor_exato_pendente: null
+        });
+    }
+    if (context?.estoque_fracao_pendente === 'nao_informada') {
+        return finalizarComEstoque(volume * 0.10, {
+            volume_frasco: volume, estoque_motivo: 'aberto_fracao_nao_informada', estoque_fracao_pendente: null
+        });
+    }
+    if (context?.estoque_fracao_pendente) {
+        const bucket = context.estoque_fracao_pendente;
+        return finalizarComEstoque(volume * FRACOES_ESTOQUE[bucket], {
+            volume_frasco: volume, estoque_motivo: `aberto_fracao:${bucket}`, estoque_fracao_pendente: null
+        });
+    }
+
     const frascos = Number(context?.frascos) || 1;
-    return finalizarComEstoque(frascos * volume, { volume_frasco: volume });
+    return finalizarComEstoque(frascos * volume, { volume_frasco: volume, estoque_motivo: 'frascos_fechados' });
 }
 
 // ============================================================
@@ -859,8 +1139,17 @@ function primeiraEtapaFaltante(ctx) {
     // estoque legítimo (BUG-97) e `!0` é `true`, o que repergunta eternamente um
     // estoque zerado válido.
     if (ctx?.estoque_resolvido === null || ctx?.estoque_resolvido === undefined) {
-        if (ctx?.unidade_estoque === 'ml' && ctx?.frascos && !ctx?.volume_frasco) return 'cad_estoque_volume';
-        return 'cad_estoque';
+        if (ctx?.unidade_estoque !== 'ml') return 'cad_estoque';
+
+        // MH-073 Parte C: ramo líquido reordenado — status do frasco primeiro, depois
+        // quantidade/fração, e o volume sempre por último (seção 5/8 do briefing).
+        if (!ctx?.status_frasco) return 'cad_estoque';
+        if (ctx?.status_frasco === 'fechado') {
+            return (ctx?.frascos && !ctx?.volume_frasco) ? 'cad_estoque_volume' : 'cad_estoque';
+        }
+        const fracaoOuValorConhecido = !!ctx?.estoque_fracao_pendente
+            || (ctx?.estoque_valor_exato_pendente !== undefined && ctx?.estoque_valor_exato_pendente !== null);
+        return (fracaoOuValorConhecido && !ctx?.volume_frasco) ? 'cad_estoque_volume' : 'cad_estoque_fracao';
     }
     return 'cad_confirmacao';
 }
@@ -1151,6 +1440,12 @@ REGRAS ADICIONAIS:
   "uma vez ao dia" -> 24
 - horarioInicio: só quando a pessoa disser onde a grade começa ("começando às 8h",
   "a primeira às 7"). Se ela não disser, deixe null — NUNCA invente o início.
+- statusFrasco: só para estoque líquido, quando a pessoa disser explicitamente se o frasco já
+  está aberto/em uso ("já uso", "já abri", "tá pela metade" -> "aberto") ou ainda fechado/lacrado
+  ("ainda fechado", "lacrado", "nunca abri" -> "fechado"). Sem menção, deixe null.
+- fracaoEstoque: só quando statusFrasco for "aberto" e a pessoa disser quanto ainda resta —
+  um destes valores: recem_aberto | tres_quartos | metade | um_quarto | quase_acabando | nao_sei.
+  Sem essa informação, deixe null.
 - quantidadeUnica: a quantidade por dose quando ela NÃO estiver amarrada a um horário
   específico. "vou tomar 5ml de 12/12 hrs" -> quantidadeUnica: 5, unidadeDose: "ml".
   Se a quantidade já estiver em "pares", deixe quantidadeUnica null.
@@ -1176,7 +1471,9 @@ CAMPOS A EXTRAIR:
 - estoqueQuantidade: total em unidades já multiplicado (ex: "1 caixa com 30" -> 30), só quando a
   forma de estoque for sólida/contável.
 - frascos e volumeFrasco: só para estoque líquido (ex: "1 vidro de 100ml" -> frascos:1,
-  volumeFrasco:100).
+  volumeFrasco:100). Se o frasco já estiver aberto (statusFrasco: "aberto"), volumeFrasco ainda
+  pode vir (tamanho do frasco, ex: "é de 60ml"), mas frascos não se aplica — deixe null.
+- statusFrasco e fracaoEstoque: ver REGRAS ADICIONAIS.
 - tipoTratamento: "continuo" | "temporario" | null (ver REGRAS ADICIONAIS).
 - tratamentoDias: número de dias, só quando explícito e o tratamento for temporário.
 
@@ -1189,8 +1486,8 @@ Responda APENAS com um objeto JSON válido, sem markdown, sem backticks, sem exp
 {
   "nome": null, "dosagem": null, "pares": [], "intervaloHoras": null, "horarioInicio": null,
   "quantidadeUnica": null, "unidadeDose": null, "formaExplicita": null,
-  "estoqueQuantidade": null, "frascos": null, "volumeFrasco": null, "tipoTratamento": null,
-  "tratamentoDias": null
+  "estoqueQuantidade": null, "frascos": null, "volumeFrasco": null, "statusFrasco": null,
+  "fracaoEstoque": null, "tipoTratamento": null, "tratamentoDias": null
 }`;
 }
 
@@ -1198,8 +1495,8 @@ function fallbackCadastroCompleto() {
     return {
         nome: null, dosagem: null, pares: [], intervaloHoras: null, horarioInicio: null,
         quantidadeUnica: null, unidadeDose: null, formaExplicita: null,
-        estoqueQuantidade: null, frascos: null, volumeFrasco: null, tipoTratamento: null,
-        tratamentoDias: null
+        estoqueQuantidade: null, frascos: null, volumeFrasco: null, statusFrasco: null,
+        fracaoEstoque: null, tipoTratamento: null, tratamentoDias: null
     };
 }
 
@@ -1260,6 +1557,12 @@ async function extrairCadastroCompleto({ message, historicoConversa = [] }) {
     let volumeFrasco = Number(parsed.volumeFrasco);
     volumeFrasco = Number.isFinite(volumeFrasco) && volumeFrasco > 0 ? volumeFrasco : null;
 
+    // MH-073 Parte C (seção 8): status do frasco e fração de estoque, reconhecidos se
+    // já vierem na mensagem inicial rica ("já uso, tá acabando, é de 60ml").
+    const statusFrasco = ['aberto', 'fechado'].includes(parsed.statusFrasco) ? parsed.statusFrasco : null;
+    const fracoesValidas = new Set([...Object.keys(FRACOES_ESTOQUE), 'nao_sei']);
+    const fracaoEstoque = fracoesValidas.has(parsed.fracaoEstoque) ? parsed.fracaoEstoque : null;
+
     const tipoTratamento = ['continuo', 'temporario'].includes(parsed.tipoTratamento) ? parsed.tipoTratamento : null;
     let tratamentoDias = Number(parsed.tratamentoDias);
     tratamentoDias = Number.isFinite(tratamentoDias) && tratamentoDias > 0 ? tratamentoDias : null;
@@ -1288,6 +1591,8 @@ async function extrairCadastroCompleto({ message, historicoConversa = [] }) {
         estoqueQuantidade,
         frascos,
         volumeFrasco,
+        statusFrasco,
+        fracaoEstoque,
         tipoTratamento,
         tratamentoDias: tipoTratamento === 'temporario' ? tratamentoDias : null
     };
@@ -1649,14 +1954,44 @@ function montarSaltoCadastroCompleto(completo) {
     // já indicou o formato do estoque, sem depender da unidade de dose ter sido
     // resolvida antes.
     let estoqueResolvido = null;
-    if (completo.frascos && completo.volumeFrasco) {
-        estoqueResolvido = completo.frascos * completo.volumeFrasco;
-        contextUpdates.frascos = completo.frascos;
-        contextUpdates.volume_frasco = completo.volumeFrasco;
-    } else if (completo.frascos) {
-        contextUpdates.frascos = completo.frascos;
-    } else if (completo.estoqueQuantidade !== null) {
-        estoqueResolvido = completo.estoqueQuantidade;
+    let estoqueMotivo = null;
+
+    if (completo.statusFrasco === 'aberto') {
+        // MH-073 Parte C: ramo aberto — volumeFrasco (quando dito) é só o TAMANHO do
+        // frasco, nunca multiplicado por frascos (não se aplica a frasco já em uso).
+        contextUpdates.status_frasco = 'aberto';
+        if (completo.volumeFrasco) contextUpdates.volume_frasco = completo.volumeFrasco;
+
+        if (completo.estoqueQuantidade !== null) {
+            estoqueMotivo = 'aberto_valor_exato';
+            estoqueResolvido = completo.estoqueQuantidade;
+        } else if (completo.fracaoEstoque === 'nao_sei') {
+            if (completo.volumeFrasco) {
+                estoqueMotivo = 'aberto_fracao_nao_informada';
+                estoqueResolvido = completo.volumeFrasco * 0.10;
+            } else {
+                contextUpdates.estoque_fracao_pendente = 'nao_informada';
+            }
+        } else if (completo.fracaoEstoque && FRACOES_ESTOQUE[completo.fracaoEstoque] !== undefined) {
+            if (completo.volumeFrasco) {
+                estoqueMotivo = `aberto_fracao:${completo.fracaoEstoque}`;
+                estoqueResolvido = completo.volumeFrasco * FRACOES_ESTOQUE[completo.fracaoEstoque];
+            } else {
+                contextUpdates.estoque_fracao_pendente = completo.fracaoEstoque;
+            }
+        }
+    } else {
+        if (completo.statusFrasco === 'fechado') contextUpdates.status_frasco = 'fechado';
+        if (completo.frascos && completo.volumeFrasco) {
+            estoqueResolvido = completo.frascos * completo.volumeFrasco;
+            estoqueMotivo = 'frascos_fechados';
+            contextUpdates.frascos = completo.frascos;
+            contextUpdates.volume_frasco = completo.volumeFrasco;
+        } else if (completo.frascos) {
+            contextUpdates.frascos = completo.frascos;
+        } else if (completo.estoqueQuantidade !== null) {
+            estoqueResolvido = completo.estoqueQuantidade;
+        }
     }
 
     // ADENDO MH-80, DEFEITO 1: o estoque precisa entrar no contexto AGORA, não só no
@@ -1665,6 +2000,8 @@ function montarSaltoCadastroCompleto(completo) {
     // truthy): zero é estoque legítimo (BUG-97).
     if (estoqueResolvido !== null) {
         contextUpdates.estoque_resolvido = estoqueResolvido;
+        contextUpdates.estoque_motivo = estoqueMotivo;
+        contextUpdates.estoque_estimado = !!estoqueMotivo && estoqueMotivo !== 'frascos_fechados';
     }
 
     // ADENDO MH-80, DEFEITO 2: ponto único de decisão de avanço (Princípio 30) — a
@@ -1854,7 +2191,7 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
         return { proximaEtapa: decisao.proximaEtapa, contextUpdates: decisao.contextUpdates, contextParaPrompt: { acaoTipoTratamento: decisao.acao }, acao: decisao.acao };
     }
 
-    if (etapaAtual === 'cad_estoque' || etapaAtual === 'cad_estoque_volume') {
+    if (etapaAtual === 'cad_estoque' || etapaAtual === 'cad_estoque_fracao' || etapaAtual === 'cad_estoque_volume') {
         const decisao = await processarEstoque(etapaAtual, message, context, historicoConversa);
         // MH-073 Parte B.1: acao no nível de topo — ver comentário no ramo cad_horarios.
         return {
@@ -1883,7 +2220,20 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
                 case 'tipo_tratamento':
                     return { proximaEtapa: 'cad_tipo_tratamento', contextUpdates: { tipo_tratamento_pendente: false } };
                 case 'estoque':
-                    return { proximaEtapa: 'cad_estoque', contextUpdates: {} };
+                    // MH-073 Parte C: reseta todo o sub-estado do ramo líquido — sem
+                    // isso, uma correção genérica de estoque reentraria em cad_estoque
+                    // com status_frasco já resolvido de uma rodada anterior e seria
+                    // interpretada como resposta à contagem de frascos (fase 2), pulando
+                    // a pergunta "aberto ou fechado?" que a correção deveria refazer.
+                    return {
+                        proximaEtapa: 'cad_estoque',
+                        contextUpdates: {
+                            status_frasco: null, frascos: null, volume_frasco: null,
+                            estoque_resolvido: null, estoque_motivo: null, estoque_estimado: false,
+                            estoque_fracao_pendente: null, estoque_valor_exato_pendente: null,
+                            alerta_estoque_baixo: null
+                        }
+                    };
                 case 'horarios':
                 case 'quantidade': {
                     const posologia = await classificarPosologia({
@@ -1949,7 +2299,10 @@ async function garantirResumo(proximaEtapa, contextCompleto, contextParaPrompt) 
 
 // Ações que significam "a camada 1 não reconheceu a mensagem". Ponto único de
 // definição (Princípio 30) — acrescentar aqui, nunca espalhar checagens por etapa.
-const ACOES_DE_FALHA = new Set(['indeterminado', 'estoque_indeterminado', 'volume_indeterminado']);
+const ACOES_DE_FALHA = new Set([
+    'indeterminado', 'estoque_indeterminado', 'volume_indeterminado',
+    'status_frasco_indeterminado', 'fracao_indeterminada'
+]);
 
 // Ponto ÚNICO de dispatch (Princípio 30): calcula a decisão em calcularDecisaoEtapa e
 // garante, aqui e só aqui, que cad_confirmacao nunca é devolvida sem resumo — cobre
@@ -2060,21 +2413,41 @@ Não repita horários nem quantidade coletados antes.`;
                 return `Desculpe, não peguei direito 😊 Repita a pergunta, sem citar nenhum número:
 "Quantas unidades de ${nome} você tem agora?" Não mencione horários nem posologia.`;
             }
+            if (context?.acaoEstoque === 'status_frasco_indeterminado') {
+                return `Desculpe, não entendi 😊 Reformule de forma instrutiva, sem repetir a
+pergunta igual: "Me diz assim: ele já está aberto, você já usou alguma coisa dele, ou ainda está
+lacrado, sem ter usado nada ainda?" Não mencione números nem horários.`;
+            }
             if (context?.unidade_estoque === 'ml') {
-                return `Pergunte: "Quantos **FRASCOS** fechados de ${nome} você tem agora?" — a
-palavra "fechados" é OBRIGATÓRIA (frasco aberto não é tratado como cheio). Não mencione horários
-nem posologia.`;
+                // MH-073 Parte C: status_frasco já resolvido como 'fechado' nesta etapa —
+                // segunda pergunta, contagem de frascos (não exige mais "fechados").
+                if (context?.status_frasco === 'fechado') {
+                    return `Pergunte: "Quantos **FRASCOS** de ${nome} você tem?" Não mencione
+horários nem posologia.`;
+                }
+                return `Pergunte: "O frasco de ${nome} já está **ABERTO** (você já está usando) ou
+ainda está **FECHADO** (nunca foi aberto)?" Não mencione horários nem posologia.`;
             }
             return `Pergunte: "Quantas unidades de ${nome} você tem agora?" Não mencione horários
 nem posologia.`;
 
+        case 'cad_estoque_fracao':
+            if (context?.acaoEstoque === 'fracao_indeterminada') {
+                return `Desculpe, não peguei direito 😊 Reformule com exemplo, sem repetir a
+pergunta igual: "Pode ser algo como 'metade', '1/4', 'quase acabando' — ou um número em ml, tipo
+30ml." Não mencione horários nem posologia.`;
+            }
+            return `Pergunte: "E hoje, quanto mais ou menos ainda sobra nesse frasco de ${nome}?
+Pode ser algo como recém-aberto, 3/4, metade, 1/4, quase acabando — ou, se souber, me diz direto em
+ml." Não mencione horários nem posologia.`;
+
         case 'cad_estoque_volume':
             if (context?.acaoEstoque === 'volume_indeterminado') {
-                return `Desculpe, não peguei direito 😊 Repita, sem citar números: "Qual o
-**VOLUME** de cada frasco, em ml? (está no rótulo — ex: 10ml, 100ml)"`;
+                return `Desculpe, não peguei direito 😊 Repita: "Qual o VOLUME de cada frasco, em ml?
+(está no rótulo — ex: 10ml, 100ml)" Não mencione posologia nem horários.`;
             }
-            return `Pergunte: "E qual o **VOLUME** de cada frasco, em ml? (está no rótulo — ex:
-10ml, 100ml)"`;
+            return `Pergunte: "E qual o **VOLUME** desse frasco, em ml? Geralmente está no rótulo —
+ex: 10ml, 100ml."`;
 
         case 'cad_confirmacao':
             if (context?.resumoRenderizado) {
@@ -2212,7 +2585,9 @@ async function processarAcao(action, user) {
         estoque: action.estoque || 0,
         unidade_dose: action.unidade_dose || 'unidade',
         unidade_estoque: action.unidade_estoque || 'unidade',
-        gotas_por_ml: action.gotas_por_ml ?? null
+        gotas_por_ml: action.gotas_por_ml ?? null,
+        estoqueMotivo: action.estoque_motivo || null,
+        estoqueEstimado: !!action.estoque_estimado
     });
 
     // Medicamento duplicado — informa o usuário e encerra o fluxo
@@ -2391,7 +2766,9 @@ export async function handleCadastro({ user, message, state, context, historicoC
             unidade_estoque: novoContext.unidade_estoque || 'unidade',
             gotas_por_ml: novoContext.gotas_por_ml ?? null,
             forma_explicita: novoContext.forma_explicita || null,
-            forma_confirmada: novoContext.forma_confirmada || null
+            forma_confirmada: novoContext.forma_confirmada || null,
+            estoque_motivo: novoContext.estoque_motivo || null,
+            estoque_estimado: !!novoContext.estoque_estimado
         };
         const resultado = await processarAcao(action, user);
 

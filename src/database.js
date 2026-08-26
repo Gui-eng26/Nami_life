@@ -112,7 +112,9 @@ export async function saveMedication({
     forma, tipo_tratamento, tratamento_dias,
     unidade_dose = 'unidade',        // MH-073 Parte B
     unidade_estoque = 'unidade',     // MH-073 Parte B
-    gotas_por_ml = null               // MH-073 Parte B
+    gotas_por_ml = null,              // MH-073 Parte B
+    estoqueMotivo = null,             // MH-073 Parte C
+    estoqueEstimado = false           // MH-073 Parte C
 }) {
     // Verifica se já existe medicamento com mesmo nome
     const { data: existing } = await supabase
@@ -162,6 +164,8 @@ export async function saveMedication({
         medicationId: data.id,
         tipo: 'cadastro_inicial',
         origem: 'manual',
+        motivo: estoqueMotivo,
+        estimado: estoqueEstimado,
         valorAbsoluto: estoque || 0
     });
 
@@ -260,7 +264,8 @@ export async function getUserMedications(userId) {
 export async function registrarMovimentoEstoque({
     medicationId, tipo, origem, motivo = null, doseLogId = null,
     delta = null,        // use quando o movimento é um incremento/decremento conhecido
-    valorAbsoluto = null // use quando o movimento é "setar para X" (recontagem, cadastro)
+    valorAbsoluto = null, // use quando o movimento é "setar para X" (recontagem, cadastro)
+    estimado = false      // MH-073 Parte C — true quando o valor não veio de contagem exata
 }) {
     const { data: med, error: fetchError } = await supabase
         .from('medications')
@@ -284,7 +289,7 @@ export async function registrarMovimentoEstoque({
 
     const { error: updateError } = await supabase
         .from('medications')
-        .update({ estoque_atual: estoqueNovo })
+        .update({ estoque_atual: estoqueNovo, estoque_estimado: estimado })
         .eq('id', medicationId);
 
     if (updateError) throw new Error(`Erro ao atualizar estoque: ${updateError.message}`);
@@ -299,7 +304,8 @@ export async function registrarMovimentoEstoque({
             estoque_anterior: estoqueAnterior,
             estoque_novo: estoqueNovo,
             motivo,
-            dose_log_id: doseLogId
+            dose_log_id: doseLogId,
+            estimado
         });
 
     if (logError) throw new Error(`Erro ao registrar movimento de estoque: ${logError.message}`);
