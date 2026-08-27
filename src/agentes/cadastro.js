@@ -194,6 +194,26 @@ function resolverCorrecaoHorariosApenas(paresAntigos, novosParesClassificados, i
     return { horarios, pares, extra };
 }
 
+// v36 Briefing #1: intervalo e início são independentes da categoria (REGRA 7 do prompt).
+// Quando a mensagem traz UM horário e um intervalo, o horário é o INÍCIO da grade, não a
+// grade inteira — expandir em código, nunca no LLM (Princípio 28).
+// Devolve null quando não há intervalo aplicável, e o chamador segue com os pares originais.
+function expandirParesPorIntervalo(classificacao) {
+    const { pares, intervaloHoras } = classificacao;
+    if (!intervaloHoras || !Array.isArray(pares) || pares.length !== 1) return null;
+
+    const inicio = classificacao.horarioInicio || pares[0].horario;
+    const horarios = calcularHorariosPorIntervalo(inicio, intervaloHoras);
+    if (horarios.length <= 1) return null;
+
+    return {
+        pares: montarParesPosologia(horarios, pares[0].quantidade),
+        horarios,
+        intervalo_horas: intervaloHoras,
+        horario_inicio: inicio
+    };
+}
+
 function pluralizarRotulo(rotulo, quantidade) {
     if (Number(quantidade) === 1) return rotulo;
     const plurais = {
@@ -413,6 +433,7 @@ async function classificarEstoqueSolido({ message, nomeMedicamento, historicoCon
     quantidade = Number.isFinite(quantidade) && quantidade >= 0 ? quantidade : null;
     const categoria = parsed.categoria === 'quantidade' && quantidade !== null ? 'quantidade' : 'indeterminado';
 
+    console.log(`🔎 [CAD-CLASSIF] classificarEstoqueSolido -> ${categoria} (quantidade: ${categoria === 'quantidade' ? quantidade : null})`);
     return { categoria, quantidade: categoria === 'quantidade' ? quantidade : null };
 }
 
@@ -480,6 +501,7 @@ async function classificarStatusFrasco({ message, nomeMedicamento, historicoConv
 
     const categoriasValidas = new Set(['aberto', 'fechado', 'indeterminado']);
     const categoria = categoriasValidas.has(parsed.categoria) ? parsed.categoria : 'indeterminado';
+    console.log(`🔎 [CAD-CLASSIF] classificarStatusFrasco -> ${categoria}`);
     return { categoria };
 }
 
@@ -560,6 +582,7 @@ async function classificarFracaoEstoque({ message, nomeMedicamento, historicoCon
 
     const categoriasValidas = new Set([...Object.keys(FRACOES_ESTOQUE), 'nao_sei', 'indeterminado']);
     const categoria = categoriasValidas.has(parsed.categoria) ? parsed.categoria : 'indeterminado';
+    console.log(`🔎 [CAD-CLASSIF] classificarFracaoEstoque -> ${categoria}`);
     return { categoria };
 }
 
@@ -760,8 +783,8 @@ CATEGORIAS (escolha exatamente UMA):
   "8h, 14h e 22h".
 - quantidade_apenas: só quantidade, sem horário. Ex: "2 comprimidos", "20 gotas", "5ml", "2 por
   vez", "duas".
-- frequencia_intervalo: frequência regular sem horários explícitos. Ex: "de 8 em 8 horas",
-  "3 vezes ao dia", "12/12h".
+- frequencia_intervalo: frequência regular expressa como intervalo ou vezes-ao-dia, com ou sem
+  horário de início mencionado. Ex: "de 8 em 8 horas", "3 vezes ao dia", "12/12h".
 - indeterminado: nada de posologia foi dito, ou a resposta é confusa, ou fora de contexto.
 
 REGRA 1 — HORÁRIO NÃO É QUANTIDADE (crítica).
@@ -809,6 +832,23 @@ Resposta em mg, mcg, g, % ou mg/ml é DOSAGEM (concentração do remédio), não
 Exceção: "5ml" É quantidade (volume administrado, não concentração).
 
 REGRA 6 — NÚMEROS POR EXTENSO contam normalmente: "duas gotas" -> 2, "meio comprimido" -> 0.5.
+
+REGRA 7 — INTERVALO E HORÁRIO DE INÍCIO (crítica).
+Sempre que a mensagem mencionar um intervalo regular ("de 8 em 8 horas", "8/8hrs", "12/12",
+"3 vezes ao dia"), preencha "intervalo_horas" — INDEPENDENTE da categoria escolhida.
+Sempre que a mensagem indicar quando a pessoa toma/tomou a primeira dose ("comecei às 17h",
+"tomo às 20hrs agora", "a primeira é 8h"), preencha "horario_inicio" no formato "HH:MM" —
+INDEPENDENTE da categoria escolhida.
+Estes dois campos são INDEPENDENTES da categoria: uma mensagem pode ser posologia_completa E
+trazer intervalo_horas; pode ser frequencia_intervalo E trazer horario_inicio.
+  "5ml 8/8hrs. Tomo as 20hrs agora"     -> posologia_completa, pares [{20:00, 5}],
+                                            intervalo_horas 8, horario_inicio "20:00"
+  "5ml de 8 em 8hrs comecei as 17hrs"   -> posologia_completa, pares [{17:00, 5}],
+                                            intervalo_horas 8, horario_inicio "17:00"
+  "de 8 em 8 horas"                     -> frequencia_intervalo, intervalo_horas 8,
+                                            horario_inicio null
+NUNCA calcule você mesmo os demais horários da grade a partir do intervalo — devolva apenas o
+início. A grade inteira é calculada em código (dado de saúde, Princípio 28).
 
 CONVERSA RECENTE:
 ${formatarHistoricoConversa(historicoConversa)}
@@ -976,6 +1016,9 @@ async function classificarPosologia({ message, campoEsperado, nomeMedicamento, h
         });
     }
 
+    console.log(`🔎 [CAD-CLASSIF] classificarPosologia -> ${resultado.categoria} `
+        + `(campo: ${campoEsperado}, pares: ${resultado.pares.length}, `
+        + `intervalo: ${resultado.intervaloHoras}, inicio: ${resultado.horarioInicio})`);
     return resultado;
 }
 
@@ -1045,6 +1088,7 @@ async function extrairCampoSimples({ campo, message, historicoConversa = [] }) {
         ? 'valor'
         : 'indeterminado';
 
+    console.log(`🔎 [CAD-CLASSIF] extrairCampoSimples -> ${categoria} (campo: ${campo})`);
     return { categoria, valor: categoria === 'valor' ? parsed.valor.trim() : null };
 }
 
@@ -1120,6 +1164,7 @@ async function classificarTipoTratamento({ message, nomeMedicamento, aguardandoD
     dias = Number.isFinite(dias) && dias > 0 ? dias : null;
     if (categoria === 'dias' && dias === null) categoria = 'indeterminado';
 
+    console.log(`🔎 [CAD-CLASSIF] classificarTipoTratamento -> ${categoria} (dias: ${dias})`);
     return { categoria, dias };
 }
 
@@ -1268,6 +1313,7 @@ async function classificarConfirmacaoCadastro({ message, nomeMedicamento, histor
         });
     }
 
+    console.log(`🔎 [CAD-CLASSIF] classificarConfirmacaoCadastro -> ${categoria} (campoAlvo: ${campoAlvo})`);
     return { categoria, campoAlvo };
 }
 
@@ -1317,6 +1363,10 @@ function corrigirPosologiaEmConfirmacao(campoAlvo, classificacao, context) {
     });
 
     if (classificacao.categoria === 'posologia_completa') {
+        const expandido = expandirParesPorIntervalo(classificacao);
+        if (expandido) {
+            return aplicarNovosPares(expandido.pares, { intervalo_horas: expandido.intervalo_horas, horario_inicio: expandido.horario_inicio });
+        }
         return aplicarNovosPares(classificacao.pares);
     }
 
@@ -1336,10 +1386,18 @@ function corrigirPosologiaEmConfirmacao(campoAlvo, classificacao, context) {
     // quantidades; sem início, avança para cad_horarios (que já sabe pedir só a
     // primeira dose quando intervalo_horas está preenchido sem horario_inicio).
     if (campoAlvo === 'horarios' && classificacao.categoria === 'frequencia_intervalo') {
-        if (classificacao.horarioInicio) {
-            const grade = recalcularGradePorIntervalo(context?.pares_posologia, classificacao.horarioInicio, classificacao.intervaloHoras);
+        // v36 Briefing #1, seção 3.3: início em cascata — a mensagem pode não repetir o
+        // horário de início que já foi confirmado antes (só "de 8 em 8hrs", sem "comecei
+        // às X"). Cai no que o contexto já sabe: horario_inicio persistido, ou o primeiro
+        // par já confirmado (o primeiro cronologicamente só quando a grade tem um único
+        // horário — ver ⚠️ do briefing sobre a ordenação de pares_posologia).
+        const inicio = classificacao.horarioInicio
+            || context?.horario_inicio
+            || (context?.pares_posologia?.[0]?.horario ?? null);
+        if (inicio) {
+            const grade = recalcularGradePorIntervalo(context?.pares_posologia, inicio, classificacao.intervaloHoras);
             if (grade) {
-                const extra = { intervalo_horas: classificacao.intervaloHoras, horario_inicio: classificacao.horarioInicio };
+                const extra = { intervalo_horas: classificacao.intervaloHoras, horario_inicio: inicio };
                 return grade.pares ? aplicarNovosPares(grade.pares, extra) : aplicarGradeAmbigua(grade.horarios, extra);
             }
         }
@@ -1579,7 +1637,7 @@ async function extrairCadastroCompleto({ message, historicoConversa = [] }) {
     let quantidadeUnica = Number(parsed.quantidadeUnica);
     quantidadeUnica = Number.isFinite(quantidadeUnica) && quantidadeUnica > 0 ? quantidadeUnica : null;
 
-    return {
+    const resultado = {
         nome: typeof parsed.nome === 'string' && parsed.nome.trim() ? parsed.nome.trim() : null,
         dosagem: typeof parsed.dosagem === 'string' && parsed.dosagem.trim() ? parsed.dosagem.trim() : null,
         pares,
@@ -1596,6 +1654,14 @@ async function extrairCadastroCompleto({ message, historicoConversa = [] }) {
         tipoTratamento,
         tratamentoDias: tipoTratamento === 'temporario' ? tratamentoDias : null
     };
+
+    // Nunca logar VALORES (dado de saúde) — só quais chaves vieram preenchidas.
+    const chavesPreenchidas = Object.entries(resultado)
+        .filter(([, v]) => (Array.isArray(v) ? v.length > 0 : v !== null))
+        .map(([k]) => k);
+    console.log(`🔎 [CAD-CLASSIF] extrairCadastroCompleto -> campos: [${chavesPreenchidas.join(', ')}]`);
+
+    return resultado;
 }
 
 // ============================================================
@@ -1658,13 +1724,16 @@ function decidirCadHorarios(classificacao, context) {
     switch (classificacao.categoria) {
         case 'posologia_completa': {
             const unidades = derivarUnidades(classificacao.unidadeDose || 'unidade');
+            const expandido = expandirParesPorIntervalo(classificacao);
+            const paresFinais = expandido ? expandido.pares : classificacao.pares;
             const upd = {
-                horarios: classificacao.pares.map(p => p.horario),
-                pares_posologia: classificacao.pares,
+                horarios: paresFinais.map(p => p.horario),
+                pares_posologia: paresFinais,
                 unidade_dose: unidades.unidade_dose,
                 unidade_estoque: unidades.unidade_estoque,
                 gotas_por_ml: unidades.gotas_por_ml,
-                forma_explicita: classificacao.formaExplicita || null
+                forma_explicita: classificacao.formaExplicita || null,
+                ...(expandido ? { intervalo_horas: expandido.intervalo_horas, horario_inicio: expandido.horario_inicio } : {})
             };
             return { acao: 'posologia_completa', proximaEtapa: primeiraEtapaFaltante({ ...context, ...upd }), contextUpdates: upd };
         }
@@ -1719,13 +1788,16 @@ function decidirCadQuantidade(classificacao, context) {
         }
         case 'posologia_completa': {
             const unidades = derivarUnidades(classificacao.unidadeDose || 'unidade');
+            const expandido = expandirParesPorIntervalo(classificacao);
+            const paresFinais = expandido ? expandido.pares : classificacao.pares;
             const upd = {
-                horarios: classificacao.pares.map(p => p.horario),
-                pares_posologia: classificacao.pares,
+                horarios: paresFinais.map(p => p.horario),
+                pares_posologia: paresFinais,
                 unidade_dose: unidades.unidade_dose,
                 unidade_estoque: unidades.unidade_estoque,
                 gotas_por_ml: unidades.gotas_por_ml,
-                forma_explicita: classificacao.formaExplicita || null
+                forma_explicita: classificacao.formaExplicita || null,
+                ...(expandido ? { intervalo_horas: expandido.intervalo_horas, horario_inicio: expandido.horario_inicio } : {})
             };
             return { acao: 'posologia_completa', proximaEtapa: primeiraEtapaFaltante({ ...context, ...upd }), contextUpdates: upd };
         }
@@ -1755,12 +1827,15 @@ function respostaConfirmaSimples(message) {
 // 8hrs") caía direto no fallback genérico e era descartada em silêncio.
 function decidirCadConfirmaForma(classificacao, message, context) {
     if (classificacao.categoria === 'posologia_completa' && classificacao.pares.length > 0) {
+        const expandido = expandirParesPorIntervalo(classificacao);
+        const paresFinais = expandido ? expandido.pares : classificacao.pares;
         return {
             acao: 'quantidade_corrigida',
             proximaEtapa: 'cad_tipo_tratamento',
             contextUpdates: {
-                pares_posologia: classificacao.pares,
-                forma_confirmada: classificacao.formaExplicita || context?.forma_sugerida || null
+                pares_posologia: paresFinais,
+                forma_confirmada: classificacao.formaExplicita || context?.forma_sugerida || null,
+                ...(expandido ? { intervalo_horas: expandido.intervalo_horas, horario_inicio: expandido.horario_inicio } : {})
             }
         };
     }
@@ -1792,10 +1867,14 @@ function decidirCadConfirmaForma(classificacao, message, context) {
     }
 
     if (classificacao.categoria === 'frequencia_intervalo') {
-        if (classificacao.horarioInicio) {
-            const grade = recalcularGradePorIntervalo(context?.pares_posologia, classificacao.horarioInicio, classificacao.intervaloHoras);
+        // v36 Briefing #1, seção 3.3: mesma cascata de início de corrigirPosologiaEmConfirmacao.
+        const inicio = classificacao.horarioInicio
+            || context?.horario_inicio
+            || (context?.pares_posologia?.[0]?.horario ?? null);
+        if (inicio) {
+            const grade = recalcularGradePorIntervalo(context?.pares_posologia, inicio, classificacao.intervaloHoras);
             if (grade) {
-                const extra = { intervalo_horas: classificacao.intervaloHoras, horario_inicio: classificacao.horarioInicio };
+                const extra = { intervalo_horas: classificacao.intervaloHoras, horario_inicio: inicio };
                 if (grade.pares) {
                     return {
                         acao: 'horarios_corrigidos',
@@ -2084,6 +2163,7 @@ Sem pontuação, sem explicação.`;
         const validos = ['recusa', 'duvida', 'nova_intencao', 'ruido'];
         const achado = validos.find(v => texto.includes(v));
         console.log(`💊 [CADASTRO] Classificador de falha (etapa ${etapa}): "${message}" -> ${achado || 'ruido (fallback)'}`);
+        console.log(`🔎 [CAD-CLASSIF] classificarIndeterminadoCadastro -> ${achado || 'ruido'} (etapa: ${etapa})`);
         return achado || 'ruido';
     } catch (e) {
         console.error(`❌ [CADASTRO] Erro no classificador de falha: ${e.message} — assumindo ruido`);
