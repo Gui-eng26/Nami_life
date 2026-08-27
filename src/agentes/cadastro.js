@@ -293,6 +293,47 @@ function renderizarResumo(context, estoqueFinal) {
         + `📦 Estoque: ${renderizarLinhaEstoque(context, estoqueFinal)}`;
 }
 
+// Correção #1 (v36 #2, seção 1): a pergunta das três etapas de estoque é dado de
+// saúde renderizado em código, função pura sem LLM — mesmo padrão de renderizarResumo
+// acima. A causa raiz que este briefing ataca (seção 0): buildSystemPrompt montava
+// as instruções de TODAS as etapas simultaneamente e o LLM seguia o histórico da
+// conversa em vez da etapa real, trocando "VOLUME" por "DOSAGEM" e por aí vai. Uma
+// etapa determinística com pergunta gerada pelo LLM ainda deixava esse espaço; com o
+// texto fixo aqui, não sobra o que confundir.
+function renderizarPerguntaEstoque(etapa, context) {
+    const nome = context?.nome || '{nome}';
+    const acao = context?.acaoEstoque;
+
+    if (etapa === 'cad_estoque') {
+        // Reformulações (mesmos textos que já estavam em buildSystemPrompt) — a de
+        // frascos_indeterminado é nova (correção #4).
+        if (acao === 'estoque_indeterminado') return `Quantas unidades de ${nome} você tem agora?`;
+        if (acao === 'status_frasco_indeterminado') {
+            return `Me diz assim: ele já está aberto, você já usou alguma coisa dele, ou ainda está lacrado, sem ter usado nada ainda?`;
+        }
+        if (acao === 'frascos_indeterminado') {
+            return `Não peguei o número 😊 Me diz só quantos frascos de ${nome} você tem em casa — por exemplo: 1, 2, 3.`;
+        }
+        if (context?.unidade_estoque === 'ml') {
+            if (context?.status_frasco === 'fechado') return `Quantos frascos de ${nome} você tem?`;
+            return `O frasco de ${nome} já está *ABERTO* (você já está usando) ou ainda está *FECHADO* (nunca foi aberto)?`;
+        }
+        return `Quantas unidades de ${nome} você tem agora?`;
+    }
+
+    if (etapa === 'cad_estoque_volume') {
+        if (acao === 'volume_indeterminado') return `Qual o VOLUME de cada frasco, em ml? (está no rótulo — ex: 10ml, 100ml)`;
+        return `E qual o *VOLUME* desse frasco, em ml? Geralmente está no rótulo — ex: 10ml, 100ml.`;
+    }
+
+    if (etapa === 'cad_estoque_fracao') {
+        if (acao === 'fracao_indeterminada') return `Pode ser algo como 'metade', '1/4', 'quase acabando' — ou um número em ml, tipo 30ml.`;
+        return `E hoje, quanto mais ou menos ainda sobra nesse frasco de ${nome}? Pode ser algo como recém-aberto, 3/4, metade, 1/4, quase acabando — ou, se souber, me diz direto em ml.`;
+    }
+
+    return null;
+}
+
 // ============================================================
 // MH-073 Parte B — EXTRAÇÃO NUMÉRICA DE ESTOQUE (frasco lacrado)
 // ============================================================
@@ -628,19 +669,51 @@ async function processarEstoque(etapaAtual, message, context, historicoConversa)
                 if (frascos !== null && volume !== null) {
                     return finalizarComEstoque(frascos * volume, { frascos, volume_frasco: volume, estoque_motivo: 'frascos_fechados' });
                 }
+                // Correção #4 (v36 #2, seção 4): sem frascos reconhecido, NÃO avança —
+                // avançar com frascos null virava estoque=1*volume (BUG de 26-27/08).
+                // Reformula em vez de aceitar qualquer resposta como contagem.
+                if (frascos === null) {
+                    return { acao: 'frascos_indeterminado', proximaEtapa: 'cad_estoque', contextUpdates: {} };
+                }
                 return {
                     acao: 'frascos_apenas',
                     proximaEtapa: 'cad_estoque_volume',
-                    contextUpdates: { frascos: frascos ?? null }
+                    contextUpdates: { frascos }
                 };
             }
 
             const statusClassificacao = await classificarStatusFrasco({ message, nomeMedicamento: context?.nome, historicoConversa });
 
+            // MH-073 Parte C.1 (v36 #2, seção 5): aproveita frascos/volume ou valor/fração
+            // já ditos na MESMA mensagem que respondeu o status, em vez de descartá-los e
+            // perguntar de novo na etapa seguinte (Princípio 1).
             if (statusClassificacao.categoria === 'fechado') {
+                const { frascos, volume } = extrairFrascosEVolume(message);
+                if (frascos !== null && volume !== null) {
+                    return finalizarComEstoque(frascos * volume, { status_frasco: 'fechado', frascos, volume_frasco: volume, estoque_motivo: 'frascos_fechados' });
+                }
+                if (frascos !== null) {
+                    return {
+                        acao: 'status_frasco_fechado_com_frascos',
+                        proximaEtapa: 'cad_estoque_volume',
+                        contextUpdates: { status_frasco: 'fechado', frascos }
+                    };
+                }
                 return { acao: 'status_frasco_fechado', proximaEtapa: 'cad_estoque', contextUpdates: { status_frasco: 'fechado' } };
             }
             if (statusClassificacao.categoria === 'aberto') {
+                const valorExato = extrairValorExatoEstoque(message);
+                const volumeConhecido = Number(context?.volume_frasco) || null;
+                if (valorExato !== null && volumeConhecido !== null) {
+                    return finalizarComEstoque(valorExato, { status_frasco: 'aberto', volume_frasco: volumeConhecido, estoque_motivo: 'aberto_valor_exato' });
+                }
+                if (valorExato !== null) {
+                    return {
+                        acao: 'status_frasco_aberto_com_valor',
+                        proximaEtapa: 'cad_estoque_volume',
+                        contextUpdates: { status_frasco: 'aberto', estoque_valor_exato_pendente: valorExato }
+                    };
+                }
                 return { acao: 'status_frasco_aberto', proximaEtapa: 'cad_estoque_fracao', contextUpdates: { status_frasco: 'aberto' } };
             }
             return { acao: 'status_frasco_indeterminado', proximaEtapa: 'cad_estoque', contextUpdates: {} };
@@ -1714,10 +1787,20 @@ function decidirCadHorarios(classificacao, context) {
                 return decisao;
             }
         }
+        // Correção #6 (v36 #2, seção 6): a mensagem pode trazer, além do horário (que não
+        // veio), a quantidade adiantada ("5ml") — sem isso, ela era descartada e o usuário
+        // tinha que repetir depois. Mesmos campos que o case 'quantidade_apenas' persiste.
         return {
             acao: 'frequencia_sem_inicio',
             proximaEtapa: 'cad_horarios',
-            contextUpdates: { intervalo_horas: context.intervalo_horas }
+            contextUpdates: {
+                intervalo_horas: context.intervalo_horas,
+                ...(classificacao.quantidadeUnica ? {
+                    quantidade_pendente: classificacao.quantidadeUnica,
+                    unidade_dose_pendente: classificacao.unidadeDose,
+                    forma_explicita_pendente: classificacao.formaExplicita
+                } : {})
+            }
         };
     }
 
@@ -1834,7 +1917,11 @@ function decidirCadConfirmaForma(classificacao, message, context) {
             proximaEtapa: 'cad_tipo_tratamento',
             contextUpdates: {
                 pares_posologia: paresFinais,
-                forma_confirmada: classificacao.formaExplicita || context?.forma_sugerida || null,
+                // Correção #2 (v36 #2, seção 2): forma_sugerida é sempre null em líquidos
+                // sem a forma no nome (BUG-99 descarta o palpite incompatível) — persistir
+                // null aqui travava primeiraEtapaFaltante de volta em cad_confirma_forma.
+                // 'generico' é o mesmo sentinela já usado na decisão em memória.
+                forma_confirmada: classificacao.formaExplicita || context?.forma_sugerida || 'generico',
                 ...(expandido ? { intervalo_horas: expandido.intervalo_horas, horario_inicio: expandido.horario_inicio } : {})
             }
         };
@@ -1854,7 +1941,7 @@ function decidirCadConfirmaForma(classificacao, message, context) {
                 contextUpdates: {
                     horarios,
                     pares_posologia: pares,
-                    forma_confirmada: context?.forma_sugerida || null,
+                    forma_confirmada: context?.forma_sugerida || 'generico',
                     ...extra
                 }
             };
@@ -1879,7 +1966,7 @@ function decidirCadConfirmaForma(classificacao, message, context) {
                     return {
                         acao: 'horarios_corrigidos',
                         proximaEtapa: 'cad_tipo_tratamento',
-                        contextUpdates: { horarios: grade.horarios, pares_posologia: grade.pares, forma_confirmada: context?.forma_sugerida || null, ...extra }
+                        contextUpdates: { horarios: grade.horarios, pares_posologia: grade.pares, forma_confirmada: context?.forma_sugerida || 'generico', ...extra }
                     };
                 }
                 return {
@@ -1905,15 +1992,13 @@ function decidirCadConfirmaForma(classificacao, message, context) {
         };
     }
     // confirmação explícita OU qualquer outra coisa (rótulo genérico, nunca trava).
-    // forma_confirmada pode legitimamente ser null (rótulo genérico) — o objeto passado
-    // a primeiraEtapaFaltante usa um marcador que CONTA como truthy (o check ali é
-    // `!ctx?.forma_confirmada`; '' também é falsy em JS e cairia de volta em
-    // cad_confirma_forma, travando o fluxo — por isso não usar string vazia). O
-    // contextUpdates persistido continua com o valor real (null).
-    const upd = { forma_confirmada: context?.forma_sugerida || null };
+    // Correção #2 (v36 #2, seção 2): forma_confirmada NUNCA persiste null — quando não
+    // há forma_sugerida (líquido sem forma no nome), grava o sentinela 'generico', que
+    // `primeiraEtapaFaltante` (check `!ctx?.forma_confirmada`) já trata como truthy.
+    const upd = { forma_confirmada: context?.forma_sugerida || 'generico' };
     return {
         acao: respostaConfirmaSimples(message) ? 'confirmado' : 'avanca_sem_confirmacao_clara',
-        proximaEtapa: primeiraEtapaFaltante({ ...context, ...upd, forma_confirmada: upd.forma_confirmada ?? 'generico' }),
+        proximaEtapa: primeiraEtapaFaltante({ ...context, ...upd }),
         contextUpdates: upd
     };
 }
@@ -2377,11 +2462,28 @@ async function garantirResumo(proximaEtapa, contextCompleto, contextParaPrompt) 
     };
 }
 
+// Correção #3 (v36 #2, seção 3), espelhando garantirResumo acima: cad_confirma_forma
+// também tem uma pré-condição — sem blocoConfirmaForma o template renderiza
+// literalmente "só confirmando: ?". O bloco só era preparado nos 3 pontos de entrada
+// que saltam PARA a etapa (cad_nome, cad_horarios/cad_quantidade_por_dose,
+// repetirPerguntaCadastro); alcançá-la via primeiraEtapaFaltante (vindo de
+// cad_dosagem, cad_tipo_tratamento ou do próprio decidirCadConfirmaForma) não passava
+// por nenhum deles. Aplicada UMA vez, no ponto único de despacho, como garantirResumo.
+async function garantirBlocoConfirmaForma(proximaEtapa, contextCompleto, contextParaPrompt) {
+    if (proximaEtapa !== 'cad_confirma_forma') return contextParaPrompt;
+    if (contextParaPrompt?.blocoConfirmaForma) return contextParaPrompt;
+
+    return {
+        ...contextParaPrompt,
+        blocoConfirmaForma: await prepararContextoConfirmaForma({ ...contextCompleto }, {}, contextCompleto?.nome)
+    };
+}
+
 // Ações que significam "a camada 1 não reconheceu a mensagem". Ponto único de
 // definição (Princípio 30) — acrescentar aqui, nunca espalhar checagens por etapa.
 const ACOES_DE_FALHA = new Set([
     'indeterminado', 'estoque_indeterminado', 'volume_indeterminado',
-    'status_frasco_indeterminado', 'fracao_indeterminada'
+    'status_frasco_indeterminado', 'fracao_indeterminada', 'frascos_indeterminado'
 ]);
 
 // Ponto ÚNICO de dispatch (Princípio 30): calcula a decisão em calcularDecisaoEtapa e
@@ -2417,9 +2519,10 @@ async function decidirEtapa(etapaAtual, message, context, historicoConversa) {
     }
 
     const contextCompleto = { ...context, ...resultado.contextUpdates };
+    const contextParaPromptComResumo = await garantirResumo(resultado.proximaEtapa, contextCompleto, resultado.contextParaPrompt);
     return {
         ...resultado,
-        contextParaPrompt: await garantirResumo(resultado.proximaEtapa, contextCompleto, resultado.contextParaPrompt)
+        contextParaPrompt: await garantirBlocoConfirmaForma(resultado.proximaEtapa, contextCompleto, contextParaPromptComResumo)
     };
 }
 
@@ -2488,46 +2591,21 @@ horários nem quantidade coletados antes.`;
 puder responder com o número de dias na mesma mensagem, tudo bem — a extração é feita em código.
 Não repita horários nem quantidade coletados antes.`;
 
+        // Correção #1 (v36 #2, seção 1): as três etapas de estoque usam pergunta
+        // renderizada em código (renderizarPerguntaEstoque), no mesmo padrão de
+        // cad_confirmacao — o LLM só fraseia, nunca decide o que perguntar. A proibição
+        // de confirmar sucesso existe porque a Nami chegou a dizer "Estoque registrado
+        // com sucesso" no meio deste sub-fluxo (seção 0 do briefing).
         case 'cad_estoque':
-            if (context?.acaoEstoque === 'estoque_indeterminado') {
-                return `Desculpe, não peguei direito 😊 Repita a pergunta, sem citar nenhum número:
-"Quantas unidades de ${nome} você tem agora?" Não mencione horários nem posologia.`;
-            }
-            if (context?.acaoEstoque === 'status_frasco_indeterminado') {
-                return `Desculpe, não entendi 😊 Reformule de forma instrutiva, sem repetir a
-pergunta igual: "Me diz assim: ele já está aberto, você já usou alguma coisa dele, ou ainda está
-lacrado, sem ter usado nada ainda?" Não mencione números nem horários.`;
-            }
-            if (context?.unidade_estoque === 'ml') {
-                // MH-073 Parte C: status_frasco já resolvido como 'fechado' nesta etapa —
-                // segunda pergunta, contagem de frascos (não exige mais "fechados").
-                if (context?.status_frasco === 'fechado') {
-                    return `Pergunte: "Quantos **FRASCOS** de ${nome} você tem?" Não mencione
-horários nem posologia.`;
-                }
-                return `Pergunte: "O frasco de ${nome} já está **ABERTO** (você já está usando) ou
-ainda está **FECHADO** (nunca foi aberto)?" Não mencione horários nem posologia.`;
-            }
-            return `Pergunte: "Quantas unidades de ${nome} você tem agora?" Não mencione horários
-nem posologia.`;
-
         case 'cad_estoque_fracao':
-            if (context?.acaoEstoque === 'fracao_indeterminada') {
-                return `Desculpe, não peguei direito 😊 Reformule com exemplo, sem repetir a
-pergunta igual: "Pode ser algo como 'metade', '1/4', 'quase acabando' — ou um número em ml, tipo
-30ml." Não mencione horários nem posologia.`;
-            }
-            return `Pergunte: "E hoje, quanto mais ou menos ainda sobra nesse frasco de ${nome}?
-Pode ser algo como recém-aberto, 3/4, metade, 1/4, quase acabando — ou, se souber, me diz direto em
-ml." Não mencione horários nem posologia.`;
-
-        case 'cad_estoque_volume':
-            if (context?.acaoEstoque === 'volume_indeterminado') {
-                return `Desculpe, não peguei direito 😊 Repita: "Qual o VOLUME de cada frasco, em ml?
-(está no rótulo — ex: 10ml, 100ml)" Não mencione posologia nem horários.`;
-            }
-            return `Pergunte: "E qual o **VOLUME** desse frasco, em ml? Geralmente está no rótulo —
-ex: 10ml, 100ml."`;
+        case 'cad_estoque_volume': {
+            const pergunta = renderizarPerguntaEstoque(etapaDaPergunta, context);
+            return `Faça EXATAMENTE esta pergunta, sem reescrever, sem acrescentar outra pergunta e
+sem antecipar nenhuma etapa seguinte (é fluxo de dado de saúde renderizado em código):
+"${pergunta}"
+Você pode acrescentar no máximo uma saudação curta e calorosa ANTES da pergunta.
+Não confirme nada como registrado ou salvo.`;
+        }
 
         case 'cad_confirmacao':
             if (context?.resumoRenderizado) {
