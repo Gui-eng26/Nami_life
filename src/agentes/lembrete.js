@@ -11,12 +11,14 @@ import {
 } from '../database.js';
 import { buildAlertaEstoqueNaoInformado } from '../templates/estoqueTemplates.js';
 import { verboDoMedicamento } from '../templates/verbos.js';
+import { linhaQuantidadeDose } from '../templates/dose.js';
+import { degradar } from '../observabilidade.js';
 
 // ============================================================
 // MENSAGENS DE FOLLOW-UP
 // ============================================================
 
-function buildFollowUpMessage(tentativa, reminder) {
+function buildFollowUpMessage(tentativa, reminder, quantidade = '') {
     const nome = reminder.user_name
         ? reminder.user_name.split(' ')[0]
         : 'você';
@@ -26,7 +28,7 @@ function buildFollowUpMessage(tentativa, reminder) {
     if (tentativa === 2) {
         return (
             `⏰ ${nome}, só passando para lembrar!\n\n` +
-            `Ainda não vi sua confirmação do *${remedio}*.\n` +
+            `Ainda não vi sua confirmação do *${remedio}*.${quantidade}\n` +
             `${verbo.imperativoPergunta} Responda *SIM* ou *NÃO* 💊`
         );
     }
@@ -34,13 +36,13 @@ function buildFollowUpMessage(tentativa, reminder) {
     if (tentativa === 3) {
         return (
             `💊 ${nome}, último aviso de hoje!\n\n` +
-            `Seu *${remedio}* ainda está aguardando confirmação.\n` +
+            `Seu *${remedio}* ainda está aguardando confirmação.${quantidade}\n` +
             `${capitalize(verbo.passado)}? É só responder *SIM* ou *NÃO* 🌿`
         );
     }
 
     // Fallback seguro (não deveria ser chamado fora de tentativa 2 ou 3)
-    return `💊 ${nome}, lembrete do *${remedio}*. ${verbo.imperativoPergunta} Responda *SIM* ou *NÃO*`;
+    return `💊 ${nome}, lembrete do *${remedio}*.${quantidade} ${verbo.imperativoPergunta} Responda *SIM* ou *NÃO*`;
 }
 
 function capitalize(texto) {
@@ -106,7 +108,32 @@ export async function handleFollowUp({ doseLog, reminder }) {
 
     try {
         if (tentativa <= 3) {
-            const message = buildFollowUpMessage(tentativa, reminder);
+            // MH-081: a quantidade vem de dose_logs.schedule_id. Quando o vínculo é nulo
+            // (recadastro do medicamento via replaceMedication apaga e recria os schedules,
+            // e o FK é ON DELETE SET NULL), OMITIMOS o trecho em vez de assumir 1.
+            // Assumir 1 afirmaria posologia que o sistema não pode sustentar (Princípio 49).
+            let quantidade = linhaQuantidadeDose({
+                quantidade: reminder.quantidade_por_dose,
+                unidade_dose: reminder.med_unidade_dose,
+                forma_farmaceutica: reminder.med_forma
+            });
+            if (!quantidade) {
+                quantidade = await degradar({
+                    origem: 'lembrete',
+                    motivo: 'quantidade_dose_indisponivel',
+                    agent: 'lembrete',
+                    userId: reminder.user_id ?? null,
+                    detalhe: {
+                        dose_log_id: doseLog.id,
+                        medication_id: doseLog.medication_id,
+                        schedule_id: doseLog.schedule_id ?? null,
+                        horario_agendado: doseLog.horario_agendado ?? null
+                    },
+                    fallback: ''
+                });
+            }
+
+            const message = buildFollowUpMessage(tentativa, reminder, quantidade);
             const zapiResult = await sendTextMessage(reminder.phone, message);
             const zapiMessageId = zapiResult?.zapiMessageId || null;
 

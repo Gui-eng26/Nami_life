@@ -5,9 +5,10 @@ import { getPendingReminders, getPendingFollowUps, createDoseLog,
 import { sendTextMessage } from './whatsapp.js';
 import { handleFollowUp } from './agentes/lembrete.js';
 import { enviarResumoSemanal } from './agentes/relatorios.js';
-import { registrarEvento, tituloEstavel } from './observabilidade.js';
+import { registrarEvento, tituloEstavel, degradar } from './observabilidade.js';
 import { executarJuizOffline } from './juizOffline.js';
 import { verboDoMedicamento, verboDoGrupo } from './templates/verbos.js';
+import { linhaQuantidadeDose } from './templates/dose.js';
 
 // ============================================================
 // INICIA O SCHEDULER
@@ -244,7 +245,13 @@ function buildGroupedReminderMessage(firstName, horario, grupo) {
     const verbo = verboDoGrupo(grupo.map(r => r.forma_farmaceutica));
     const lista = grupo.map(r => {
         const dosagem = r.med_dosagem ? ` — ${r.med_dosagem}` : '';
-        return `• *${r.med_nome}*${dosagem}`;
+        // MH-081: sub-linha do item, recuo de 2 espaços — nunca um bullet próprio.
+        const quantidade = linhaQuantidadeDose({
+            quantidade: r.quantidade_por_dose,
+            unidade_dose: r.unidade_dose,
+            forma_farmaceutica: r.forma_farmaceutica
+        }, { indentacao: '  ' });
+        return `• *${r.med_nome}*${dosagem}${quantidade}`;
     }).join('\n');
 
     return (
@@ -266,7 +273,35 @@ async function handleGroupedFollowUp(grupo) {
         const firstName = primeiro.user_name?.split(' ')[0] || 'você';
         const horario = String(primeiro.horario_agendado).substring(0, 5);
 
-        const message = buildGroupedFollowUpMessage(tentativa, firstName, horario, grupo);
+        // MH-081: omissão é POR ITEM — se 2 de 3 resolverem, os 2 exibem e o terceiro
+        // fica só com o nome. Nunca assumir 1 para o item que não resolveu.
+        const quantidadePorItem = new Map();
+        for (const item of grupo) {
+            let trecho = linhaQuantidadeDose({
+                quantidade: item.quantidade_por_dose,
+                unidade_dose: item.med_unidade_dose,
+                forma_farmaceutica: item.med_forma
+            }, { indentacao: '  ' });
+            if (!trecho) {
+                trecho = await degradar({
+                    origem: 'lembrete',
+                    motivo: 'quantidade_dose_indisponivel',
+                    agent: 'scheduler',
+                    userId: item.user_id ?? null,
+                    detalhe: {
+                        dose_log_id: item.id,
+                        medication_id: item.medication_id,
+                        schedule_id: item.schedule_id ?? null,
+                        horario_agendado: item.horario_agendado ?? null,
+                        agrupado: true
+                    },
+                    fallback: ''
+                });
+            }
+            quantidadePorItem.set(item.id, trecho);
+        }
+
+        const message = buildGroupedFollowUpMessage(tentativa, firstName, horario, grupo, quantidadePorItem);
         await sendTextMessage(primeiro.phone, message);   // envia, mas não usamos o zaapId
 
         // Atualiza estado individualmente por dose (tentativas), mas NÃO grava zapi_message_id
@@ -299,9 +334,9 @@ async function handleGroupedFollowUp(grupo) {
     }
 }
 
-function buildGroupedFollowUpMessage(tentativa, firstName, horario, grupo) {
+function buildGroupedFollowUpMessage(tentativa, firstName, horario, grupo, quantidadePorItem = new Map()) {
     const verbo = verboDoGrupo(grupo.map(r => r.med_forma));
-    const lista = grupo.map(r => `• *${r.med_nome}*`).join('\n');
+    const lista = grupo.map(r => `• *${r.med_nome}*${quantidadePorItem.get(r.id) || ''}`).join('\n');
     const abertura = tentativa === 3
         ? `💊 ${firstName}, último aviso de hoje!`
         : `⏰ ${firstName}, só passando para lembrar!`;
@@ -401,9 +436,17 @@ function buildReminderMessage(firstName, reminder) {
     const dosagem = reminder.med_dosagem
         ? ` — ${reminder.med_dosagem}`
         : '';
+    // MH-081: get_pending_reminders faz JOIN direto em schedules — a quantidade
+    // vem sempre nos lembretes, por construção. Não há caso de omissão aqui.
+    // A quebra de linha já vem de linhaQuantidadeDose — não acrescentar \n aqui.
+    const quantidade = linhaQuantidadeDose({
+        quantidade: reminder.quantidade_por_dose,
+        unidade_dose: reminder.unidade_dose,
+        forma_farmaceutica: reminder.forma_farmaceutica
+    });
     const verbo = verboDoMedicamento(reminder.forma_farmaceutica);
 
-    return `⏰ Olá, ${firstName}!\n\nHora do seu *${reminder.med_nome}*${dosagem}.\n\n${verbo.imperativoPergunta} Responda *SIM* ou *NÃO* 💊`;
+    return `⏰ Olá, ${firstName}!\n\nHora do seu *${reminder.med_nome}*${dosagem}.${quantidade}\n\n${verbo.imperativoPergunta} Responda *SIM* ou *NÃO* 💊`;
 }
 
 // ============================================================

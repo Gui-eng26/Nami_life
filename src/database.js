@@ -578,8 +578,11 @@ export async function getPendingFollowUps() {
         .select(`
             *,
             medications (
-                id, nome, dosagem, forma_farmaceutica, user_id,
+                id, nome, dosagem, forma_farmaceutica, unidade_dose, user_id,
                 users (id, phone, name)
+            ),
+            schedules!dose_logs_schedule_id_fkey (
+                quantidade_por_dose
             )
         `)
         .eq('status', 'pendente')
@@ -598,6 +601,10 @@ export async function getPendingFollowUps() {
         med_nome: log.medications?.nome,
         med_dosagem: log.medications?.dosagem,
         med_forma: log.medications?.forma_farmaceutica,
+        med_unidade_dose: log.medications?.unidade_dose ?? null,
+        // MH-081: null quando dose_logs.schedule_id é nulo (ver seção 6).
+        // NUNCA usar ?? 1 aqui — null e 1 têm significados diferentes (Princípio 49).
+        quantidade_por_dose: log.schedules?.quantidade_por_dose ?? null,
         user_id: log.medications?.user_id,
         phone: log.medications?.users?.phone,
         user_name: log.medications?.users?.name

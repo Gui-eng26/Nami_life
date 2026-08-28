@@ -84,6 +84,10 @@ const DEGRADACOES = {
         severidade: 'media',
         titulo: 'Contexto proativo não pôde ser lido — classificador seguiu sem ele'
     },
+    'lembrete:quantidade_dose_indisponivel': {
+        severidade: 'baixa',
+        titulo: 'Quantidade da dose indisponível no follow-up — trecho omitido da mensagem'
+    },
     'data_nascimento:etapa_ruido_nao_reconhecida': {
         severidade: 'media',
         titulo: 'Etapa não reconhecida ao montar mensagem de ruído na coleta de nascimento'
