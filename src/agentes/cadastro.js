@@ -1310,7 +1310,7 @@ CATEGORIAS (escolha exatamente UMA):
 
 Quando a categoria for "corrige", identifique também campoAlvo — o campo que o usuário quer
 mudar — exatamente um destes:
-  nome, dosagem, horarios, quantidade, tipo_tratamento, estoque
+  nome, dosagem, horarios, quantidade, tipo_tratamento, estoque, forma
 Exemplos:
   "o horário está errado" -> horarios
   "na verdade é às 14:40, não às 8h" -> horarios
@@ -1319,6 +1319,14 @@ Exemplos:
   "é 2 comprimidos, não 1" -> quantidade
   "o nome está errado" -> nome
   "o estoque não é esse" -> estoque
+  "não é cápsula, é comprimido" -> forma
+  "isso não é xarope" -> forma
+
+ATENÇÃO — dosagem e forma são campos DIFERENTES:
+  dosagem = a concentração do medicamento (50mg, 0,5%, 100mg/ml)
+  forma   = o formato farmacêutico (comprimido, cápsula, xarope, colírio, gotas, pomada, injetável)
+"não é cápsula, é comprimido" corrige a FORMA, nunca a dosagem.
+
 Se a categoria for "corrige" mas não der para saber qual campo, campoAlvo = null.
 Se a categoria não for "corrige", campoAlvo = null.
 
@@ -1370,7 +1378,7 @@ async function classificarConfirmacaoCadastro({ message, nomeMedicamento, histor
     const categoriasValidas = new Set(['confirma', 'corrige', 'indeterminado']);
     const categoria = categoriasValidas.has(parsed.categoria) ? parsed.categoria : 'indeterminado';
 
-    const camposValidos = new Set(['nome', 'dosagem', 'horarios', 'quantidade', 'tipo_tratamento', 'estoque']);
+    const camposValidos = new Set(['nome', 'dosagem', 'horarios', 'quantidade', 'tipo_tratamento', 'estoque', 'forma']);
     const campoAlvo = camposValidos.has(parsed.campoAlvo) ? parsed.campoAlvo : null;
 
     if (categoria === 'corrige' && campoAlvo === null) {
@@ -1388,6 +1396,72 @@ async function classificarConfirmacaoCadastro({ message, nomeMedicamento, histor
 
     console.log(`🔎 [CAD-CLASSIF] classificarConfirmacaoCadastro -> ${categoria} (campoAlvo: ${campoAlvo})`);
     return { categoria, campoAlvo };
+}
+
+// ============================================================
+// v36 #3 — EXTRAÇÃO DE FORMA NA MENSAGEM DE CORREÇÃO
+// ============================================================
+//
+// Usado só quando campoAlvo === 'forma' em cad_confirmacao. A mensagem de correção quase
+// sempre JÁ contém a forma certa ("não é cápsula, é comprimido") — extrair aqui evita um
+// turno inteiro de repergunta (briefing v36 #3, seção 2.2).
+
+function buildExtrairFormaSystemPrompt({ nomeMedicamento, historicoConversa, message }) {
+    return `Você é um classificador para uma assistente de saúde via WhatsApp (a Nami). O usuário
+acabou de dizer que a FORMA FARMACÊUTICA do medicamento "${nomeMedicamento || ''}" está errada no
+resumo do cadastro, e a mensagem abaixo é a correção.
+
+Identifique a forma farmacêutica correta que o usuário mencionou, exatamente uma destas:
+comprimido, capsula, colirio, gotas, pomada, injetavel, xarope.
+
+Se a mensagem não mencionar nenhuma forma reconhecível (ex: só disse "a forma está errada" sem
+dizer qual é), responda null. Não confunda com dosagem (concentração) — extraia só a forma.
+
+CONVERSA RECENTE:
+${formatarHistoricoConversa(historicoConversa)}
+
+MENSAGEM ATUAL: "${message}"
+
+Responda APENAS com um objeto JSON válido, sem markdown, sem backticks, sem explicação:
+{ "forma": null }`;
+}
+
+async function extrairFormaDaMensagem(message, historicoConversa = [], nomeMedicamento = null) {
+    const systemPrompt = buildExtrairFormaSystemPrompt({ nomeMedicamento, historicoConversa, message });
+
+    const response = await anthropic.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 100,
+        temperature: 0,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: message || '' }]
+    });
+
+    const rawText = response.content[0]?.text || '';
+    let parsed = null;
+    try {
+        parsed = JSON.parse(rawText);
+    } catch {
+        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            try { parsed = JSON.parse(jsonMatch[0]); } catch { /* fall through */ }
+        }
+    }
+
+    if (!parsed) {
+        console.error('❌ cadastro: extração de forma na correção não retornou JSON válido:', rawText);
+        return await degradar({
+            origem: 'cadastro',
+            motivo: 'classificador_forma_correcao_falhou',
+            agent: 'cadastro',
+            detalhe: { stop_reason: response?.stop_reason ?? null, tamanho_raw: rawText.length },
+            fallback: null
+        });
+    }
+
+    const forma = FORMAS_VALIDAS.has(parsed.forma) ? parsed.forma : null;
+    console.log(`🔎 [CAD-CLASSIF] extrairFormaDaMensagem -> ${forma}`);
+    return forma;
 }
 
 // Reaplica a posologia corrigida a partir de cad_confirmacao. Recalcula o alerta de
@@ -2399,6 +2473,24 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
                             alerta_estoque_baixo: null
                         }
                     };
+                case 'forma': {
+                    // A mensagem de correção quase sempre JÁ contém a forma certa ("não é
+                    // cápsula, é comprimido"). Aproveitá-la evita um turno inteiro de
+                    // repergunta — mesmo raciocínio da MH-073 Parte C.1 e do Princípio 1.
+                    const forma = await extrairFormaDaMensagem(message, historicoConversa, context?.nome);
+                    if (forma) {
+                        // NÃO deriva nem altera unidade_dose/unidade_estoque a partir da
+                        // forma corrigida (briefing v36 #3, seção 2.2) — forma_farmaceutica
+                        // é puramente descritiva; incoerência com a unidade já coletada
+                        // fica visível no resumo, não é silenciada nem inferida aqui.
+                        return {
+                            proximaEtapa: 'cad_confirmacao',
+                            contextUpdates: { forma_explicita: forma, forma_confirmada: forma }
+                        };
+                    }
+                    // Sem forma reconhecível na mensagem, pergunta — sem inventar valor.
+                    return { proximaEtapa: 'cad_confirma_forma', contextUpdates: {} };
+                }
                 case 'horarios':
                 case 'quantidade': {
                     const posologia = await classificarPosologia({
@@ -2614,13 +2706,14 @@ Não confirme nada como registrado ou salvo.`;
                     ? `Comece com um aviso breve e gentil de estoque baixo: restam
 aproximadamente ${alerta.dias_restantes} dias de estoque. Depois disso, `
                     : '';
-                return `${avisoInstrucao}Insira EXATAMENTE este resumo (é dado de saúde renderizado
-em código, nunca reescreva os números):\n${context.resumoRenderizado}\nFinalize perguntando "Está
-tudo certinho?"`;
+                return `${avisoInstrucao}Insira EXATAMENTE este resumo, palavra por palavra, sem alterar NENHUMA linha — nem números, nem nomes, nem a forma, nem o estoque. É dado de saúde
+renderizado em código. Se o usuário acabou de pedir uma correção, o resumo abaixo JÁ reflete o
+estado atual do sistema: não ajuste nada por conta própria.\n${context.resumoRenderizado}\nFinalize
+perguntando "Está tudo certinho?"`;
             }
             return `O usuário tentou corrigir algo, mas não ficou claro o quê. Pergunte, com
 acolhimento e sem repetir o resumo nem citar nenhum número: "Desculpe, não peguei direito 😊 Pode
-me dizer qual informação está errada — nome, dosagem, horários, quantidade, tratamento ou
+me dizer qual informação está errada — nome, dosagem, forma, horários, quantidade, tratamento ou
 estoque?"`;
 
         case 'cad_salvo': {
