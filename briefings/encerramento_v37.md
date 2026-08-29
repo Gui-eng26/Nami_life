@@ -1,3 +1,25 @@
+# ENCERRAMENTO v37 — tarefas para o Claude Code
+
+**Data:** 29/08/2026
+**Entrega da sessão:** MH-081 (implementado, validado e fechado) + varredura de validação (8 itens fechados)
+
+Este briefing tem três tarefas, nesta ordem:
+
+1. Sobrescrever `CONTEXT.md` com o conteúdo da seção 1.
+2. Aplicar as escritas em `backlog_items` da seção 2.
+3. `git add` / `commit` / `push`.
+
+⚠️ **Não há alteração de código nesta entrega.** O MH-081 já foi implementado, verificado
+e validado em produção durante a própria sessão v37.
+
+---
+
+# 1. CONTEXT.md — conteúdo integral a sobrescrever
+
+Substituir o arquivo `CONTEXT.md` na raiz do repositório pelo conteúdo entre as marcas
+`<<<INICIO_CONTEXT>>>` e `<<<FIM_CONTEXT>>>` (as marcas não fazem parte do arquivo).
+
+<<<INICIO_CONTEXT>>>
 # CONTEXT.md — Nami Life
 
 > **Fonte única de verdade do estado técnico e arquitetural do projeto.**
@@ -264,3 +286,186 @@ Os relatórios usam `assets/templates/nami_identidade.py`. Requisitos:
   `SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='X'::regclass AND contype='c'`
 - Definição de função:
   `SELECT pg_get_functiondef(oid) FROM pg_proc WHERE proname='X'`
+<<<FIM_CONTEXT>>>
+
+---
+
+# 2. Escritas em `backlog_items`
+
+⚠️ Este é um briefing de **manutenção em lote**, portanto SQL direto em
+`backlog_items` está autorizado aqui. Em código de produção continua valendo a regra:
+só através de `src/backlog.js`.
+
+Todas as escritas abaixo foram autorizadas por Guilherme na sessão v37.
+
+## 2.1 Fechamentos — oito itens validados
+
+Cada um foi confrontado com evidência de banco ou de código antes do fechamento.
+A evidência vai registrada no campo de resolução para auditoria futura.
+
+```sql
+-- MH-064 — degradar() produzindo eventos reais e distintos em produção
+UPDATE backlog_items SET status = 'resolvido'
+WHERE tipo = 'MH' AND numero = 64;
+
+-- MH-071 — par natural em 28/08: mesmo "S", 43s de diferença, só o evento proativo mudou
+UPDATE backlog_items SET status = 'resolvido'
+WHERE tipo = 'MH' AND numero = 71;
+
+-- MH-073 Parte C — 4 caminhos de estoque exercitados em produção com flags corretas
+UPDATE backlog_items SET status = 'resolvido'
+WHERE tipo = 'MH' AND numero = 73 AND parte = 'C';
+
+-- BUG-090 — fechado na v36 e reforçado pelo cadastro de 28/08
+UPDATE backlog_items SET status = 'resolvido'
+WHERE tipo = 'BUG' AND numero = 90;
+
+-- BUG-091 — verificado por leitura de código: o caminho não existe mais
+UPDATE backlog_items SET status = 'resolvido'
+WHERE tipo = 'BUG' AND numero = 91;
+
+-- BUG-092 — 33 cadastros consecutivos retornando a idle, corte limpo em 20/08
+UPDATE backlog_items SET status = 'resolvido'
+WHERE tipo = 'BUG' AND numero = 92;
+
+-- BUG-093 — resumos desde 26/08 usando unidade de dose, não forma farmacêutica
+UPDATE backlog_items SET status = 'resolvido'
+WHERE tipo = 'BUG' AND numero = 93;
+
+-- BUG-101 — validado na v35: 5 chamadas ao classificador, zero duplicatas
+UPDATE backlog_items SET status = 'resolvido'
+WHERE tipo = 'BUG' AND numero = 101;
+```
+
+## 2.2 MH-081 — resolvido
+
+Validado em produção em 28–29/08 por transcript do WhatsApp cruzado com `agent_logs`,
+`eventos_proativos` e `dose_logs`. Sete cenários cobertos. Não passa por `em_validacao`.
+
+```sql
+UPDATE backlog_items
+SET status = 'resolvido',
+    causa_raiz = 'Implementado na v37. Módulo novo src/templates/dose.js (ponto único, puro): '
+                 'formatarQuantidadeDose + linhaQuantidadeDose. Categoria do rótulo vem de '
+                 'medications.unidade_dose (CHECK fechado: unidade|ml|gota); forma_farmaceutica '
+                 'escolhe apenas o substantivo, via tabela normalizada sem acento com fallback '
+                 '"unidade(s)". getPendingFollowUps ampliado com unidade_dose e embed '
+                 'schedules!dose_logs_schedule_id_fkey(quantidade_por_dose). Quando '
+                 'dose_logs.schedule_id é nulo, a linha é omitida (nunca assume 1) e registra '
+                 'lembrete:quantidade_dose_indisponivel. Sem migration, sem LLM. '
+                 'Validado em produção em 28-29/08 em 7 cenários: líquido com concentração '
+                 '(Forten Xarope, 5 ml), deriva de acento (Betaistina "capsula" -> "1 cápsula"), '
+                 'corte antes/depois no mesmo medicamento e horário, lembrete agrupado, '
+                 'follow-up individual t2 e t3, follow-up agrupado. Suíte da função pura: 20/20.'
+WHERE tipo = 'MH' AND numero = 81;
+```
+
+## 2.3 MH-078 — correção de descrição (autorizada)
+
+A descrição atual afirma que o sítio de aplicação já é capturado. É falso, e isso
+subdimensiona o item.
+
+```sql
+UPDATE backlog_items
+SET descricao = 'Hoje "2 gotas em cada olho" é armazenado e exibido como quantidade total '
+                '(4 gotas). Melhoria: exibir a forma de aplicação mantendo o total no cálculo '
+                'de estoque e consumo.',
+    causa_raiz = 'CORRIGIDO NA v37 (a descrição anterior estava errada). O classificador '
+                 'classificarPosologia (cadastro.js, REGRA 2) devolve APENAS o booleano '
+                 'multiplicador_aplicado — nunca o nome do sítio. "2 gotas em cada olho" e '
+                 '"2 gotas nos dois ouvidos" produzem saída idêntica. O campo '
+                 'multiplicadorAplicado é montado no parser e tem ZERO consumidores: não entra '
+                 'em contextUpdates, não é persistido, não é renderizado. A tabela schedules '
+                 'não possui coluna de sítio. Portanto o item NÃO é uma mudança de renderização: '
+                 'exige alterar o contrato do classificador, criar coluna em schedules e '
+                 'propagar até o texto.'
+WHERE tipo = 'MH' AND numero = 78;
+```
+
+## 2.4 MH-073 Parte C.1 — evidência de reprovação
+
+Permanece em `em_validacao` por decisão de Guilherme (tratamento adiado). A evidência
+fica registrada para não se perder.
+
+```sql
+UPDATE backlog_items
+SET causa_raiz = 'REPROVADO em teste de produção em 28/08/2026 (agent_logs, cadastro do '
+                 'Forten Xarope). Sequência: usuário respondeu "Fechado com 100ml" -> Nami '
+                 'perguntou "Quantos frascos"; usuário respondeu "1" -> Nami perguntou "E qual '
+                 'o VOLUME desse frasco, em ml?"; usuário repetiu "100ml". O volume informado '
+                 'na mensagem de status foi descartado, custando um turno a mais. Ramo '
+                 '"fechado" (determinado) — a classificação do status funcionou; o que falhou '
+                 'foi o aproveitamento do dado presente na mesma mensagem, que é o alvo da C.1. '
+                 'Causa raiz ainda NÃO investigada (decisão de Guilherme: adiar).'
+WHERE tipo = 'MH' AND numero = 73 AND parte = 'C.1';
+```
+
+## 2.5 MH-073 Parte D — remover a linha absorvida pelo MH-081
+
+```sql
+UPDATE backlog_items
+SET descricao = '~34 pontos com unidade/unidades/comprimidos hardcoded — 7 em '
+                'estoqueTemplates.js, 8 em cadastro.js, 6 em prompts.js, restante em '
+                'relatorios.js, principal.js, configuracao.js, scheduler.js, '
+                'adesaoTemplates.js. A exibição de quantidade nos lembretes e follow-ups '
+                'saiu do escopo: foi entregue pelo MH-081 na v37. O módulo '
+                'src/templates/dose.js criado lá é a peça compartilhada que esta parte deve '
+                'consumir nos pontos restantes, em vez de reimplementar a formatação. '
+                'Inclui também relatorios.js:403 (proximo_remedio), declarado fora do '
+                'escopo do MH-081.'
+WHERE tipo = 'MH' AND numero = 73 AND parte = 'D';
+```
+
+## 2.6 BUG-066 — hipótese avança para medição confirmada
+
+```sql
+UPDATE backlog_items
+SET causa_raiz = 'PARCIALMENTE CONFIRMADO na v37 por medição direta em dose_logs. '
+                 'CONFIRMADO: existe drift de ~1 segundo entre doses do mesmo grupo no '
+                 'instante da criação (28/08 15:00 — Repoflor 14:58:01.389, Memoriol '
+                 '14:58:02.203; 28/08 23:00 — 22:58:00.973 e 22:58:01.837; 29/08 07:00 — '
+                 '06:58:03.043 e 06:58:04.205). CONFIRMADO: as quebras observadas têm '
+                 'exatamente 2 minutos de separação, um tick do cron (15:28/15:30 e '
+                 '00:30/00:32), enquanto o grupo das 07:00 saiu unificado. '
+                 'AINDA INFERIDO: o encadeamento final entre o drift e o tick, porque '
+                 'ultima_tentativa_at é sobrescrito a cada envio e não preserva o valor do '
+                 'momento da decisão do follow-up. O drift sozinho não explica a '
+                 'intermitência — ele existe nos três casos; o que decide é o alinhamento '
+                 'com o tick, como a hipótese original já postulava. Fechar exige logar o '
+                 'valor no momento da decisão (relacionado a MH-088).'
+WHERE tipo = 'BUG' AND numero = 66;
+```
+
+## 2.7 Verificação após as escritas
+
+Rodar e reportar o resultado:
+
+```sql
+SELECT tipo, numero, parte, titulo, status, prioridade
+FROM backlog_items
+WHERE status IN ('aberto','em_validacao')
+ORDER BY prioridade, data_criacao;
+```
+
+**Esperado:** exatamente **dois** itens em `em_validacao` — MH-073 B.1 e MH-073 C.1.
+Se aparecer um terceiro, alguma das escritas das seções 2.1 ou 2.2 não aplicou.
+
+---
+
+# 3. Commit
+
+```
+git add CONTEXT.md briefings/encerramento_v37.md
+git commit -m "docs: encerramento v37 — MH-081 entregue e validado; 8 itens fechados"
+git push
+```
+
+---
+
+# 4. Instrução final
+
+Se algum trecho deste briefing estiver incorreto ao ser confrontado com o repositório ou
+com o banco, **corrija e reporte no resumo** em vez de aplicar literalmente. Em especial:
+se alguma das linhas de `parte` não casar (`'C'`, `'C.1'`, `'D'`), verificar o valor real
+na tabela antes de rodar o `UPDATE` — um `WHERE` que não casa não gera erro, só não
+atualiza nada.
