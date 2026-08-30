@@ -4,7 +4,7 @@
 > Atualizado no encerramento de cada sessão. O backlog **não** vive aqui — vive em
 > `backlog_items` no Supabase.
 
-**Última atualização:** 30/08/2026 (encerramento da sessão v38)
+**Última atualização:** 30/08/2026 (encerramento da sessão v39)
 
 ---
 
@@ -14,8 +14,12 @@ Assistente de gestão de saúde no WhatsApp que ajuda pessoas a não esquecerem 
 seus remédios, sem instalar nenhum aplicativo novo. Para famílias que cuidam de idosos,
 conecta paciente e cuidador, dando visibilidade do tratamento.
 
-Público principal: idosos brasileiros. Modelo de monetização: B2B2C, via operadoras de
-saúde e farmácias.
+**Persona em refinamento.** O público idoso foi a motivação original e principal do
+desenvolvimento. A etapa de discovery levantou também o adulto de 30 a 50 anos, por rotina
+agitada e dificuldade de lembrar das coisas. O Ciclo 2 investiga qual público demonstra
+mais aderência à solução — a persona é objeto de descoberta, não premissa.
+
+Modelo de monetização: B2B2C, via operadoras de saúde e farmácias.
 
 ---
 
@@ -48,10 +52,11 @@ follow-ups.
 | Módulo | Responsabilidade |
 |---|---|
 | `src/templates/verbos.js` | Verbo por forma farmacêutica (tomar/usar/aplicar) |
-| `src/templates/dose.js` | **NOVO v37** — rótulo de quantidade da dose |
+| `src/templates/dose.js` | Rótulo de quantidade da dose e `normalizarFormaFarmaceutica()` |
 | `src/templates/estoqueTemplates.js` | Textos de estoque |
 | `src/templates/adesaoTemplates.js` | Textos de relatório de adesão |
 | `src/templates/balancoTemplates.js` | Textos de balanço |
+| `src/inventario.js` | **NOVO v39** — inventário de capacidades como dado (P55) |
 
 ---
 
@@ -59,6 +64,8 @@ follow-ups.
 
 ### 3.1 Entregue e validado
 
+- **MH-009 (v39)** — dashboard de indicadores do Ciclo 2, em produção como serviço
+  Railway separado. Ver §9.
 - **MH-081 (v37)** — quantidade da dose exibida em lembretes e follow-ups.
 - **MH-073 Partes A, B, B.1, B.2, B.3, C** — suporte a medicamento líquido: unidade de
   dose derivada da resposta natural, blindagem de becos sem saída, contrato do LLM
@@ -72,8 +79,8 @@ follow-ups.
 
 ### 3.2 Em validação
 
-Consultar `backlog_items` com `status = 'em_validacao'`. Ao fim da v38 seguem os mesmos
-dois itens: MH-073 B.1 e MH-073 C.1 (reprovado, tratamento adiado).
+Consultar `backlog_items` com `status = 'em_validacao'`. Ao fim da v39: MH-073 B.1 e
+MH-073 C.1 (reprovado, tratamento adiado).
 
 ### 3.3 Marco de produto — abertura do beta (30/08/2026)
 
@@ -90,10 +97,23 @@ Três hipóteses estão em teste, com indicadores já definidos:
 | H2 — Nível de engajamento | Taxa de confirmação de dose ao longo do tratamento |
 | H3 — Perfil do público-alvo | Taxa de confirmação de dose cruzada com a idade do usuário |
 
-**Baseline do Ciclo 1, para comparação** (apenas os 5 familiares ativos, excluído o volume
-de teste do fundador): 336 doses confirmadas de 565 registradas — 59,5%. A taxa de
-`nao_informado` foi de 29,7%, e sua causa é desconhecida: fica como pergunta aberta do
-Ciclo 2, não como conclusão.
+**O Ciclo 1 não é baseline comparável — regra permanente.** Ele foi teste fechado com o
+núcleo familiar de Guilherme: sua composição etária resulta de quem está na família, não de
+captação. Comparar suas taxas com as do Ciclo 2 seria comparar um conjunto escolhido por
+parentesco com um escolhido por interesse. Nenhuma distribuição observada no beta torna o
+Ciclo 1 certo ou errado.
+
+Números do Ciclo 1, registrados como **fato histórico, nunca como meta ou referência**
+(base real, `is_teste = false`, doses com desfecho até 29/08/2026): 337 confirmadas de 557
+— 60,5%. `nao_informado` em 30,3%, e sua causa segue desconhecida: pergunta aberta do
+Ciclo 2, não conclusão. Composição etária: três usuários em 20–29, dois em 30–49, um em
+60–69.
+
+A constante `FRONTEIRA_CICLO` (`'2026-08-30'`, em `dashboard/api/definicoes.js`) existe para
+que nenhuma série atravesse a divisa sem expor os dois períodos separados.
+
+**A H3 é descoberta, não validação.** O dashboard apresenta a distribuição etária; nenhuma
+faixa é tratada como resultado esperado ou desviante.
 
 **Advertência metodológica registrada:** os 6 registros da tabela `feedbacks` foram todos
 gerados pelo próprio fundador em 27/07/2026, durante a construção do extrator. Não são
@@ -224,7 +244,9 @@ Números em pt-BR: inteiro sem casas decimais, fracionário com vírgula (`2,5 m
    marca as doses pendentes como `pausado` antes de apagar — esse caminho se protege.
    **`schedule_id` nulo é estado válido de produção; tratar com omissão, nunca com valor
    padrão.**
-9. Timestamps armazenados em UTC. Brasil é UTC-3.
+9. Timestamps armazenados em UTC. Brasil é UTC-3. **Todo agrupamento por dia converte
+   antes de truncar:** `(coluna AT TIME ZONE 'America/Sao_Paulo')::date`. Atalhos de data
+   ("ontem", "últimos 7 dias") são dia-calendário em Brasília, nunca janela rolante de 24h.
 10. SQL multi-statement em uma única chamada de `execute_sql` pode retornar só o último
     result set — usar chamadas separadas.
 
@@ -284,6 +306,8 @@ Os relatórios usam `assets/templates/nami_identidade.py`. Requisitos:
 ## 8. Referências rápidas
 
 - `user_id` de Guilherme: `e3e838c3-9443-46be-b03e-655f46fdf24a`
+- **Contas de teste** (`users.is_teste = true`, desde a v39): `+5511941065858` (principal),
+  `+5519996078506`, `+5519998093582`. Toda análise de base real filtra `is_teste = false`.
 - Busca por telefone: `WHERE phone LIKE '%5511941065858%'` (telefone de Guilherme;
   `%5519988491053%` é o Wellington, não conta de teste — corrigido no MH-009 v39, ver
   briefing §15)
@@ -296,3 +320,75 @@ Os relatórios usam `assets/templates/nami_identidade.py`. Requisitos:
   `SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='X'::regclass AND contype='c'`
 - Definição de função:
   `SELECT pg_get_functiondef(oid) FROM pg_proc WHERE proname='X'`
+
+## 9. MH-009 — Dashboard de indicadores (implementado na v39)
+
+### 9.1 Arquitetura
+
+Vive em `dashboard/` **no mesmo repositório**, mas deploya como **serviço Railway separado**
+do bot. O código fica junto porque o dashboard importa `src/templates/dose.js`
+(normalização de forma farmacêutica) e `src/inventario.js` (capacidades) — duplicá-los
+violaria o P30. O deploy fica separado porque uma publicação do dashboard não pode derrubar
+a Nami.
+
+| Camada | Escolha |
+|---|---|
+| API | Express, `dashboard/api/`. Autenticação Supabase Auth (JWT, admin único) |
+| Front | Vite + React + Recharts, PWA instalável |
+| Consultas | 26 funções SQL `dash_*`, chamadas por `supabase.rpc()` |
+| Leitura | Consulta direta, sem camada de snapshot |
+
+**Railway:** Root Directory é a **raiz do repositório** (não `dashboard/`, que isolaria
+`src/`), com Build e Start Command customizados (`cd dashboard && ...`). O servidor escuta
+em `process.env.PORT` além de `DASHBOARD_PORT`.
+
+Nenhuma rota executa `INSERT`, `UPDATE` ou `DELETE`. A service key vive apenas no servidor.
+Nenhum endpoint devolve `users.phone`.
+
+### 9.2 Definições canônicas (`dashboard/api/definicoes.js`)
+
+Estas regras existem **uma vez só**. Nenhum painel as reescreve.
+
+- **Base real:** `users.is_teste = false` em perfil, medicamentos, adesão e feedback.
+  **Exceção deliberada:** o painel de degradação **não** filtra — falha técnica independe de
+  quem a disparou, e `system_events.user_id` é nulo em `scheduler` e `catch_global`.
+- **Fuso:** todo agrupamento diário usa
+  `(created_at AT TIME ZONE 'America/Sao_Paulo')::date` antes de truncar. Sem isso, tudo
+  entre 21h e 23h59 cai no dia seguinte — e o lembrete mais tardio da Nami é noturno.
+- **Faixa etária:** função SQL `faixa_etaria(date)`, calculada em tempo de consulta, nunca
+  armazenada. Faixas fechadas: `<20 · 20–29 · 30–49 · 50–59 · 60–69 · 70+ · nao_informado`.
+  `nao_informado` é faixa de primeira classe e nunca é omitida (P49).
+- **Adesão:** allowlist `status IN ('confirmado','nao_informado','sem_estoque','nao_tomado')`.
+  `pendente` e `pausado` ficam fora por construção — status novo criado no futuro também
+  fica, em vez de entrar num balde silencioso.
+- **Confirmação retroativa:** definida pelo **par**
+  `revertido IS TRUE AND revertido_de = 'nao_informado' AND status = 'confirmado'`.
+  `revertido` isolado mistura quatro fenômenos distintos.
+- **Tentativas:** teto real é **3**. Todo `nao_informado` tem exatamente 3 — é o estado
+  terminal do esgotamento dos lembretes, por construção, não categoria de causa desconhecida.
+- **Horários por medicamento:** denominador são medicamentos ativos **com ao menos um
+  horário ativo**. Faixas semiabertas `[1,2) [2,3) [3,4) [4,∞)`.
+- **Forma farmacêutica:** SQL devolve bruto; a **API normaliza** via
+  `normalizarFormaFarmaceutica()` em `src/templates/dose.js`. Não criar segunda tabela (P30,
+  P45).
+
+### 9.3 O que NÃO fazer
+
+- **Não somar `erro_tecnico` e `desvio_comportamental` numa série única.** Falha técnica e
+  achado de qualidade do Juiz Offline pedem reações opostas.
+- **Não colocar `intencao_nao_suportada` no painel de degradação.** É sinal de demanda de
+  produto e vive na visão de Feedback, ao lado do inventário — é ali que a comparação
+  "o que a Nami faz × o que pediram e não obtiveram" acontece sozinha.
+- **Não incluir retroativas no painel de tentativas.** Elas carregam `tentativas = 3` por
+  construção e empilhariam na terceira, fazendo confirmação tardia parecer falha de
+  follow-up. São dois fenômenos e dois painéis.
+- **Não apresentar o Ciclo 1 como baseline, meta ou referência** em nenhum ponto da
+  interface (ver §3.3).
+
+### 9.4 Limitação conhecida
+
+`agent_logs` persiste apenas `agent`, não `subtipoRelatorio`. O classificador distingue seis
+subtipos de relatório, mas o dashboard só consegue mostrar `relatorios` como bloco único —
+qual relatório as pessoas realmente usam segue sem resposta.
+
+---
