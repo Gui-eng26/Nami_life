@@ -4,7 +4,7 @@
 > Atualizado no encerramento de cada sessão. O backlog **não** vive aqui — vive em
 > `backlog_items` no Supabase.
 
-**Última atualização:** 29/08/2026 (encerramento da sessão v37)
+**Última atualização:** 30/08/2026 (encerramento da sessão v38)
 
 ---
 
@@ -72,8 +72,33 @@ follow-ups.
 
 ### 3.2 Em validação
 
-Consultar `backlog_items` com `status = 'em_validacao'`. Ao fim da v37 são dois itens:
-MH-073 B.1 e MH-073 C.1 (reprovado, tratamento adiado).
+Consultar `backlog_items` com `status = 'em_validacao'`. Ao fim da v38 seguem os mesmos
+dois itens: MH-073 B.1 e MH-073 C.1 (reprovado, tratamento adiado).
+
+### 3.3 Marco de produto — abertura do beta (30/08/2026)
+
+O beta público foi aberto em 30/08/2026, encerrando o Ciclo 1 (teste fechado com o núcleo
+familiar, iniciado em 05/06/2026) e iniciando o Ciclo 2. Meta desta primeira etapa: até 50
+usuários, captados pelas redes sociais pessoais de Guilherme.
+
+O Ciclo 2 é a primeira fase que mede geração de valor — o Ciclo 1 foi construção funcional.
+Três hipóteses estão em teste, com indicadores já definidos:
+
+| Hipótese | Indicador |
+|---|---|
+| H1 — Facilidade de uso | Conclusão de onboarding, de cadastro de medicamento e de confirmação de dose |
+| H2 — Nível de engajamento | Taxa de confirmação de dose ao longo do tratamento |
+| H3 — Perfil do público-alvo | Taxa de confirmação de dose cruzada com a idade do usuário |
+
+**Baseline do Ciclo 1, para comparação** (apenas os 5 familiares ativos, excluído o volume
+de teste do fundador): 336 doses confirmadas de 565 registradas — 59,5%. A taxa de
+`nao_informado` foi de 29,7%, e sua causa é desconhecida: fica como pergunta aberta do
+Ciclo 2, não como conclusão.
+
+**Advertência metodológica registrada:** os 6 registros da tabela `feedbacks` foram todos
+gerados pelo próprio fundador em 27/07/2026, durante a construção do extrator. Não são
+percepção de usuário real e não devem ser lidos como tal. O canal de feedback espontâneo
+ainda não foi validado com uso orgânico.
 
 ---
 
