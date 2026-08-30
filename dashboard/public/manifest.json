@@ -1,0 +1,14 @@
+{
+  "name": "Nami — Dashboard",
+  "short_name": "Nami Dash",
+  "description": "Indicadores do Ciclo 2 da Nami — leitura, sem administração.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F6FFFF",
+  "theme_color": "#0F2B46",
+  "icons": [
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-900.png", "sizes": "900x900", "type": "image/png", "purpose": "any" }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "name": "nami-dashboard",
+  "version": "1.0.0",
+  "description": "Dashboard de indicadores do Ciclo 2 da Nami (MH-009) — leitura, PWA, deploy Railway separado do bot.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:api": "node --watch api/server.js",
+    "build": "vite build",
+    "start": "node api/server.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.105.1",
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.15.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.0.0"
+  }
+}

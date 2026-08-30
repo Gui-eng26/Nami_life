@@ -33,6 +33,33 @@ const SUBSTANTIVO_CONTAVEL = {
 
 const SUBSTANTIVO_CONTAVEL_PADRAO = { singular: 'unidade', plural: 'unidades' };
 
+// Rótulo canônico por chave normalizada (acento/caixa já removidos por normalizarForma).
+// Funde os sinônimos confirmados em produção (MH-009 §4.9): cápsula/capsula é variação de
+// acento; colírio/gotas e xarope/líquido são palavras diferentes para o mesmo uso. Só para
+// AGRUPAR exibição — nunca para decidir comportamento (unidade_dose/unidade_estoque
+// continuam a fonte de verdade, Princípio 45).
+const FORMA_FARMACEUTICA_CANONICA = {
+    'comprimido': 'comprimido',
+    'capsula':    'cápsula',
+    'colirio':    'colírio',
+    'gotas':      'colírio',
+    'xarope':     'xarope',
+    'liquido':    'xarope'
+};
+
+/**
+ * Devolve a forma farmacêutica normalizada para exibição agrupada (ex: dashboard).
+ * Formas sem sinônimo mapeado voltam pela chave normalizada (sem acento) — agrupa
+ * variações de acento/caixa mesmo sem entrada explícita, nunca inventa uma forma nova.
+ *
+ * @returns {string} ex: "cápsula" · "colírio" · "xarope" · "não informado"
+ */
+export function normalizarFormaFarmaceutica(forma) {
+    if (typeof forma !== 'string' || !forma.trim()) return 'não informado';
+    const chave = normalizarForma(forma);
+    return FORMA_FARMACEUTICA_CANONICA[chave] || chave;
+}
+
 // Formata o número em pt-BR: inteiro sem casas decimais, fracionário com vírgula
 // e sem zeros à direita. 2 -> "2" · 2.0 -> "2" · 0.5 -> "0,5" · 2.50 -> "2,5"
 function formatarNumero(n) {

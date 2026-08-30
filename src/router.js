@@ -4,6 +4,7 @@ import { getConversationState, logAgentInteraction, getRecentDoses,
     saveConversationState, getHistoricoRecente, getContextoProativoRecente,
     getDosesRetroativas, confirmarDoseRetroativa, usuarioRespondeuDesde } from './database.js';
 import { registrarEvento, registrarFeedback } from './observabilidade.js';
+import { CAPACIDADES, NAO_SUPORTADO } from './inventario.js';
 import { buildAlertaEstoquePosConfirmacao } from './templates/estoqueTemplates.js';
 import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
@@ -349,30 +350,24 @@ async function classificarIntencaoComContexto({ message, currentState, historico
             ? `${historicoReativo}\n\n${eventosProativosTexto}`
             : historicoReativo;
 
+        // Seções do prompt montadas a partir do inventário único (src/inventario.js,
+        // Princípio 55) em vez de string literal — evita a divergência de três listas
+        // separadas que motivou o MH-009.
+        const agentesTexto = CAPACIDADES.map(c => `- ${c.agente}: ${c.descricao}`).join('\n');
+        const naoSuportadoTexto = NAO_SUPORTADO.map(item => `- ${item}`).join('\n');
+        const subtipoRelatoriosTexto = CAPACIDADES
+            .find(c => c.agente === 'relatorios').subtipos
+            .map(s => `- ${s.chave}: ${s.descricao}`).join('\n');
+
         const prompt = `Você é o classificador de intenções da Nami, um assistente de saúde via WhatsApp.
 
 Identifique para qual agente a mensagem deve ir, considerando o contexto da conversa.
 
 AGENTES E SUAS CAPACIDADES:
-- cadastro: cadastrar novo medicamento, iniciar novo tratamento
-- relatorios: consultar o que foi tomado ou faltou em um dia (hoje, ontem ou dia nomeado),
-  doses tomadas, adesão, estoque, próximos remédios, horários cadastrados, progresso do tratamento
-- configuracao: pausar, reativar, encerrar tratamento; alterar/remover/adicionar/redefinir horário de lembrete
-- principal: conversa geral, dúvidas, saudações, reações ("ok", "obrigado"), fechamentos, confirmação de doses, confirmação retroativa de doses (últimos 2 dias), reversão de confirmação por engano, correção/atualização de estoque (recompra, recontagem, perda)
-- excluir_conta: o usuário quer EXCLUIR A CONTA dele / apagar TODOS os dados dele da Nami / se
-  descadastrar por completo da Nami. Ex: "quero excluir minha conta", "apaga todos os meus dados",
-  "quero me descadastrar da Nami", "cancelar meu cadastro na Nami", "não quero mais usar a Nami,
-  pode apagar tudo". NÃO confundir com: excluir/remover UM remédio, lembrete ou horário (isso é
-  configuracao); nem com cancelar um cadastro de medicamento em andamento (isso NÃO é exclusão de
-  conta — geralmente é abortar o fluxo de cadastro).
+${agentesTexto}
 
 FUNCIONALIDADES QUE A NAMI AINDA NÃO TEM (classifique como "nao_suportado"):
-- alterar tempo/duração de tratamento
-- alterar dosagem de um medicamento
-- alterar nome de um medicamento
-- registrar sintomas, pressão, glicemia ou outros dados de saúde
-- falar com médico, agendar consulta
-- exportar histórico em arquivo
+${naoSuportadoTexto}
 
 FEEDBACK SOBRE A NAMI (dimensão independente do agente — coexiste com qualquer roteamento):
 Avalie se a mensagem contém feedback do usuário SOBRE A NAMI (o assistente/a experiência), NÃO
@@ -397,17 +392,7 @@ MENSAGEM ATUAL: "${message}"
 
 Se o agente escolhido for "relatorios", identifique também o subtipo do relatório em
 "subtipoRelatorio", escolhendo exatamente um destes valores:
-- balanco_do_dia: o que foi tomado / o que faltou / o que ficou pendente em um dia
-  (hoje, ontem, ou um dia nomeado). Use este subtipo para perguntas como "tomei meus
-  remédios hoje?", "faltou algum remédio ontem?", "esqueci de tomar alguma coisa?",
-  "ficou alguma dose pendente?", "pulei algum remédio no domingo?"
-- meus_remedios: listar medicamentos cadastrados e seus horários
-- estoque: consultar quantidade em estoque
-- proximo_remedio: qual remédio tomar agora/a seguir
-- adesao: taxa de adesão agregada de um período (7, 15 ou 30 dias). Use SOMENTE quando o
-  usuário pedir explicitamente um percentual, uma taxa, ou um resumo de vários dias.
-  Pergunta sobre UM dia específico é sempre balanco_do_dia, nunca adesao.
-- progresso_tratamento: quantos dias/doses faltam para o tratamento acabar
+${subtipoRelatoriosTexto}
 
 Preencha também "params" com o que a mensagem disser (ou null quando não disser):
 - "medicamento": o nome do medicamento citado, exatamente como o usuário escreveu.

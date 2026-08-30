@@ -191,6 +191,11 @@ Números em pt-BR: inteiro sem casas decimais, fracionário com vírgula (`2,5 m
 - **P49 — `null` não é `0`.** Nunca colapsar valor de erro com valor legítimo.
 - **P50 — a ordem canônica do fluxo é declarada em um lugar só.**
 - **P51 — funções de decisão cobrem todas as categorias do classificador.**
+- **P55 — o inventário de capacidades é dado, não texto de prompt.** Vive em
+  `src/inventario.js` e é consumido tanto pelos prompts (`router.js`, `configuracao.js`,
+  `prompts.js`) quanto pela interface de observação (dashboard). Capacidade adicionada ou
+  removida atualiza o módulo na mesma mudança. Nasceu do MH-009: o inventário existia em
+  três lugares divergentes, e um dash que o copiasse criaria o quarto.
 - **Sem contador de tentativas em laço controlado pelo usuário.** Teto só onde o sistema
   pode iterar sozinho.
 - **Cálculo de saúde é determinístico.** Resultado numérico relevante para saúde vem de
@@ -279,7 +284,9 @@ Os relatórios usam `assets/templates/nami_identidade.py`. Requisitos:
 ## 8. Referências rápidas
 
 - `user_id` de Guilherme: `e3e838c3-9443-46be-b03e-655f46fdf24a`
-- Busca por telefone: `WHERE phone LIKE '%5519988491053%'`
+- Busca por telefone: `WHERE phone LIKE '%5511941065858%'` (telefone de Guilherme;
+  `%5519988491053%` é o Wellington, não conta de teste — corrigido no MH-009 v39, ver
+  briefing §15)
 - Pasta do Drive dos relatórios: `17uNtuBHOHw41FBc0zxZjx_-kjTW7bRmN`
 - Cache-busting no GitHub: `?cb=$(date +%s%N)` em URLs raw, ou tarball via
   `codeload.github.com`. Aguardar ~8s após push antes de refazer o fetch.

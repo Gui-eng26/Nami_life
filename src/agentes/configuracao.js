@@ -14,6 +14,12 @@ import {
 } from '../database.js';
 import { isCancelamento, encontrarMedicamento, normalizar } from '../nlp_helpers.js';
 import { degradar } from '../observabilidade.js';
+import { NAO_SUPORTADO } from '../inventario.js';
+
+// Os três primeiros itens do inventário único (tratamento/dosagem/nome do medicamento) são
+// os únicos que fazem sentido como pedido "sobre configuração" — os demais (sintomas, médico,
+// exportação) não têm relação com horários/pausas e nunca seriam classificados aqui.
+const NAO_SUPORTADO_CONFIGURACAO = NAO_SUPORTADO.slice(0, 3);
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -74,7 +80,7 @@ Definições:
   nenhum assunto novo.
   Ex: "nenhum", "nenhuma", "nenhum dos dois", "nenhuma das opções", "nenhum desses", "nem um nem outro".
 
-- nao_suportado: pedidos que a configuração não faz — alterar tempo/duração de tratamento, alterar dosagem, alterar nome do medicamento.
+- nao_suportado: pedidos que a configuração não faz — ${NAO_SUPORTADO_CONFIGURACAO.join(', ')}.
   Ex: "mudar o tempo de tratamento", "alterar a dosagem", "trocar o nome do remédio", "mudar de 7 dias para 10 dias"
 
 REGRAS DE DECISÃO:
