@@ -1,3 +1,16 @@
+# Briefing de encerramento — sessão v40
+
+**Para o Claude Code.** Este briefing é o contrato desta sessão de planejamento. Execute
+os três blocos abaixo, nesta ordem, e valide cada um antes de seguir pro próximo.
+
+---
+
+## 1. Sobrescrever CONTEXT.md
+
+Substitua o conteúdo integral de `CONTEXT.md` (raiz do repositório) pelo texto abaixo,
+entre os marcadores. Não é um diff — é substituição completa do arquivo.
+
+<<<CONTEXT_MD_INICIO>>>
 # CONTEXT.md — Nami Life
 
 > **Fonte única de verdade do estado técnico e arquitetural do projeto.**
@@ -462,3 +475,107 @@ projeto `Nami-staging` (`+5511941065858`, `onboarded = true`).
   hardcoded no código — não iniciada.
 - **Parte C:** formalizar o fluxo de promoção staging → produção como parte deste ritual
   de sessão — não iniciada.
+
+---
+<<<CONTEXT_MD_FIM>>>
+
+---
+
+## 2. Nova migration — correção de permissões do service_role em staging
+
+O erro `permission denied for table users` (e depois `system_events`) apareceu ao testar
+o ambiente de staging pela primeira vez. Causa raiz confirmada via `pg_default_acl`: a
+opção "Automatically expose new tables", desmarcada na criação do projeto Supabase
+`Nami-staging`, suprime os privilégios padrão do `service_role` — não só de
+`anon`/`authenticated`. A correção já foi aplicada manualmente no SQL Editor do projeto
+`Nami-staging` e validada; falta apenas versioná-la.
+
+Crie o arquivo `supabase/migrations/20260831000000_mh089_staging_service_role_grants.sql`
+com exatamente este conteúdo:
+
+```sql
+-- MH-89 — Corrige privilégios do service_role suprimidos pela opção
+-- "Automatically expose new tables" desmarcada na criação de um projeto Supabase.
+-- Aplicado e validado manualmente no projeto Nami-staging (v40); este arquivo apenas
+-- formaliza a correção como fonte única de verdade do schema.
+-- Idempotente e inofensivo em produção, que já tem estes privilégios por padrão.
+
+-- Objetos existentes
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO service_role;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO service_role;
+
+-- Regra de fábrica para qualquer tabela, sequência ou função criada daqui pra frente
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO service_role;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO service_role;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+  GRANT EXECUTE ON FUNCTIONS TO service_role;
+```
+
+Commit e push desse arquivo **na branch `staging`** (não `main`) — a GitHub Integration do
+projeto `Nami-staging` vai reaplicar automaticamente (é idempotente, sem efeito colateral
+por já estar aplicado). Não aplicar em produção agora: produção já tem esses privilégios
+por padrão desde a criação do projeto; este arquivo entra na história de migrations dela
+naturalmente quando `staging` for promovido para `main` no futuro.
+
+---
+
+## 3. Escritas em `backlog_items`
+
+Autorizado por Guilherme nesta sessão ("sim, registra"). Usar `src/backlog.js`, nunca SQL
+cru.
+
+### Inserir MH-89 Parte A
+
+```
+tipo: MH
+numero: 89
+parte: A
+titulo: Provisionamento de ambiente de staging isolado
+status: em_validacao
+prioridade: alta
+sessao_criacao: v40
+data_criacao: 2026-08-31
+causa_raiz: Toggle "Automatically expose new tables" do Supabase, desmarcado na criação do projeto Nami-staging, suprime privilégios padrão (SELECT/INSERT/UPDATE/DELETE em tabelas, USAGE em sequências) do service_role em objetos futuros — não só de anon/authenticated, como presumido inicialmente. Confirmado via pg_default_acl, comparando staging e produção.
+notas: Railway Environment "staging" (deploy a partir da branch staging), projeto Supabase "Nami-staging" (pibzuwoyznywajyxeulj, Free, sa-east-1) com GitHub Integration aplicando migrations automaticamente, instância Z-API "Nami Staging" com webhook em /webhook/whatsapp — todos operacionais e validados com teste real de ponta a ponta (usuário +5511941065858 criado com sucesso em `users`). Pendente: a correção de permissões foi aplicada via SQL Editor; a migration formal (bloco 2 deste briefing) fecha essa pendência quando commitada.
+relacionado: MH-89 B, MH-89 C
+```
+
+### Inserir MH-89 Parte B
+
+```
+tipo: MH
+numero: 89
+parte: B
+titulo: Auditoria de configuração 100% via variável de ambiente
+status: aberto
+prioridade: media
+sessao_criacao: v40
+data_criacao: 2026-08-31
+descricao: Garantir que nenhuma parte do código decide credenciais ou comportamento por NODE_ENV hardcoded, em vez de só variável de ambiente — pré-requisito para múltiplos ambientes Railway funcionarem sem gambiarra. Checagem pontual em src/index.js na v40 não encontrou branching por NODE_ENV, mas não substitui auditoria completa do restante do código.
+relacionado: MH-89 A, MH-89 C
+```
+
+### Inserir MH-89 Parte C
+
+```
+tipo: MH
+numero: 89
+parte: C
+titulo: Formalizar fluxo de promoção staging → produção
+status: aberto
+prioridade: media
+sessao_criacao: v40
+data_criacao: 2026-08-31
+descricao: Documentar como parte do ritual de sessão (CONTEXT.md §7) o fluxo de promoção de mudanças validadas em staging para produção, incluindo a aplicação explícita de migrations em produção pelo Claude Code via MCP — que já é a prática vigente, mas nunca foi escrita como processo formal.
+relacionado: MH-89 A, MH-89 B
+```
+
+---
+
+## Commit sugerido
+
+```
+docs: encerramento v40 — ambiente de staging isolado (MH-89)
+```
