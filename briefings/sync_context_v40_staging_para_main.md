@@ -1,10 +1,59 @@
+# Briefing — Sincronização de documentação: CONTEXT.md v40 (staging → main)
+
+**Sessão:** v41 (achado de abertura)
+**Data:** 01/09/2026
+**Executor:** Claude Code
+**Natureza:** Correção de processo — **não é encerramento de sessão nem mudança de código.**
+
+## Contexto (por que este briefing existe)
+
+A v40 criou o ambiente de staging (MH-89) e foi encerrada **corretamente**, mas o commit
+de encerramento (`CONTEXT.md` atualizado + `briefings/encerramento_v40.md`) foi feito na
+branch `staging`, não na `main`. Isso foi uma decisão consciente do Guilherme para
+operacionalizar testes antes de expor mudanças à `main` — não é um erro a corrigir no
+fluxo de trabalho.
+
+O problema é só documental: o `CONTEXT.md` da `main` ainda diz "última atualização:
+encerramento da sessão v39", enquanto a `staging` já reflete a v40. Como o ritual de
+abertura de sessão lê o `CONTEXT.md` sempre a partir de `main`
+(`raw.githubusercontent.com/.../main/CONTEXT.md`), a v41 abriu sem visibilidade do que foi
+decidido e validado na v40.
+
+**Verificação já feita nesta sessão (v41), não repita:**
+- `src/` é **idêntico, byte a byte**, entre `main` e `staging`. A v40 não alterou nenhum
+  agente, router ou lógica de produto — só infraestrutura (Railway/Supabase/Z-API de
+  staging) e documentação.
+- O diff entre os dois `CONTEXT.md` é **puramente aditivo**: atualização da linha de data,
+  um parágrafo novo em §2, o item 11 em §6, a entrada de staging em §8, e a seção 10
+  inteira (MH-89). Nenhum conteúdo existente foi removido ou alterado além da data no
+  cabeçalho.
+- Os únicos arquivos que existem em `staging` e não em `main` são
+  `briefings/encerramento_v40.md` e
+  `supabase/migrations/20260831000000_mh089_staging_service_role_grants.sql`. Este último
+  é uma migration do projeto Supabase `Nami-staging` (`pibzuwoyznywajyxeulj`) — **não se
+  aplica ao Supabase de produção** (`nputymewnwmnhrtpizzs`) e não deve ser copiada para
+  `main` nem aplicada em produção.
+
+## O que fazer
+
+Execute os passos abaixo **na branch `main`**, sem tocar na branch `staging`.
+
+---
+
+## PASSO 1 — Sobrescrever o `CONTEXT.md` da `main`
+
+Substitua **todo o conteúdo** de `CONTEXT.md` na raiz do repositório (branch `main`) pelo
+conteúdo abaixo, que é o `CONTEXT.md` já validado na `staging` ao fim da v40. Não altere
+nem uma palavra do texto abaixo — é cópia exata.
+
+```markdown
 # CONTEXT.md — Nami Life
 
 > **Fonte única de verdade do estado técnico e arquitetural do projeto.**
 > Atualizado no encerramento de cada sessão. O backlog **não** vive aqui — vive em
 > `backlog_items` no Supabase.
 
-**Última atualização:** 09/09/2026 (encerramento da sessão v42)
+**Última atualização:** 31/08/2026 (encerramento da sessão v40)
 
 ---
 
@@ -83,8 +132,8 @@ follow-ups.
 
 ### 3.2 Em validação
 
-Consultar `backlog_items` com `status = 'em_validacao'`. Ao fim da v42, 61 itens abertos
-ou em validação; os de prioridade alta concentram-se na jornada de chegada (ver §11).
+Consultar `backlog_items` com `status = 'em_validacao'`. Ao fim da v39: MH-073 B.1 e
+MH-073 C.1 (reprovado, tratamento adiado).
 
 ### 3.3 Marco de produto — abertura do beta (30/08/2026)
 
@@ -220,16 +269,6 @@ Números em pt-BR: inteiro sem casas decimais, fracionário com vírgula (`2,5 m
   `prompts.js`) quanto pela interface de observação (dashboard). Capacidade adicionada ou
   removida atualiza o módulo na mesma mudança. Nasceu do MH-009: o inventário existia em
   três lugares divergentes, e um dash que o copiasse criaria o quarto.
-- **P56 — toda mensagem que afirma persistência é construída por leitura pós-escrita,
-  nunca pela intenção pré-escrita.** Nasceu do BUG-104 (v42): o agente `principal`
-  prometeu cadastrar quatro medicamentos e o agente `cadastro` respondeu "Tudo
-  cadastrado!" sem que uma única linha existisse em `medications`. Afirmar estado do
-  sistema a partir do que o LLM pretendia fazer, e não do que o banco confirma ter sido
-  feito, é a forma mais direta de destruir confiança em produto de saúde.
-- **P57 — descartar dado que o usuário já entregou é regressão de fluidez, não
-  economia.** Nasceu da v42: fazer a pessoa repetir o que já disse é o comportamento que
-  mais custa na conversa. O extrator sempre procura todos os campos do esquema, e a
-  transição entre etapas ou agentes carrega o que já foi coletado.
 - **Sem contador de tentativas em laço controlado pelo usuário.** Teto só onde o sistema
   pode iterar sozinho.
 - **Cálculo de saúde é determinístico.** Resultado numérico relevante para saúde vem de
@@ -272,21 +311,6 @@ Números em pt-BR: inteiro sem casas decimais, fracionário com vírgula (`2,5 m
     função, escopado só a `service_role` — nunca reabrir `anon`/`authenticated`, que é
     exatamente a superfície que a opção pretende fechar.
 
-12. **Não há serialização por usuário no webhook.** `src/index.js` responde `200` e
-    dispara `handleIncomingMessage` sem await de fila; o único mecanismo é o dedupe de
-    `messageId` idêntico, que protege contra webhook duplicado da Z-API, não contra
-    mensagens diferentes em sequência. Mensagens próximas do mesmo usuário viram execuções
-    concorrentes de `routeMessage` que leem `conversation_state` antes de qualquer uma
-    gravar. Causa raiz confirmada do MH-040 (v42).
-13. **`agent_logs` guarda a conversa inteira** (`user_message` + `agent_response` +
-    `estado_conversa` de entrada + `contexto_conversa`). É a fonte primária para auditar
-    experiência de usuário real, sempre cruzada com o estado persistido (P24).
-14. **`dose_logs` não tem `user_id`** — filtrar via join por `medications`.
-15. **Invariante vigente:** todo `medications.ativo = true` tem ao menos um `schedules`
-    ativo, e todo `ativo = false` tem zero. Verificado na v42 (13 e 56 registros). Qualquer
-    mudança que introduza medicamento ativo sem horário quebra scheduler, relatórios,
-    bloco "Medicamentos cadastrados" do prompt do `principal` e dashboard.
-
 ---
 
 ## 7. Ritual de sessão
@@ -311,36 +335,6 @@ Números em pt-BR: inteiro sem casas decimais, fracionário com vírgula (`2,5 m
 2. Gerar `briefings/encerramento_vN.md` com o `CONTEXT.md` atualizado e a lista de
    escritas em `backlog_items`.
 3. Guilherme aciona o Claude Code: "Leia o `briefings/encerramento_vN.md` e execute".
-
-### Promoção staging → produção e disciplina do `CONTEXT.md` (MH-89 Parte C, v42)
-
-**Fluxo por entrega:**
-
-1. Briefing de execução da fase → Claude Code implementa na branch `staging`.
-2. Validação no ambiente de staging (Railway + `Nami-staging` + Z-API staging, §10).
-3. Merge `staging` → `main`.
-4. Encerramento de sessão: `CONTEXT.md` atualizado **em `main`**, movendo a entrega de
-   "validada em staging" para "em produção".
-5. Merge `main` → `staging`, para a branch de trabalho herdar a documentação.
-
-**Três regras, e a terceira é a que evita conflito de merge:**
-
-- **O `CONTEXT.md` é editado exclusivamente em `main`**, no encerramento de sessão. É de
-  `main` que o ritual de abertura faz o `curl` — documentação que viaja com o código deixaria
-  `main` desatualizado justamente na janela em que o trabalho está acontecendo.
-- **Toda entrega carrega estado explícito** — *validada em staging* ou *em produção*. O
-  documento nunca afirma que algo está no ar antes de estar, e duas fases em andamento
-  simultâneo não geram ambiguidade.
-- **A `staging` recebe o `CONTEXT.md` por merge, nunca por cópia de arquivo.** Cópia é
-  edição: cria alteração independente do mesmo arquivo nos dois lados e transforma um merge
-  trivial em reconciliação. Merge faz a `staging` *herdar* a alteração — o ancestral comum
-  anda para frente e o merge `staging → main` seguinte não conflita, porque a `staging` nunca
-  editou o arquivo. Merge de `main` para `staging` também traz correções emergenciais que
-  tenham entrado direto em produção, impedindo que a branch de trabalho fique para trás.
-
-Nada em runtime lê o `CONTEXT.md` — ele não é configuração. O custo de deixá-lo defasado em
-`staging` não é quebra de execução, é leitura errada: a inspeção de código por tarball de
-branch traria a arquitetura antiga junto do código novo.
 
 ### Governança de backlog (decisão de Guilherme, v29)
 
@@ -515,244 +509,53 @@ projeto `Nami-staging` (`+5511941065858`, `onboarded = true`).
   (hoje aplicada só via SQL Editor) como migration versionada em `supabase/migrations/`.
 - **Parte B:** auditoria completa de que nenhuma credencial é decidida por `NODE_ENV`
   hardcoded no código — não iniciada.
-- **Parte C:** formalizada na v42 — fluxo de promoção e disciplina de branch do
-  `CONTEXT.md` documentados no §7. **Resolvida.**
+- **Parte C:** formalizar o fluxo de promoção staging → produção como parte deste ritual
+  de sessão — não iniciada.
+
+```
 
 ---
 
-## 11. Jornada de chegada — arquitetura decidida na v42
+## PASSO 2 — Trazer o briefing de encerramento da v40 para a `main`
 
-### 11.1 Motivação e evidência
+Copie o arquivo `briefings/encerramento_v40.md` da branch `staging` para o mesmo caminho
+na branch `main`, sem alterações de conteúdo. Isso preserva o histórico real da v40 na
+branch principal do repositório.
 
-Dez dias de beta expuseram que a jornada do "Oi" até o primeiro medicamento cadastrado é o
-gargalo do produto. Funil do Ciclo 2 em 09/09/2026 (base real, `is_teste = false`, usuários
-criados a partir de 30/08):
+---
 
-| Etapa | Usuários |
-|---|---|
-| Mandaram a primeira mensagem | 19 |
-| Deram o nome e aceitaram a LGPD | 10 |
-| Completaram data de nascimento | 9 |
-| Cadastraram ao menos 1 medicamento | 6 |
+## PASSO 3 — NÃO fazer
 
-**68% de perda entre chegar e ter um medicamento.** A maior perda é a primeira: 9 dos 19
-mandaram uma ou duas mensagens e sumiram sem dar o nome — viram apenas o texto de acolhida.
+- **Não** copiar `supabase/migrations/20260831000000_mh089_staging_service_role_grants.sql`
+  para `main`. Ela é específica do projeto Supabase de staging.
+- **Não** alterar nenhum arquivo em `src/`, `dashboard/`, ou qualquer código de produção.
+- **Não** fazer merge da branch `staging` inteira para `main` (isso traria a migration e
+  qualquer outra coisa fora do escopo deste briefing). A operação é a substituição pontual
+  dos dois arquivos de documentação acima.
+- **Não** escrever nada em `backlog_items`. Este briefing não tem escritas de backlog.
 
-Custo em turnos de quem chegou ao fim: `data_nascimento` custa **4 turnos como piso
-arquitetural** (dia → mês → ano → confirmação) para todos; `cadastro` custa **7 a 10 turnos
-por medicamento**. Fragmentação de mensagens atingiu **5 dos 19 usuários (26%)**.
+---
 
-**Público observado é jovem, não idoso** — a expectativa de agilidade é maior, e cada
-pergunta a mais custa mais do que custaria com o público originalmente imaginado.
+## PASSO 4 — Commit e push (branch `main`)
 
-### 11.2 Causas raiz confirmadas por leitura de código (v42)
-
-1. **Concorrência de turnos** — `src/index.js` sem serialização (ver §6, item 12).
-2. **Descarte da mensagem rica no roteamento** — no bloco `post_onboarding` do
-   `router.js`, `despacharCadastro` é chamado com `context: { etapa: 'cad_nome' }`
-   **literal**, e a `message` repassada é a do turno corrente. Uma mensagem com quatro
-   medicamentos e horários seguida de "Sim" faz o `cadastro` receber apenas o "Sim", no
-   primeiro degrau, com contexto vazio. Mesmo padrão no bloco `cadastrando_medicamento`,
-   que reinicia do zero por decisão explícita.
-3. **`detectarIntencaoCadastro` é lista de substrings** (`'cadastrar'`, `'adicionar
-   remédio'`, …). Uma mensagem como `"Suplemento Bariatron 12:00 / Fluxetina 08:00"` — a
-   expressão mais inequívoca possível de intenção de cadastro — não contém nenhum termo e
-   cai no `else`, indo para o `principal`.
-4. **`principal` tem vocabulário de ação que não cobre cadastro.** Emite `CONFIRM_DOSE`,
-   `UPDATE_STOCK`, `REGISTER_NAO_TOMADO`, `REVERSE_CONFIRMATION` — nada para "usuário
-   trouxe medicamento novo" — e não há regra proibindo-o de prometer a ação. Recebeu uma
-   lista de medicamentos, não tinha verbo, e escreveu prosa. É o P51 aplicado ao
-   vocabulário de ação.
-5. **O extrator multi-campo já existe e estava travado.** `cadastro.js`,
-   `extrairCadastroCompleto` (MH-80), extrai **14 campos numa chamada** com validação
-   determinística campo a campo e `degradar()` no fracasso. Dois portões o prendem:
-   (a) só roda quando `etapaAtual === 'cad_nome'`; (b) só quando a mensagem tem dígito ou
-   mais de 6 palavras. No caso real, a mensagem que chegou ao agente foi "Sim" — reprovada
-   no portão (b). **O extrator funcionava; nunca viu os dados.**
-6. **O rascunho morre na escalada, não no abandono.** O bloco `adding_med` repassa
-   `context: state?.context || {}` — abandono puro preserva o rascunho indefinidamente,
-   sem TTL. Quem zera é `despacharEscalada`, que faz
-   `saveConversationState(user.id, { state: 'idle', context: {} })` ao escalar para
-   qualquer agente que não seja `configuracao`. O mecanismo de preservação **já existe**
-   para `configuracao` (`contextoPreservado` com `medicationId`, `medicationNome`,
-   `schedulesAtivos`) — só não é aplicado ao cadastro.
-7. **`extrairCadastroCompleto` devolve `nome` como string única** — não suporta múltiplos
-   medicamentos em uma mensagem. As duas usuárias analisadas bateram nesse limite.
-8. **O Juiz Offline não marcou a afirmação de persistência falsa.** Três conversas com
-   falha grave, zero registros em `system_events`. Se é lacuna de taxonomia ou falha de
-   disparo, exige leitura do código do Juiz (ACH-008).
-
-### 11.3 Inventário de chamadas de LLM (v42)
-
-**26 chamadas** de `messages.create`, todas em `claude-sonnet-4-6` (inclusive
-`MODELO_JUIZ`). Destas, **17 são classificadores ou extratores**: 11 em `cadastro.js`,
-4 em `recepcionista.js`, 1 em `router.js` (`classificarIntencaoComContexto`), 1 em
-`data_nascimento.js`, mais `configuracao.js`, `exclusaoConta.js` e `estadoPosOnboarding.js`.
-
-Consequência arquitetural: **não é possível avaliar troca de modelo por tarefa hoje**,
-porque interpretação, decisão e redação acontecem na mesma chamada em cada agente.
-Consolidar em um runner único é o que torna a medição possível. Nenhuma troca de modelo
-está decidida ou recomendada — a decisão exige medição, não intuição.
-
-### 11.4 A tensão arquitetural
-
-**A rigidez do fluxo não é descuido — é o preço pago pela confiabilidade.** O MH-073 Parte
-C reduziu o contrato do LLM a `{ message }` para acabar com a divergência entre o que o LLM
-gerava e o que a máquina de estados decidia. Foi correto. A consequência é que o código só
-avança **um degrau por turno**, porque só interpreta **uma resposta classificada por vez**.
-
-Devolver autoridade de estado ao LLM devolveria fluidez e devolveria junto a afirmação
-falsa. **Esse caminho está fechado.** A arquitetura precisa dar fluidez sem devolver
-autoridade.
-
-### 11.5 Arquitetura decidida — três camadas
-
-**Camada 1 — Extrator de entrada (LLM, saída tipada, sem autoridade).** Roda uma vez por
-turno, antes da máquina de estados. Recebe mensagem + estado atual + **esquema de campos do
-fluxo corrente** (escolhido pelo estado, nunca todos os esquemas juntos — é o que evita o
-P44 mudar de endereço). Devolve JSON estrito. Não decide estado, não escreve, não produz
-texto ao usuário. **Não é gateado pela etapa atual** — sempre procura todos os campos do
-esquema (P57).
-
-Três valores distintos, nunca colapsados (P49): **valor extraído**, **ausente da mensagem**
-(`null`), **presente mas ambíguo** (`indeterminado`). O terceiro é o que impede que "menos
-perguntas" vire "dado errado em silêncio".
-
-**Camada 2 — Máquina de estados (código, determinística).** Recebe o saco de campos,
-valida, persiste o válido, calcula o que falta, decide o próximo estado. O número de turnos
-deixa de ser propriedade do prompt e passa a ser propriedade do que o usuário disse.
-
-**Camada 3 — Renderização (código decide o quê, LLM só escreve).** O código monta a lista
-de fatos — o que foi persistido (lido de volta do banco, P56), o que falta, qual a próxima
-pergunta. O LLM recebe isso e escreve na voz da Nami, contrato `{ message }`.
-
-**Decisão D1:** uma função runner, N esquemas declarados como dado (mesmo padrão do P55).
-Não N prompts que divergem.
-
-### 11.6 Call único `{ intencao, campos }`
-
-O extrator sozinho não fecha beco sem saída, porque extrai **campos**, não **intenção**. E
-rodar extrator de esquema em mensagem fora de assunto aumenta a superfície de invenção.
-
-Uma única chamada por turno devolve as duas coisas, nenhuma com autoridade:
-
-```json
-{ "intencao": "continuar_fluxo | corrigir | duvida | desistir | outro_fluxo",
-  "campos":   { "nome": "Cataflam", "horarios": ["10:00"] } }
+```bash
+git checkout main
+git add CONTEXT.md briefings/encerramento_v40.md
+git commit -m "docs: sincroniza CONTEXT.md e encerramento_v40 da staging para main (achado de abertura da v41)"
+git push origin main
 ```
 
-| `intencao` | O que o código faz com `campos` |
-|---|---|
-| `continuar_fluxo` | consome, persiste no rascunho, calcula o que falta |
-| `corrigir` | consome, **sobrescreve** o campo correspondente |
-| `duvida` | ignora, responde, **preserva o rascunho** e retoma |
-| `desistir` | preserva o rascunho para retomada futura, sai do fluxo |
-| `outro_fluxo` | preserva o rascunho, despacha para o agente certo |
+---
 
-Resolve `"na verdade é 20h"`, hoje beco sem saída: `intencao: corrigir` +
-`campos: { horarios: ["20:00"] }` num turno.
+## PASSO 5 — Confirmar
 
-**As duas metades já existem separadas:** `extrairCadastroCompleto` (campos) e
-`classificarIndeterminadoCadastro` (que devolve exatamente `recusa | duvida |
-nova_intencao | ruido`). Hoje rodam em sequência — a intenção só é avaliada **depois** que
-a extração falha, o que torna impossível corrigir um campo e sinalizar intenção no mesmo
-turno. Fundir as duas é o ganho.
+Após o push, responda com:
+- O hash do commit gerado na `main`
+- Confirmação de que `CONTEXT.md` da `main` agora contém a seção 10 (MH-89) e a linha
+  "última atualização: encerramento da sessão v40"
+- Confirmação de que `briefings/encerramento_v40.md` existe agora em `main`
+- Confirmação de que **nenhum outro arquivo** foi alterado na `main` (em particular, que
+  a migration de staging não foi copiada)
+- Confirmação de que a branch `staging` não foi tocada
 
-**Precedência:** os portões determinísticos existentes (fast-path de confirmação de dose,
-portão de exclusão de conta) permanecem **antes** do call. São baratos, corretos e têm
-precedência declarada.
-
-### 11.7 Níveis de campo — fronteira de commit
-
-Hoje `cadastro.js` trata todos os campos como igualmente obrigatórios; a lista de
-pré-requisitos está achatada, e é daí que vêm os 7 a 10 turnos.
-
-| Nível | Campos | Sem eles |
-|---|---|---|
-| **Have to have** | `nome`, `quantidade_por_dose`, `horario` | não existe registro, ou existe registro que nunca lembra |
-| **Nice to have** | `dosagem`, `estoque_atual`, `tipo_tratamento` | lembrete funciona; alerta de recompra e relatório ficam pobres |
-| **Derivados** | `unidade_estoque`, `unidade_dose` | derivam da quantidade por dose |
-| **Eliminado** | `instrucoes` | — |
-
-**A unidade de dose vem junto da quantidade.** "1 cp" / "10 ml" / "20 gts" já carrega
-`UNIDADES_DOSE_VALIDAS` (`unidade`, `gota`, `ml`), e `FORMAS_COMPATIVEIS` deriva a forma a
-partir dela. A derivação é **de uma para várias** (`unidade` → comprimido, cápsula, pomada,
-injetável): suficiente para o lembrete, possivelmente insuficiente para contagem de estoque
-— verificar quando o alerta de recompra for tocado.
-
-**A fronteira de commit fica entre have to have e nice to have.** A Nami persiste assim que
-tiver os três; tudo do nice to have é enriquecimento posterior, nunca bloqueio.
-
-**O acumulado parcial continua em `conversation_state.context`, não em `medications`** —
-gravar rascunho na tabela quebraria o invariante do §6 item 15.
-
-### 11.8 Consentimento LGPD com recuperação de rascunho
-
-Decisão de Guilherme, corrigindo proposta anterior de descarte:
-
-- **Consentimento explícito + dados na mesma mensagem** → persiste tudo, um turno.
-- **Dados sem consentimento explícito** → guarda no rascunho, refaz a pergunta. Resposta
-  positiva recupera os dados e segue; resposta negativa descarta tudo.
-
-Descartar dado já entregue e obrigar o usuário a repetir é o comportamento que mais destrói
-fluidez (P57), e pune quem leu a pergunta corretamente.
-
-**Duas salvaguardas obrigatórias:** nada vai para `users` antes do consentimento — o
-rascunho vive só em `conversation_state.context`, e a gravação em `users` ocorre no mesmo
-instante do aceite; e o descarte na recusa é **explícito e verificável** (apagar o
-`context`, não apenas sair do fluxo).
-
-### 11.9 Fragmentação — fila e janela
-
-São dois problemas distintos:
-
-- **Fila por usuário** — nunca processar dois turnos concorrentes do mesmo `user_id`.
-  Corrige decisão tomada sobre estado obsoleto. **Não-negociável**; sem ela, qualquer fluxo
-  mais curto fica mais frágil, não menos.
-- **Janela de agregação — 5 segundos** (decisão de Guilherme, ajustável após medição).
-  Mensagens que chegam na janela viram **uma entrada só**. Corrige o usuário receber N
-  respostas para um pensamento fragmentado.
-
-A janela pressupõe a fila. Definir no briefing de execução a precedência quando um lembrete
-agendado dispara com a janela aberta.
-
-### 11.10 Retomada de rascunho
-
-**Passiva** (decisão de Guilherme): a Nami retoma quando o usuário volta, sem puxar
-proativamente. **Sem TTL** — o rascunho já sobrevive indefinidamente hoje e adicionar prazo
-seria restrição nova disfarçada de correção. O trabalho é estender o `contextoPreservado`
-de `despacharEscalada` ao cadastro, replicando padrão que já existe no mesmo arquivo.
-
-### 11.11 Plano de implementação — 7 fases
-
-| # | Fase | Item | Muda o quê | Staging |
-|---|---|---|---|---|
-| 0 | Acolhida enxuta | MH-091 | copy do `recepcionista` | direto |
-| 1 | Fila + janela 5s | MH-040 A+B | `index.js` | sim |
-| 2 | Verdade + rascunho | BUG-104, MH-090 | `router.js` (L587, bloco `post_onboarding`), `principal.js` | sim |
-| 3 | Níveis have/nice-to-have | — | `primeiraEtapaFaltante` em `cadastro.js` | sim |
-| 4 | Destravar MH-80 em qualquer etapa | — | portão `cad_nome` em `calcularDecisaoEtapa` | sim |
-| 5 | Múltiplos medicamentos | MH-094 | extrator: `nome` string → lista | sim |
-| 6 | Call único `{ intencao, campos }` | — | runner novo | sim |
-| 7 | Runner + esquema do onboarding | MH-092 | `recepcionista.js`, 4 classificadores → 1 esquema | sim |
-
-**Ordem justificada.** A Fase 0 é independente, é copy, e ataca a maior perda isolada do
-funil. A Fase 1 é pré-requisito de tudo. A Fase 2 sozinha já melhora o caso real: com a
-mensagem rica chegando ao `cad_nome`, o portão de heurística do MH-80 aprova (tem dígitos) e
-o extrator roda — um medicamento dos quatro seria cadastrado de fato. O onboarding fica por
-último **de propósito**: é a fase de maior risco de regressão (mexe em consentimento LGPD e
-na porta de entrada de 100% dos usuários) e a que mais se beneficia de o runner já ter
-rodado no cadastro; sua perda é atacada antes pela Fase 0.
-
-**Métrica de validação, medível em `agent_logs`:** turnos em `agent = 'cadastro'` por
-medicamento cadastrado. Baseline v42: **7 a 10**. Alvo com níveis: 3 a 4. Alvo com extrator
-destravado, para mensagem rica: 1 a 2.
-
-### 11.12 Fora de escopo, registrado
-
-- **MH-093** — formas por medida ou massa (pó, sachê, granulado). `FORMAS_VALIDAS` tem 7
-  formas e **não inclui "pó"**; `UNIDADES_DOSE_VALIDAS` não representa colher, scoop ou
-  grama. Usuária real tentou cadastrar cúrcuma em pó e o valor foi descartado por
-  validação. Exige decisão própria sobre dedução de estoque.
-- **Design das mensagens ao usuário** — Guilherme pediu conversa dedicada, posterior à
-  arquitetura.
+Não faça mais nada além do que está descrito acima.

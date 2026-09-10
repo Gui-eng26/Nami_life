@@ -1,3 +1,204 @@
+# Briefing de encerramento — sessão v42
+
+**Data:** 09/09/2026
+**Sessão:** v42 — Fluidez da jornada de chegada (mapeamento e arquitetura)
+**Natureza:** sessão de análise e decisão arquitetural. **Nenhuma linha de código foi
+alterada.** Este briefing registra estado e decisões; a implementação virá em briefings de
+execução por fase.
+
+---
+
+## AÇÕES QUE EXIGEM GUILHERME
+
+Nenhuma. Este briefing é executado inteiramente pelo Claude Code.
+
+---
+
+## O QUE O CLAUDE CODE DEVE EXECUTAR
+
+1. Sobrescrever `CONTEXT.md` na branch `main` com o conteúdo da seção 3 deste documento.
+2. Executar as escritas em `backlog_items` da seção 2, via `src/backlog.js`.
+3. Commit e push.
+
+**Não alterar nenhum arquivo em `src/`.** Se algum passo falhar, parar e reportar — não
+tentar caminho alternativo.
+
+---
+
+## 1. Resumo da sessão
+
+Dez dias de beta público expuseram que a jornada do "Oi" até o primeiro medicamento
+cadastrado é o gargalo do produto: **68% de perda** entre chegar e ter um medicamento
+(19 → 10 → 9 → 6). Três conversas reais foram auditadas em `agent_logs` e cruzadas com
+`medications`, `users` e `system_events`.
+
+O achado mais grave está confirmado como fato: a Nami afirmou a uma usuária que quatro
+medicamentos estavam cadastrados, e `medications` não tem uma única linha para ela. Oito
+causas raiz foram confirmadas por leitura direta de código (ver `CONTEXT.md` §11.2), entre
+elas duas que estavam abertas como hipótese há meses:
+
+- **MH-040 (73 dias em aberto)** — `src/index.js` não tem serialização por usuário.
+- **BUG-104** — `router.js` chama `despacharCadastro` com `context: { etapa: 'cad_nome' }`
+  literal, descartando a mensagem que carregava os dados.
+
+E um achado que reduz o escopo da obra: **o extrator multi-campo já existe**
+(`extrairCadastroCompleto`, MH-80, 14 campos numa chamada) e estava travado por dois
+portões. Grande parte da arquitetura proposta é consolidação, não invenção.
+
+A arquitetura decidida (três camadas, call único `{ intencao, campos }`, níveis de campo,
+janela de 5s, retomada passiva) e o plano de 7 fases estão em `CONTEXT.md` §11.
+
+**Correção de registro:** a coluna `users.onboarding_completo_at`, referida em resumos de
+sessões anteriores como implementada, **não existe** — nem em produção
+(`nputymewnwmnhrtpizzs`) nem em staging (`pibzuwoyznywajyxeulj`). Verificado via
+`information_schema.columns` nos dois projetos.
+
+---
+
+## 2. Escritas em `backlog_items`
+
+**Oito inserts** (itens 2.1 a 2.8) e **um update** (item 2.9), todos autorizados
+explicitamente por Guilherme nesta sessão. Usar `src/backlog.js`. Campos do insert: `tipo`,
+`numero`, `titulo`, `descricao`, `status = 'aberto'`, `prioridade`.
+
+### 2.1 BUG-104 — alta
+
+**Título:** `principal` promete cadastro e `cadastro` confirma persistência que nunca ocorre
+
+**Descrição:** No bloco `post_onboarding` do `router.js`, `despacharCadastro` é chamado com
+`context: { etapa: 'cad_nome' }` literal e a `message` do turno corrente. Uma mensagem com
+quatro medicamentos e horários seguida de "Sim" faz o `cadastro` receber apenas o "Sim", no
+primeiro degrau, com contexto vazio. O agente `principal`, que recebeu a mensagem rica, não
+tem verbo de cadastro em seu vocabulário de ação (`CONFIRM_DOSE`, `UPDATE_STOCK`,
+`REGISTER_NAO_TOMADO`, `REVERSE_CONFIRMATION`) e nenhuma regra o proíbe de prometer a ação —
+gerou "Vou cadastrar os quatro agora". O `cadastro`, no turno seguinte, gerou "Tudo
+cadastrado!" ecoando o histórico. Confirmado: zero linhas em `medications` para a usuária.
+Fecha na Fase 2 do plano (`CONTEXT.md` §11.11).
+
+### 2.2 MH-090 — alta
+
+**Título:** Estender o contrato `{ message }` a `principal` e `recepcionista` — afirmação de
+estado por leitura pós-escrita (P56)
+
+**Descrição:** O MH-073 Parte C aplicou a disciplina ao `cadastro`; `principal` e
+`recepcionista` seguem gerando livremente afirmações sobre estado do sistema ("Tudo
+cadastrado", "Anotei as quatro vitaminas", "totalmente gratuita, sem mensalidade" — as três
+observadas em produção). Toda mensagem que afirma persistência passa a ser montada a partir
+de leitura pós-escrita. Inclui dar ao `principal` tratamento explícito para "usuário trouxe
+medicamento novo" em vez de prosa livre (P51 aplicado ao vocabulário de ação).
+
+### 2.3 MH-091 — alta
+
+**Título:** Texto de acolhida enxuto
+
+**Descrição:** 9 de 19 usuários do Ciclo 2 mandaram uma ou duas mensagens e sumiram sem dar
+o nome — viram apenas o texto de acolhida, que soma apresentação, proposta de valor,
+pergunta e aviso de transparência (MH-076) antes de qualquer interação. Maior perda isolada
+do funil. Fase 0 do plano: independente das demais, é copy, não toca arquitetura. Guilherme
+revisa o texto antes da geração.
+
+### 2.4 MH-092 — alta
+
+**Título:** Data de nascimento em um turno quando a mensagem já traz a data
+
+**Descrição:** O MH-072 separou a coleta em dia → mês → ano → confirmação, decisão
+deliberada para contornar o P44. O custo é **4 turnos como piso para todos os usuários**;
+uma usuária gastou 10. Outra entregou a data completa junto do consentimento e ainda assim
+percorreu a escada inteira. Com o runner de extração da Fase 7, a escada permanece como
+fallback, nunca como padrão. Substitui os 4 classificadores de campo único de
+`recepcionista.js` por um esquema.
+
+### 2.5 MH-093 — média
+
+**Título:** Formas por medida ou massa (pó, sachê, granulado) e dedução de estoque
+correspondente
+
+**Descrição:** `FORMAS_VALIDAS` em `cadastro.js` tem 7 formas e **não inclui "pó"**;
+`UNIDADES_DOSE_VALIDAS` (`unidade`, `gota`, `ml`) não representa colher, scoop ou grama.
+Usuária real tentou cadastrar cúrcuma em pó e o valor foi descartado por validação. Exige
+decisão própria sobre dedução de estoque, análoga à do MH-073 para líquidos. Fora do escopo
+da frente de fluidez — registrado para não travar a sessão.
+
+### 2.6 MH-094 — alta
+
+**Título:** Cadastro de múltiplos medicamentos declarados em uma única mensagem
+
+**Descrição:** `extrairCadastroCompleto` devolve `nome` como string única — extrairia um de
+quatro medicamentos e ignoraria três. **As duas usuárias auditadas bateram nesse limite**,
+com o mesmo comportamento: listar todos os medicamentos de uma vez. Não é caso de borda — é
+o comportamento natural de quem toma mais de um medicamento, que é o público-alvo. Sem este
+item, os dois casos ficam parcialmente resolvidos. Exige decisão de desenho própria:
+cadastro em sequência, confirmação da lista antes, e tratamento de falha parcial. Fase 5 do
+plano.
+
+### 2.7 MH-040 Parte B — alta
+
+**Título:** Concorrência de turnos — `conversation_state` lido antes da persistência do
+turno anterior
+
+**Descrição:** Parte B do MH-040, aberto há 73 dias. Causa raiz agora **confirmada**:
+`src/index.js` responde `200` e dispara `handleIncomingMessage` sem fila; o único mecanismo
+é o dedupe de `messageId` idêntico. Mensagens próximas do mesmo usuário viram execuções
+concorrentes de `routeMessage` que leem `conversation_state` antes de qualquer uma gravar.
+Evidência: três turnos consecutivos de uma usuária, em 6 segundos, todos com
+`estado_conversa = 'idle'`, produzindo três textos de acolhida completos. Atingiu 5 dos 19
+usuários (26%). Solução decidida: **fila por usuário** (não-negociável) + **janela de
+agregação de 5 segundos** (ajustável após medição). Fase 1 do plano.
+
+### 2.8 ACH-008 — média
+
+**Título:** Juiz Offline não marcou afirmação de persistência falsa
+
+**Descrição:** Três conversas com falha grave — incluindo a Nami afirmando que quatro
+medicamentos estavam cadastrados sem nenhuma linha em `medications` — geraram **zero**
+registros em `system_events`. Fato confirmado por consulta direta filtrando pelos três
+`user_id`. Se é lacuna de taxonomia ou falha de disparo exige leitura do código do Juiz.
+Ligado a BUG-104 e MH-090. Nota relacionada: há **10 eventos `desvio_comportamental` de
+severidade crítica** desde 30/08 com `status_triagem = 'novo'` e `backlog_ref` nulo, nove
+com título "Informação de saúde incorreta ao usuário", nenhum triado.
+
+### 2.9 MH-89 Parte C — **UPDATE, não insert**
+
+Item existente `tipo = 'MH'`, `numero = 89`, título **"Formalizar fluxo de promoção staging
+→ produção"**, hoje com `status = 'aberto'`. Atualizar para `status = 'resolvido'`,
+`sessao_fechamento = 'v42'`, `data_fechamento = 2026-09-09`.
+
+**Nota de fechamento:** o fluxo foi formalizado no `CONTEXT.md` §7, subseção "Promoção
+staging → produção e disciplina do `CONTEXT.md`". Cinco passos por entrega e três regras de
+branch, sendo a decisiva que a `staging` recebe o `CONTEXT.md` **por merge, nunca por cópia
+de arquivo** — cópia é edição, cria alteração independente do mesmo arquivo nos dois lados e
+transforma merge trivial em reconciliação. Verificado na v42 que `main` e `staging` têm o
+`CONTEXT.md` byte a byte idêntico (md5 `7e1ef26a2990`, 24.318 bytes), portanto não há
+divergência a reconciliar no momento da adoção.
+
+**Atenção:** há três itens com `numero = 89`. Atualizar **apenas** o de título "Formalizar
+fluxo de promoção staging → produção". Os outros dois — "Provisionamento de ambiente de
+staging isolado" (`em_validacao`) e "Auditoria de configuração 100% via variável de
+ambiente" (`aberto`) — permanecem intocados.
+
+---
+
+## 3. `CONTEXT.md` atualizado
+
+Sobrescrever `CONTEXT.md` na raiz do repositório, branch `main`, com exatamente o conteúdo
+abaixo.
+
+O que mudou em relação à v40:
+- Cabeçalho: data e versão da sessão.
+- §3.2: estado do backlog atualizado.
+- §5.2: dois princípios novos — **P56** (afirmação de persistência por leitura pós-escrita)
+  e **P57** (descartar dado já entregue é regressão de fluidez).
+- §6: quatro padrões técnicos novos (itens 12 a 15), incluindo o invariante
+  `medications.ativo` <-> `schedules`.
+- §7: subseção nova **"Promoção staging → produção e disciplina do `CONTEXT.md`"**
+  (MH-89 Parte C).
+- §10.5: Parte C marcada como resolvida.
+- **§11 inteira, nova** — jornada de chegada: evidência, 8 causas raiz confirmadas,
+  inventário de LLM, arquitetura de três camadas, call único, níveis de campo, LGPD com
+  recuperação de rascunho, fila e janela, retomada passiva, plano de 7 fases.
+
+---
+
 # CONTEXT.md — Nami Life
 
 > **Fonte única de verdade do estado técnico e arquitetural do projeto.**
@@ -756,3 +957,49 @@ destravado, para mensagem rica: 1 a 2.
   validação. Exige decisão própria sobre dedução de estoque.
 - **Design das mensagens ao usuário** — Guilherme pediu conversa dedicada, posterior à
   arquitetura.
+
+
+---
+
+## 4. Commit
+
+```
+docs(context): v42 - arquitetura da jornada de chegada e 8 itens de backlog
+
+- P56 (afirmacao de persistencia por leitura pos-escrita) e P57 (nao descartar
+  dado ja entregue) registrados
+- 8 causas raiz da jornada de chegada confirmadas por leitura de codigo
+- arquitetura de tres camadas, call unico {intencao, campos} e plano de 7 fases
+- padroes tecnicos 12-15, incluindo invariante medications.ativo <-> schedules
+- MH-89 Parte C: fluxo de promocao staging->producao formalizado no §7
+```
+
+---
+
+## 5. Verificação após execução
+
+1. `curl` do `CONTEXT.md` raw com cache-busting, após `sleep 8`, confirmando §11 presente e
+   cabeçalho em 09/09/2026.
+2. `SELECT tipo, numero, titulo, status, prioridade FROM backlog_items WHERE numero IN
+   (104, 90, 91, 92, 93, 94, 40, 8) ORDER BY tipo, numero` — confirmar os 8 itens, com
+   MH-040 tendo Parte B distinta da Parte A já existente.
+2b. `SELECT titulo, status FROM backlog_items WHERE tipo='MH' AND numero=89` — confirmar que
+   "Formalizar fluxo de promoção staging → produção" está `resolvido` e que os outros dois
+   itens de número 89 seguem inalterados (`em_validacao` e `aberto`).
+3. `git log -1 --stat` confirmando que **apenas** `CONTEXT.md` mudou.
+
+---
+
+## 6. Próxima sessão (v43)
+
+Ritual de abertura normal, mais:
+
+- O plano de 7 fases está em `CONTEXT.md` §11.11. **A Fase 0 (MH-091, acolhida) é
+  entregável imediato** — copy, sem dependência, maior perda isolada do funil. Guilherme
+  revisa o texto antes da geração.
+- Cada fase precisa de **briefing de execução próprio**, gerado perto da execução.
+  Briefing é contrato, e contrato de sete fases envelhece antes de ser cumprido.
+- Fases 1 a 7 rodam em **staging** antes de produção — primeira validação continuada real
+  do ambiente construído na v40.
+- Métrica de acompanhamento: turnos em `agent = 'cadastro'` por medicamento cadastrado.
+  Baseline v42: 7 a 10.
