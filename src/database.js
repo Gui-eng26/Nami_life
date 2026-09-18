@@ -100,7 +100,7 @@ export async function saveConversationState(userId, { state, context }) {
 // tratamento_fim é sempre recalculada a partir de agora — na criação (~= created_at)
 // e na reativação (reinicia o relógio do tratamento). Fonte da verdade para
 // calcularProgressoTratamento; null para tratamento contínuo ou sem tratamento_dias.
-function calcularTratamentoFim(tipo_tratamento, tratamento_dias) {
+export function calcularTratamentoFim(tipo_tratamento, tratamento_dias) {
     if (!tratamento_dias || tipo_tratamento === 'continuo' || !tipo_tratamento) return null;
     const fim = new Date();
     fim.setDate(fim.getDate() + tratamento_dias);
@@ -130,17 +130,20 @@ export async function saveMedication({
         return { ...existing, isDuplicate: true };
     }
 
-    // Se não existe, cria novo normalmente (estoque nasce em 0; o valor informado
-    // é aplicado logo em seguida via registrarMovimentoEstoque, para gerar o
-    // movimento cadastro_inicial com estoque_anterior = 0)
+    // MH-094 (v43 Bloco C, P49): "não informado" é diferente de "acabou" — nunca colapsa
+    // para 0. Quando o estoque ainda não foi perguntado (gravação antecipada, antes do
+    // have-to-have de estoque), o medicamento nasce com estoque_atual NULL e SEM nenhum
+    // stock_movement — o scheduler já trata `estoque_atual !== null` antes de bloquear.
+    const estoqueInformado = estoque !== null && estoque !== undefined;
+
     const { data, error } = await supabase
         .from('medications')
         .insert({
             user_id: userId,
             nome,
-            dosagem,
+            dosagem: dosagem ?? null,
             instrucoes: instrucoes || null,
-            estoque_atual: 0,
+            estoque_atual: estoqueInformado ? 0 : null,
             estoque_minimo: 7,
             // era: forma || 'comprimido' — derivarFormaFarmaceutica (cadastro.js) nunca
             // devolve null, então este default é rede de segurança para chamadores
@@ -160,36 +163,60 @@ export async function saveMedication({
 
     if (error) throw new Error(`Erro ao salvar medicamento: ${error.message}`);
 
+    if (!estoqueInformado) {
+        return { ...data, estoque_atual: null };
+    }
+
     const { estoqueNovo } = await registrarMovimentoEstoque({
         medicationId: data.id,
         tipo: 'cadastro_inicial',
         origem: 'manual',
         motivo: estoqueMotivo,
         estimado: estoqueEstimado,
-        valorAbsoluto: estoque || 0
+        valorAbsoluto: estoque
     });
 
     return { ...data, estoque_atual: estoqueNovo };
 }
 
+// MH-094 (v43 Bloco C, Parte 4): dosagem/instrucoes/estoque só são tocados quando
+// EXPLICITAMENTE passados (!== undefined) — sem isso, uma correção que só mexe em
+// horários (o caso de uso desta função na Parte 4) apagaria dosagem/instrucoes já
+// coletados e, pior, colapsaria um estoque ainda "não informado" para 0 (P49).
 export async function replaceMedication({ medicationId, dosagem, instrucoes, estoque, horarios }) {
-    // Atualiza o medicamento existente (estoque é tratado à parte, via registrarMovimentoEstoque)
-    const { data, error } = await supabase
-        .from('medications')
-        .update({ dosagem, instrucoes })
-        .eq('id', medicationId)
-        .select()
-        .single();
+    const patch = {};
+    if (dosagem !== undefined) patch.dosagem = dosagem;
+    if (instrucoes !== undefined) patch.instrucoes = instrucoes;
 
-    if (error) throw new Error(`Erro ao substituir medicamento: ${error.message}`);
+    let data;
+    if (Object.keys(patch).length > 0) {
+        const { data: atualizado, error } = await supabase
+            .from('medications')
+            .update(patch)
+            .eq('id', medicationId)
+            .select()
+            .single();
+        if (error) throw new Error(`Erro ao substituir medicamento: ${error.message}`);
+        data = atualizado;
+    } else {
+        const { data: atual, error } = await supabase
+            .from('medications')
+            .select('*')
+            .eq('id', medicationId)
+            .single();
+        if (error) throw new Error(`Erro ao ler medicamento: ${error.message}`);
+        data = atual;
+    }
 
-    const { estoqueNovo } = await registrarMovimentoEstoque({
-        medicationId,
-        tipo: 'cadastro_substituicao',
-        origem: 'manual',
-        valorAbsoluto: estoque || 0
-    });
-    data.estoque_atual = estoqueNovo;
+    if (estoque !== undefined && estoque !== null) {
+        const { estoqueNovo } = await registrarMovimentoEstoque({
+            medicationId,
+            tipo: 'cadastro_substituicao',
+            origem: 'manual',
+            valorAbsoluto: estoque
+        });
+        data.estoque_atual = estoqueNovo;
+    }
 
     // MH-073: preserva quantidade_por_dose antes de recriar os horários — sem isso,
     // uma substituição de cadastro zeraria a posologia silenciosamente.
@@ -211,20 +238,83 @@ export async function replaceMedication({ medicationId, dosagem, instrucoes, est
     await supabase.from('schedules').delete().eq('medication_id', medicationId);
 
     if (horarios && horarios.length > 0) {
-        for (let horario of horarios) {
-            if (typeof horario === 'object') {
-                horario = horario.horario || horario.hora || Object.values(horario)[0];
+        for (const item of horarios) {
+            let horario = item;
+            let quantidadeNova = null;
+            // MH-094 (Parte 4): quando o item já traz {horario, quantidade} (correção de
+            // quantidade via cad_confirmacao), a quantidade NOVA prevalece — sem isso, a
+            // correção de quantidade nunca chegaria ao banco (só a de horário chegava).
+            if (typeof item === 'object' && item !== null) {
+                horario = item.horario || item.hora || Object.values(item)[0];
+                if (item.quantidade !== undefined && item.quantidade !== null) {
+                    quantidadeNova = Number(item.quantidade);
+                }
             }
             const horarioStr = String(horario).trim().substring(0, 5);
             await saveSchedule({
                 medicationId,
                 horario: horarioStr,
-                quantidadePorDose: quantidadePorHorario.get(horarioStr) ?? quantidadePadrao
+                quantidadePorDose: quantidadeNova ?? quantidadePorHorario.get(horarioStr) ?? quantidadePadrao
             });
         }
     }
 
     return data;
+}
+
+// MH-094 (v43 Bloco C, Parte 4) — ponto ÚNICO de escrita para campos simples de um
+// medicamento já gravado. NUNCA escreve estoque_atual — estoque tem ponto único próprio
+// (registrarMovimentoEstoque) e passar por aqui quebraria a trilha em stock_movements.
+export async function atualizarMedicamentoCampos({ medicationId, campos }) {
+    const permitidos = ['nome', 'dosagem', 'forma_farmaceutica', 'tipo_tratamento',
+                        'tratamento_dias', 'tratamento_fim', 'unidade_dose',
+                        'unidade_estoque', 'gotas_por_ml'];
+    const patch = Object.fromEntries(
+        Object.entries(campos || {}).filter(([k, v]) => permitidos.includes(k) && v !== undefined)
+    );
+
+    // Coerência: tratamento_fim é sempre derivada, nunca informada solta pelo chamador —
+    // sem isso, corrigir tipo_tratamento/tratamento_dias deixaria tratamento_fim
+    // desatualizada (mesma regra já aplicada em saveMedication).
+    if ('tipo_tratamento' in patch || 'tratamento_dias' in patch) {
+        const { data: atual } = await supabase
+            .from('medications')
+            .select('tipo_tratamento, tratamento_dias')
+            .eq('id', medicationId)
+            .single();
+        const tipoFinal = patch.tipo_tratamento ?? atual?.tipo_tratamento;
+        const diasFinal = 'tratamento_dias' in patch ? patch.tratamento_dias : atual?.tratamento_dias;
+        patch.tratamento_fim = calcularTratamentoFim(tipoFinal, diasFinal);
+    }
+
+    if (!Object.keys(patch).length) return null;
+
+    const { data, error } = await supabase
+        .from('medications')
+        .update(patch)
+        .eq('id', medicationId)
+        .select()
+        .single();
+
+    if (error) throw new Error(`Erro ao atualizar medicamento: ${error.message}`);
+    return data;
+}
+
+// MH-094 (v43 Bloco C, Parte 3.5) — leitura pós-escrita para o resumo de cad_confirmacao
+// (P56): nunca o rascunho em memória, sempre o registro já gravado + seus schedules ativos.
+export async function getMedicationComSchedulesAtivos(medicationId) {
+    const { data, error } = await supabase
+        .from('medications')
+        .select('*, schedules(id, horario, quantidade_por_dose, ativo)')
+        .eq('id', medicationId)
+        .single();
+
+    if (error) throw new Error(`Erro ao buscar medicamento: ${error.message}`);
+
+    return {
+        ...data,
+        schedulesAtivos: (data.schedules || []).filter(s => s.ativo)
+    };
 }
 
 export async function verificarMedicamentoExistente(userId, nome) {

@@ -233,6 +233,24 @@ function detectarIntencaoConfiguracao(message) {
 // DETECÇÃO DE INTENÇÃO DE CADASTRO
 // ============================================================
 
+// Sinal estrutural (v43 Bloco C, BUG-104): uma linha que combina palavra + horário é
+// posologia, mesmo sem nenhum verbo de cadastro. Cobre "Bariatron 12:00", "Fluoxetina
+// 08:00 e 20:00", "losartana 8h", "omega 3 1cp as 13h" — o padrão real de quem chega
+// listando remédios sem dizer "quero cadastrar". Determinístico, sem custo de LLM.
+//
+// Falso positivo conhecido e aceito: "me lembra da consulta às 14h" casaria. O custo é
+// entrar no cadastro e a pessoa dizer que não é remédio — o fluxo de recusa já existe e
+// funciona. O custo do falso negativo é o BUG-104.
+function pareceLinhaDePosologia(message) {
+    const linhas = String(message).split('\n');
+    const padraoHorario = /\b([01]?\d|2[0-3])\s*(:|h|hs|hrs|horas)\s*([0-5]\d)?\b/i;
+    return linhas.some(linha => {
+        const temHorario = padraoHorario.test(linha);
+        const temPalavra = /[a-zà-ú]{4,}/i.test(linha);
+        return temHorario && temPalavra;
+    });
+}
+
 function detectarIntencaoCadastro(message) {
     if (!message) return false;
     const termos = [
@@ -246,7 +264,7 @@ function detectarIntencaoCadastro(message) {
         'inserir remédio', 'inserir medicamento'
     ];
     const msg = message.toLowerCase();
-    return termos.some(t => msg.includes(t));
+    return termos.some(t => msg.includes(t)) || pareceLinhaDePosologia(message);
 }
 
 // ============================================================
@@ -537,7 +555,7 @@ async function despacharCadastro({ user, message, image, state, context, histori
 
     const escalada = await despacharEscalada({
         user, message, image, historicoConversa, contextoProativo,
-        contextoPreservado: null,
+        contextoPreservado: context || null,
         classificacaoPreResolvida: classificacao
     });
     return {
@@ -755,10 +773,29 @@ export async function routeMessage({ user, message, image, messageId, referenceM
 
     // 4. Usuário concluiu onboarding agora — respondendo "por onde quer começar?"
     } else if (currentState === 'post_onboarding') {
-        if (detectarIntencaoCadastro(message) || isAffirmativeSimple(message)) {
+        if (detectarIntencaoCadastro(message)) {
+            // (a) A mensagem já traz os dados — segue inteira para o cadastro, que agora
+            // sabe extrair (MH-080/MH-094). O contexto deixa de ser literal.
             console.log(`💊 Roteando para cadastro (pós-onboarding) — ${user.phone}`);
-            const rCad = await despacharCadastro({ user, message, image, state, historicoConversa,
-                                                   contextoProativo, context: { etapa: 'cad_nome' } });
+            const rCad = await despacharCadastro({
+                user, message, image, state, historicoConversa, contextoProativo,
+                context: { etapa: 'cad_nome', ...(state?.context?.rascunho_cadastro || {}) }
+            });
+            agentName = rCad.agentName;
+            response = rCad.response;
+            feedbackDetectado = rCad.feedback ?? feedbackDetectado;
+            if (rCad.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
+        } else if (isAffirmativeSimple(message)) {
+            // (b) A mensagem é só um "sim" — o dado estava na mensagem ANTERIOR, guardada
+            // pelo ramo do principal abaixo (mensagem_rica). P57: a pessoa disse os
+            // remédios uma vez; o "sim" seguinte não pode fazê-la repetir.
+            const mensagemRica = state?.context?.mensagem_rica || null;
+            console.log(`💊 Roteando para cadastro (pós-onboarding, aceite)`
+                + `${mensagemRica ? ' com mensagem rica preservada' : ''} — ${user.phone}`);
+            const rCad = await despacharCadastro({
+                user, message: mensagemRica || message, image, state, historicoConversa,
+                contextoProativo, context: { etapa: 'cad_nome' }
+            });
             agentName = rCad.agentName;
             response = rCad.response;
             feedbackDetectado = rCad.feedback ?? feedbackDetectado;
@@ -774,7 +811,12 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             if (exchanges < 1) {
                 await saveConversationState(user.id, {
                     state: 'post_onboarding',
-                    context: { exchanges: exchanges + 1 }
+                    context: {
+                        exchanges: exchanges + 1,
+                        // MH-094: guarda a mensagem se ela tiver cara de posologia, para
+                        // que o "sim" seguinte (bloco acima) recupere os dados sem repetir.
+                        mensagem_rica: pareceLinhaDePosologia(message) ? message : null
+                    }
                 });
                 console.log(`🔄 post_onboarding preservado (exchanges: ${exchanges + 1}) — ${user.phone}`);
             }

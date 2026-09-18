@@ -8,7 +8,11 @@ import {
     verificarMedicamentoExistente,
     getUserMedications,
     formatarHistoricoConversa,
-    converterDoseParaEstoque
+    converterDoseParaEstoque,
+    registrarMovimentoEstoque,
+    atualizarMedicamentoCampos,
+    getMedicationComSchedulesAtivos,
+    encerrarTratamento
 } from '../database.js';
 import { degradar } from '../observabilidade.js';
 import { GUIA_COMPOSICAO } from '../templates/composicao.js';
@@ -416,16 +420,23 @@ ESTOQUE agora (comprimidos, cápsulas, drágeas etc — forma sólida ou contáv
 Sua tarefa é extrair o TOTAL em unidades, já multiplicado quando a pessoa descrever embalagens.
 
 CATEGORIAS (escolha exatamente UMA):
-- quantidade: dá para calcular um total em unidades. Exemplos:
+- quantidade: a pessoa deu um total em unidades, dito com confiança. Exemplos:
   "30" -> 30 | "Tenho 30 cps" -> 30 | "Caixa com 60" -> 60 | "2 caixas de 30" -> 60 |
   "1 caixa com 30" -> 30 | "3 cartelas de 10" -> 30 | "meia caixa de 20" -> 10 |
   "não tenho nenhum" -> 0 | "acabou" -> 0 | "zero" -> 0.
-- indeterminado: não há número reconhecível, ou a embalagem foi citada sem o conteúdo dela
-  ("uma caixa" sem dizer quantas unidades tem, "tenho bastante", "bastante coisa").
+- estimativa: a pessoa deu um número, mas com incerteza/chute (hedge) — "acho que", "uns",
+  "mais ou menos", "por volta de", "chuto uns", "talvez". Exemplos: "acho que uns 20" -> 20 |
+  "uns 15 mais ou menos" -> 15 | "por volta de 30" -> 30.
+- nao_sei: a pessoa não sabe quanto tem e NÃO arriscou nenhum número. Exemplos: "não sei",
+  "não faço ideia", "nem sei direito", "não tenho certeza nenhuma".
+- indeterminado: não há número reconhecível nem foi dito "não sei" — a embalagem foi citada sem
+  o conteúdo dela ("uma caixa" sem dizer quantas unidades tem, "tenho bastante", resposta fora
+  do assunto).
 
-Zero é uma resposta LEGÍTIMA e DIFERENTE de "não consegui entender" — só devolva "quantidade": 0
-quando a pessoa disser explicitamente que não tem nenhum. Nunca chute um número quando a mensagem
-não permitir calcular um total com segurança.
+Zero é uma resposta LEGÍTIMA e DIFERENTE de "não sei" — só devolva "quantidade": 0 quando a
+pessoa disser explicitamente que não tem nenhum. Nunca chute um número quando a mensagem não
+permitir calcular um total com segurança — nesse caso é "nao_sei" ou "indeterminado", nunca
+"quantidade": 0.
 
 CONVERSA RECENTE:
 ${formatarHistoricoConversa(historicoConversa)}
@@ -474,10 +485,15 @@ async function classificarEstoqueSolido({ message, nomeMedicamento, historicoCon
 
     let quantidade = Number(parsed.quantidade);
     quantidade = Number.isFinite(quantidade) && quantidade >= 0 ? quantidade : null;
-    const categoria = parsed.categoria === 'quantidade' && quantidade !== null ? 'quantidade' : 'indeterminado';
 
-    console.log(`🔎 [CAD-CLASSIF] classificarEstoqueSolido -> ${categoria} (quantidade: ${categoria === 'quantidade' ? quantidade : null})`);
-    return { categoria, quantidade: categoria === 'quantidade' ? quantidade : null };
+    const categoriasComNumero = new Set(['quantidade', 'estimativa']);
+    let categoria = parsed.categoria;
+    if (categoriasComNumero.has(categoria) && quantidade === null) categoria = 'indeterminado';
+    if (!categoriasComNumero.has(categoria) && categoria !== 'nao_sei') categoria = 'indeterminado';
+    if (categoria === 'nao_sei' || categoria === 'indeterminado') quantidade = null;
+
+    console.log(`🔎 [CAD-CLASSIF] classificarEstoqueSolido -> ${categoria} (quantidade: ${quantidade})`);
+    return { categoria, quantidade };
 }
 
 // ============================================================
@@ -629,6 +645,37 @@ async function classificarFracaoEstoque({ message, nomeMedicamento, historicoCon
     return { categoria };
 }
 
+// v43 Bloco C (MH-094, Parte 3.5) — resumo de cad_confirmacao lido do medicamento JÁ
+// GRAVADO (medication_id) e seus schedules ativos, nunca do rascunho em memória (P56).
+// Só é alcançável depois da gravação antecipada (Parte 3.1: medication_id sempre existe
+// antes de cad_confirmacao), então não há caminho para chamar isto sem um registro real.
+// Simplificação deliberada em relação ao resumo de rascunho: sem a nuance de frascos/
+// volume (não persistida em `medications`) — só número final + unidade + rótulo de
+// estimativa, que é o que a pessoa efetivamente confirma.
+async function montarResumoDoBanco(medicationId) {
+    const med = await getMedicationComSchedulesAtivos(medicationId);
+    const pares = med.schedulesAtivos
+        .map(s => ({ horario: String(s.horario).substring(0, 5), quantidade: Number(s.quantidade_por_dose) }))
+        .sort((a, b) => a.horario.localeCompare(b.horario));
+    const rotulo = rotuloDaDose(med.unidade_dose, med.forma_farmaceutica);
+    const tratamento = med.tipo_tratamento === 'temporario' ? `${med.tratamento_dias} dias` : 'contínuo';
+
+    const linhas = [`💊 Remédio: ${med.nome}`];
+    if (med.dosagem) linhas.push(`📏 Dosagem: ${med.dosagem}`);
+    linhas.push(`💉 Forma: ${med.forma_farmaceutica}`);
+    linhas.push(`⏰ Posologia:\n${renderizarListaPosologia(pares, rotulo)}`);
+    linhas.push(`🔄 Tratamento: ${tratamento}`);
+    // A linha de estoque só aparece se houver estoque (Parte 3.5) — "não sei" não vira
+    // "0" nem "não informado" no resumo, simplesmente não é mencionado.
+    if (med.estoque_atual !== null && med.estoque_atual !== undefined) {
+        const unidadeLabel = med.unidade_estoque === 'ml' ? 'ml' : 'unidades';
+        const sufixoEstimativa = med.estoque_estimado ? ' (estimativa)' : '';
+        linhas.push(`📦 Estoque: ${med.estoque_atual} ${unidadeLabel}${sufixoEstimativa}`);
+    }
+
+    return { resumo: linhas.join('\n'), med, pares };
+}
+
 // Etapa cad_estoque / cad_estoque_fracao / cad_estoque_volume, ramificada por
 // unidade_estoque (já resolvida três etapas antes). Só o CÓDIGO decide estoque, alerta
 // e a próxima etapa — o LLM de geração apenas fraseia (mesmo princípio da seção 6 do
@@ -639,24 +686,65 @@ async function classificarFracaoEstoque({ message, nomeMedicamento, historicoCon
 async function processarEstoque(etapaAtual, message, context, historicoConversa) {
     const unidadeEstoque = context?.unidade_estoque || 'unidade';
 
-    // estimado é derivado do motivo (closed set, seção 6 do briefing): tudo que nasce
-    // de um frasco JÁ ABERTO é estimativa, mesmo o valor exato autorrelatado — só a
-    // contagem de frascos fechados é medida exata.
-    const finalizarComEstoque = (estoque, extra = {}) => {
-        const estimado = !!extra.estoque_motivo && extra.estoque_motivo !== 'frascos_fechados';
-        const contextComExtra = { ...context, ...extra, estoque_estimado: estimado };
+    // v43 Bloco C (MH-094): a essa altura o medicamento JÁ está gravado (medication_id
+    // sempre presente — gravação antecipada acontece antes do have-to-have de estoque,
+    // ver primeiraEtapaFaltante). Resolver o estoque aqui escreve DIRETO no registro via
+    // registrarMovimentoEstoque (ponto único de escrita de estoque) e o resumo de
+    // cad_confirmacao é lido de volta do banco (P56) — nunca do rascunho.
+    //
+    // estimado é derivado do motivo (closed set, seção 6 do briefing MH-073 Parte C):
+    // tudo que nasce de um frasco JÁ ABERTO é estimativa, mesmo o valor exato
+    // autorrelatado — só a contagem de frascos fechados é medida exata. estimativa
+    // (solid, hedge de linguagem) também marca estoque_estimado.
+    const finalizarComEstoque = async (estoque, extra = {}) => {
+        const estimado = (!!extra.estoque_motivo && extra.estoque_motivo !== 'frascos_fechados')
+            || extra.estoque_motivo === 'estimativa_informada';
         const contextUpdates = {
+            estoque_perguntado: true,
             estoque_resolvido: estoque,
             ...extra,
-            estoque_estimado: estimado,
-            alerta_estoque_baixo: calcularAlertaEstoque(contextComExtra, estoque)
+            estoque_estimado: estimado
         };
 
+        await registrarMovimentoEstoque({
+            medicationId: context?.medication_id,
+            tipo: 'cadastro_inicial',
+            origem: 'manual',
+            motivo: extra.estoque_motivo || null,
+            estimado,
+            valorAbsoluto: estoque
+        });
+
+        const contextComExtra = { ...context, ...contextUpdates };
+        contextUpdates.alerta_estoque_baixo = calcularAlertaEstoque(contextComExtra, estoque);
+
+        const { resumo } = await montarResumoDoBanco(context?.medication_id);
         return {
             acao: 'estoque_resolvido',
             proximaEtapa: 'cad_confirmacao',
             contextUpdates,
-            resumoRenderizado: renderizarResumo({ ...context, ...contextUpdates }, estoque)
+            resumoRenderizado: resumo
+        };
+    };
+
+    // "não sei" (BUG-104/MH-094, decisão de produto v43): estoque_atual permanece NULL —
+    // nunca 0 (P49). A etapa é dada por RESOLVIDA (estoque_perguntado) sem nenhuma
+    // escrita: saveMedication já gravou o registro com estoque_atual NULL na gravação
+    // antecipada, e não há movimento a registrar aqui.
+    const finalizarComEstoqueDesconhecido = async () => {
+        const contextUpdates = {
+            estoque_perguntado: true,
+            estoque_resolvido: null,
+            estoque_motivo: null,
+            estoque_estimado: false,
+            alerta_estoque_baixo: null
+        };
+        const { resumo } = await montarResumoDoBanco(context?.medication_id);
+        return {
+            acao: 'estoque_nao_informado',
+            proximaEtapa: 'cad_confirmacao',
+            contextUpdates,
+            resumoRenderizado: resumo
         };
     };
 
@@ -723,6 +811,15 @@ async function processarEstoque(etapaAtual, message, context, historicoConversa)
         const classificacao = await classificarEstoqueSolido({ message, nomeMedicamento: context?.nome, historicoConversa });
         if (classificacao.categoria === 'quantidade') {
             return finalizarComEstoque(classificacao.quantidade, { estoque_motivo: null });
+        }
+        if (classificacao.categoria === 'estimativa') {
+            // "acho que uns 20" — aceita sem questionar (decisão de produto v43): a
+            // pessoa deu um número, só marcado como estimativa (estoque_estimado).
+            return finalizarComEstoque(classificacao.quantidade, { estoque_motivo: 'estimativa_informada' });
+        }
+        if (classificacao.categoria === 'nao_sei') {
+            // Decisão de produto v43: NUNCA insiste — aceita "não sei" de primeira e segue.
+            return finalizarComEstoqueDesconhecido();
         }
         // Falha de extração devolve indeterminado, NUNCA 0 (seção 3.3.b do briefing) —
         // permanece em cad_estoque e reformula a pergunta, nunca chega a salvar estoque nulo.
@@ -1249,16 +1346,24 @@ async function classificarTipoTratamento({ message, nomeMedicamento, aguardandoD
 // seja perguntada de novo. Caminhos de indeterminado/repergunta NÃO a usam — eles
 // devolvem a própria etapa de propósito, e substituí-los faria o fluxo avançar sem
 // ter coletado o dado.
+// v43 Bloco C (MH-094): ordem reescrita — have-to-have (nome + posologia) primeiro,
+// gravação em seguida (ANTES de qualquer campo opcional), nice-to-have depois. dosagem,
+// forma e tipo_tratamento saem do caminho obrigatório: continuam existindo (alcançáveis
+// por correção no resumo, forma sempre derivada), mas nunca são perguntadas por
+// iniciativa da Nami. Decisão de produto v43 (Guilherme): have-to-have é só nome +
+// quantidade por dose + horário — é o mínimo pra existir um lembrete.
 function primeiraEtapaFaltante(ctx) {
+    // HAVE-TO-HAVE: sem estes dois não existe lembrete.
     if (!ctx?.nome) return 'cad_nome';
-    if (!ctx?.dosagem) return 'cad_dosagem';
     if (!ctx?.pares_posologia?.length) return 'cad_horarios';
-    if (!ctx?.forma_explicita && !ctx?.forma_confirmada) return 'cad_confirma_forma';
-    if (!ctx?.tipo_tratamento || ctx?.tipo_tratamento_pendente) return 'cad_tipo_tratamento';
-    // estoque_resolvido === null/undefined — NUNCA `!ctx.estoque_resolvido`: zero é
-    // estoque legítimo (BUG-97) e `!0` é `true`, o que repergunta eternamente um
-    // estoque zerado válido.
-    if (ctx?.estoque_resolvido === null || ctx?.estoque_resolvido === undefined) {
+
+    // Gravação acontece aqui, antes de qualquer campo opcional (MH-094/BUG-104/P56/P57).
+    if (!ctx?.medication_id) return 'cad_gravar';
+
+    // NICE-TO-HAVE: a partir daqui o medicamento já existe e já gera lembrete.
+    // estoque_perguntado (não estoque_resolvido === null): "não sei" também RESOLVE a
+    // etapa sem nunca gravar 0 (P49) — ver processarEstoque/finalizarComEstoqueDesconhecido.
+    if (!ctx?.estoque_perguntado) {
         if (ctx?.unidade_estoque !== 'ml') return 'cad_estoque';
 
         // MH-073 Parte C: ramo líquido reordenado — status do frasco primeiro, depois
@@ -1470,36 +1575,64 @@ async function extrairFormaDaMensagem(message, historicoConversa = [], nomeMedic
 // estoque (a quantidade por dose pode ter mudado) e regenera o resumo — o fluxo volta
 // para cad_confirmacao já mostrando o resumo atualizado, sem repetir perguntas já
 // respondidas (BUG-91, seção 6.4 do briefing).
-function corrigirPosologiaEmConfirmacao(campoAlvo, classificacao, context) {
+async function corrigirPosologiaEmConfirmacao(campoAlvo, classificacao, context) {
     const horariosAtuais = (context?.pares_posologia || []).map(p => p.horario);
 
-    const aplicarNovosPares = (pares, extra = {}) => {
+    // v43 Bloco C (MH-094, Parte 4): cad_confirmacao só existe depois da gravação
+    // antecipada — o registro já existe. A correção escreve NELE direto (nunca só no
+    // rascunho — P56/P57) e o resumo é remontado a partir do que ficou gravado.
+    const aplicarNovosPares = async (pares, extra = {}) => {
         const unidades = derivarUnidades(classificacao.unidadeDose || context?.unidade_dose || 'unidade');
-        const contextComPares = {
-            ...context,
-            pares_posologia: pares,
-            horarios: pares.map(p => p.horario),
-            unidade_dose: unidades.unidade_dose,
-            unidade_estoque: unidades.unidade_estoque,
-            gotas_por_ml: unidades.gotas_por_ml,
-            ...extra
-        };
-        const estoqueFinal = context?.estoque_resolvido ?? 0;
-        const alerta = calcularAlertaEstoque(contextComPares, estoqueFinal);
         const contextUpdates = {
             pares_posologia: pares,
             horarios: pares.map(p => p.horario),
             unidade_dose: unidades.unidade_dose,
             unidade_estoque: unidades.unidade_estoque,
             gotas_por_ml: unidades.gotas_por_ml,
-            alerta_estoque_baixo: alerta,
             ...extra
         };
+
+        if (!context?.medication_id) {
+            // Invariante MH-094: cad_confirmacao só é alcançada após a gravação
+            // antecipada (Parte 3.1) — chegar aqui sem medication_id não deveria ocorrer.
+            return degradar({
+                origem: 'cadastro',
+                motivo: 'correcao_posologia_sem_medication_id',
+                agent: 'cadastro',
+                detalhe: { campoAlvo },
+                fallback: { acao: 'indeterminado', proximaEtapa: 'cad_confirmacao', contextUpdates: {} }
+            });
+        }
+
+        await replaceMedication({ medicationId: context.medication_id, horarios: pares });
+        if (unidades.unidade_dose !== context?.unidade_dose) {
+            await atualizarMedicamentoCampos({
+                medicationId: context.medication_id,
+                campos: {
+                    unidade_dose: unidades.unidade_dose,
+                    unidade_estoque: unidades.unidade_estoque,
+                    gotas_por_ml: unidades.gotas_por_ml
+                }
+            });
+        }
+
+        // P49: estoque "não sei" (estoque_perguntado true, estoque_resolvido null) NUNCA
+        // vira "0" aqui — sem contagem real não há alerta de estoque baixo pra calcular.
+        // Reproduziu, num teste de staging, exatamente o bug que este briefing corrige:
+        // "seu estoque está zerado" para um estoque que na verdade nunca foi informado.
+        const estoqueConhecido = context?.estoque_perguntado && context?.estoque_resolvido === null
+            ? null
+            : (context?.estoque_resolvido ?? null);
+        contextUpdates.alerta_estoque_baixo = estoqueConhecido === null
+            ? null
+            : calcularAlertaEstoque({ ...context, ...contextUpdates }, estoqueConhecido);
+
+        const { resumo } = await montarResumoDoBanco(context.medication_id);
         return {
             acao: 'posologia_corrigida',
             proximaEtapa: 'cad_confirmacao',
             contextUpdates,
-            resumoRenderizado: renderizarResumo({ ...contextComPares, ...contextUpdates }, estoqueFinal)
+            resumoRenderizado: resumo
         };
     };
 
@@ -1988,19 +2121,19 @@ function decidirCadConfirmaForma(classificacao, message, context) {
     if (classificacao.categoria === 'posologia_completa' && classificacao.pares.length > 0) {
         const expandido = expandirParesPorIntervalo(classificacao);
         const paresFinais = expandido ? expandido.pares : classificacao.pares;
-        return {
-            acao: 'quantidade_corrigida',
-            proximaEtapa: 'cad_tipo_tratamento',
-            contextUpdates: {
-                pares_posologia: paresFinais,
-                // Correção #2 (v36 #2, seção 2): forma_sugerida é sempre null em líquidos
-                // sem a forma no nome (BUG-99 descarta o palpite incompatível) — persistir
-                // null aqui travava primeiraEtapaFaltante de volta em cad_confirma_forma.
-                // 'generico' é o mesmo sentinela já usado na decisão em memória.
-                forma_confirmada: classificacao.formaExplicita || context?.forma_sugerida || 'generico',
-                ...(expandido ? { intervalo_horas: expandido.intervalo_horas, horario_inicio: expandido.horario_inicio } : {})
-            }
+        const upd = {
+            pares_posologia: paresFinais,
+            // Correção #2 (v36 #2, seção 2): forma_sugerida é sempre null em líquidos
+            // sem a forma no nome (BUG-99 descarta o palpite incompatível) — persistir
+            // null aqui travava primeiraEtapaFaltante de volta em cad_confirma_forma.
+            // 'generico' é o mesmo sentinela já usado na decisão em memória.
+            forma_confirmada: classificacao.formaExplicita || context?.forma_sugerida || 'generico',
+            ...(expandido ? { intervalo_horas: expandido.intervalo_horas, horario_inicio: expandido.horario_inicio } : {})
         };
+        // v43 Bloco C: cad_tipo_tratamento saiu do caminho obrigatório —
+        // primeiraEtapaFaltante decide (normalmente volta direto pra cad_confirmacao,
+        // já que este sub-fluxo só é alcançado com medication_id já existindo).
+        return { acao: 'quantidade_corrigida', proximaEtapa: primeiraEtapaFaltante({ ...context, ...upd }), contextUpdates: upd };
     }
 
     if (classificacao.categoria === 'horarios_apenas' && classificacao.pares.length > 0) {
@@ -2011,16 +2144,13 @@ function decidirCadConfirmaForma(classificacao, message, context) {
             context?.pares_posologia, classificacao.pares, context?.intervalo_horas, context?.horario_inicio
         );
         if (pares) {
-            return {
-                acao: 'horarios_corrigidos',
-                proximaEtapa: 'cad_tipo_tratamento',
-                contextUpdates: {
-                    horarios,
-                    pares_posologia: pares,
-                    forma_confirmada: context?.forma_sugerida || 'generico',
-                    ...extra
-                }
+            const upd = {
+                horarios,
+                pares_posologia: pares,
+                forma_confirmada: context?.forma_sugerida || 'generico',
+                ...extra
             };
+            return { acao: 'horarios_corrigidos', proximaEtapa: primeiraEtapaFaltante({ ...context, ...upd }), contextUpdates: upd };
         }
         return {
             acao: 'horarios_corrigidos_ambiguo',
@@ -2039,11 +2169,8 @@ function decidirCadConfirmaForma(classificacao, message, context) {
             if (grade) {
                 const extra = { intervalo_horas: classificacao.intervaloHoras, horario_inicio: inicio };
                 if (grade.pares) {
-                    return {
-                        acao: 'horarios_corrigidos',
-                        proximaEtapa: 'cad_tipo_tratamento',
-                        contextUpdates: { horarios: grade.horarios, pares_posologia: grade.pares, forma_confirmada: context?.forma_sugerida || 'generico', ...extra }
-                    };
+                    const upd = { horarios: grade.horarios, pares_posologia: grade.pares, forma_confirmada: context?.forma_sugerida || 'generico', ...extra };
+                    return { acao: 'horarios_corrigidos', proximaEtapa: primeiraEtapaFaltante({ ...context, ...upd }), contextUpdates: upd };
                 }
                 return {
                     acao: 'horarios_corrigidos_ambiguo',
@@ -2247,20 +2374,50 @@ function montarSaltoCadastroCompleto(completo) {
     // ADENDO MH-80, DEFEITO 2: ponto único de decisão de avanço (Princípio 30) — a
     // mesma ordem canônica usada nas transições passo a passo, para que nenhuma etapa
     // já resolvida aqui seja perguntada de novo depois.
-    const proximaEtapa = primeiraEtapaFaltante(contextUpdates);
-    if (proximaEtapa !== 'cad_confirmacao') {
-        return { proximaEtapa, contextUpdates };
+    //
+    // v43 Bloco C (MH-094): este salto nunca inclui medication_id (o medicamento ainda
+    // não existe) — primeiraEtapaFaltante nunca devolve 'cad_confirmacao' diretamente
+    // daqui, no máximo 'cad_gravar' (que faz a gravação antecipada e, se o estoque já
+    // veio nesta mesma mensagem — estoque_resolvido acima —, aplica-o na hora, sem
+    // perguntar de novo). alerta_estoque_baixo e o resumo são montados depois da
+    // gravação, a partir do banco (P56) — não mais aqui, a partir do rascunho.
+    return { proximaEtapa: primeiraEtapaFaltante(contextUpdates), contextUpdates };
+}
+
+// v43 Bloco C (MH-094, Parte 5) — destrava o portão do extrator multi-campo para além
+// de cad_nome, respeitando a regra obrigatória: SÓ preenche campo que está vazio no
+// contexto, NUNCA sobrescreve campo já coletado (corrigir campo já confirmado continua
+// sendo exclusividade do fluxo de correção em cad_confirmacao).
+//
+// Escopo desta rodada (decisão de engenharia, registrada e não mascarada — mesmo
+// espírito do "não resolvido" da seção 5 do briefing): aplicado a cad_dosagem e
+// cad_tipo_tratamento, etapas de campo único onde reaproveitar montarSaltoCadastroCompleto
+// é seguro. cad_horarios/cad_quantidade_por_dose e cad_estoque* NÃO entram aqui — usam
+// classificadores especializados (classificarPosologia, processarEstoque) com anos de
+// casos de borda ajustados (BUG-041/091/096/098 etc.); deixar o extrator genérico
+// decidir a próxima etapa nesses pontos arriscaria reintroduzir exatamente os bugs que
+// aquelas correções específicas resolveram. Retorna null quando não há nada de novo a
+// aplicar (mensagem pobre, ou tudo que ela trouxe já estava preenchido) — o chamador
+// cai no classificador de campo único de sempre.
+async function tentarExtracaoRicaParcial(message, context, historicoConversa) {
+    const mensagemRica = /\d/.test(message) || String(message).trim().split(/\s+/).filter(Boolean).length > 6;
+    if (!mensagemRica) return null;
+
+    const completo = await extrairCadastroCompleto({ message, historicoConversa });
+    const bruto = montarSaltoCadastroCompleto({ ...completo, nome: context?.nome || completo.nome });
+
+    const contextUpdatesFiltrado = { ...bruto.contextUpdates };
+    delete contextUpdatesFiltrado.nome; // nome já é do contexto — nunca sobrescreve aqui
+    for (const campo of Object.keys(contextUpdatesFiltrado)) {
+        const atual = context?.[campo];
+        const jaPreenchido = Array.isArray(atual) ? atual.length > 0 : (atual !== null && atual !== undefined);
+        if (jaPreenchido) delete contextUpdatesFiltrado[campo];
     }
 
-    // alerta_estoque_baixo só é calculado no caminho completo, onde a posologia já
-    // existe — calculá-lo sem posologia produziria dias-restantes errado (o defeito
-    // original do cadastro.js:409, corrigido na Parte B).
-    contextUpdates.alerta_estoque_baixo = calcularAlertaEstoque(contextUpdates, estoqueResolvido);
-    return {
-        proximaEtapa: 'cad_confirmacao',
-        contextUpdates,
-        contextParaPrompt: { resumoRenderizado: renderizarResumo(contextUpdates, estoqueResolvido) }
-    };
+    if (!Object.keys(contextUpdatesFiltrado).length) return null;
+
+    const contextFinal = { ...context, ...contextUpdatesFiltrado };
+    return { proximaEtapa: primeiraEtapaFaltante(contextFinal), contextUpdates: contextUpdatesFiltrado };
 }
 
 // ============================================================
@@ -2347,26 +2504,70 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
         if (pareceCompleto) {
             const completo = await extrairCadastroCompleto({ message, historicoConversa });
             if (completo.nome) {
+                // v43 Bloco C: cad_confirma_forma saiu do caminho obrigatório (forma é
+                // sempre derivada) — o salto do MH-80 nunca mais aterrissa lá, então o
+                // preparo de blocoConfirmaForma não é mais necessário aqui.
                 const decisao = montarSaltoCadastroCompleto(completo);
-                const contextParaPrompt = { ...(decisao.contextParaPrompt || {}) };
-                if (decisao.proximaEtapa === 'cad_confirma_forma') {
-                    const contextFinal = { ...context, ...decisao.contextUpdates };
-                    contextParaPrompt.blocoConfirmaForma = await prepararContextoConfirmaForma(contextFinal, decisao.contextUpdates, completo.nome);
-                }
-                return { proximaEtapa: decisao.proximaEtapa, contextUpdates: decisao.contextUpdates, contextParaPrompt };
+                return { proximaEtapa: decisao.proximaEtapa, contextUpdates: decisao.contextUpdates };
             }
         }
 
         const c = await extrairCampoSimples({ campo: 'nome', message, historicoConversa });
         if (c.categoria === 'valor') {
-            return { proximaEtapa: 'cad_dosagem', contextUpdates: { nome: c.valor } };
+            // v43 Bloco C (Parte 4): medication_id já presente = isto é uma CORREÇÃO vinda
+            // de cad_confirmacao ("corrige nome"), não a coleta inicial — o registro já
+            // existe, então a correção escreve nele direto (P56/P57) e volta pro resumo.
+            if (context?.medication_id) {
+                await atualizarMedicamentoCampos({ medicationId: context.medication_id, campos: { nome: c.valor } });
+                return { proximaEtapa: 'cad_confirmacao', contextUpdates: { nome: c.valor } };
+            }
+            // v43 Bloco C (MH-094): dosagem saiu do caminho obrigatório — o próximo passo
+            // é sempre a primeira etapa faltante na nova ordem canônica (horários).
+            return { proximaEtapa: primeiraEtapaFaltante({ ...context, nome: c.valor }), contextUpdates: { nome: c.valor } };
         }
         return { proximaEtapa: 'cad_nome', contextUpdates: {}, acao: 'indeterminado' };
     }
 
     if (etapaAtual === 'cad_dosagem') {
+        // v43 Bloco C (Parte 5): extrator rico destravado nesta etapa. Só é aceito
+        // quando resolve o próprio campo pedido (dosagem) — nunca avança a etapa por
+        // causa só de um campo incidental capturado junto. Campo caro (extrairCadastroCompleto)
+        // só roda em mensagem "rica" (dígito ou >6 palavras) — uma correção de dosagem
+        // típica ("500mg", "não, é 20mg") não bate nesse gatilho.
+        const saltoDosagem = await tentarExtracaoRicaParcial(message, context, historicoConversa);
+        if (saltoDosagem?.contextUpdates?.dosagem !== undefined) {
+            if (context?.medication_id) {
+                // v43 Bloco C (Parte 4): correção vinda de cad_confirmacao — escreve só os
+                // campos que atualizarMedicamentoCampos sabe persistir (nunca estoque/
+                // posologia, que têm ponto único próprio de escrita).
+                await atualizarMedicamentoCampos({
+                    medicationId: context.medication_id,
+                    campos: {
+                        dosagem: saltoDosagem.contextUpdates.dosagem,
+                        ...(saltoDosagem.contextUpdates.tipo_tratamento !== undefined ? { tipo_tratamento: saltoDosagem.contextUpdates.tipo_tratamento } : {}),
+                        ...(saltoDosagem.contextUpdates.tratamento_dias !== undefined ? { tratamento_dias: saltoDosagem.contextUpdates.tratamento_dias } : {})
+                    }
+                });
+                return {
+                    proximaEtapa: 'cad_confirmacao',
+                    contextUpdates: {
+                        dosagem: saltoDosagem.contextUpdates.dosagem,
+                        ...(saltoDosagem.contextUpdates.tipo_tratamento !== undefined ? { tipo_tratamento: saltoDosagem.contextUpdates.tipo_tratamento, tipo_tratamento_pendente: false } : {}),
+                        ...(saltoDosagem.contextUpdates.tratamento_dias !== undefined ? { tratamento_dias: saltoDosagem.contextUpdates.tratamento_dias } : {})
+                    }
+                };
+            }
+            return saltoDosagem;
+        }
+
         const c = await extrairCampoSimples({ campo: 'dosagem', message, historicoConversa });
         if (c.categoria === 'valor') {
+            // v43 Bloco C (Parte 4): correção vinda de cad_confirmacao — o registro já
+            // existe, escreve nele direto e volta pro resumo (P56/P57).
+            if (context?.medication_id) {
+                await atualizarMedicamentoCampos({ medicationId: context.medication_id, campos: { dosagem: c.valor } });
+                return { proximaEtapa: 'cad_confirmacao', contextUpdates: { dosagem: c.valor } };
+            }
             return { proximaEtapa: primeiraEtapaFaltante({ ...context, dosagem: c.valor }), contextUpdates: { dosagem: c.valor } };
         }
         return { proximaEtapa: 'cad_dosagem', contextUpdates: {}, acao: 'indeterminado' };
@@ -2414,20 +2615,51 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
             unidadeDoseContexto: context?.unidade_dose
         });
         const decisao = decidirCadConfirmaForma(classificacao, message, context);
+
+        // v43 Bloco C (Parte 4): esta etapa só é alcançada por correção a partir de
+        // cad_confirmacao (forma saiu do caminho obrigatório) — o registro já existe.
+        // Sincroniza no banco qualquer campo que a decisão tenha mudado, senão o
+        // resumo (lido do banco) mostraria dado desatualizado depois de uma correção
+        // de horário feita por aqui (raro, mas P56 não permite essa divergência).
+        if (context?.medication_id) {
+            if (decisao.contextUpdates?.pares_posologia) {
+                await replaceMedication({ medicationId: context.medication_id, horarios: decisao.contextUpdates.pares_posologia });
+            }
+            if (decisao.contextUpdates?.forma_confirmada) {
+                const formaFinal = derivarFormaFarmaceutica(
+                    decisao.contextUpdates.forma_explicita ?? context?.forma_explicita,
+                    decisao.contextUpdates.forma_confirmada,
+                    decisao.contextUpdates.unidade_dose ?? context?.unidade_dose
+                );
+                await atualizarMedicamentoCampos({ medicationId: context.medication_id, campos: { forma_farmaceutica: formaFinal } });
+            }
+        }
+
         // decisao.acao vira acaoPosologia quando o salto sai para cad_horarios/
         // cad_quantidade_por_dose (ex: frequencia_sem_inicio) — o mesmo mecanismo que
         // decidirCadHorarios usa, para que montarBlocoEtapa saiba fazer a pergunta certa
         // em vez da pergunta genérica de horários.
-        const contextParaPrompt = decisao.proximaEtapa !== 'cad_tipo_tratamento'
-            ? { acaoPosologia: decisao.acao }
-            : {};
-        return { proximaEtapa: decisao.proximaEtapa, contextUpdates: decisao.contextUpdates, contextParaPrompt };
+        return { proximaEtapa: decisao.proximaEtapa, contextUpdates: decisao.contextUpdates, contextParaPrompt: { acaoPosologia: decisao.acao } };
     }
 
     if (etapaAtual === 'cad_tipo_tratamento') {
         const aguardandoDias = !!context?.tipo_tratamento_pendente;
         const classificacao = await classificarTipoTratamento({ message, nomeMedicamento: context?.nome, aguardandoDias, historicoConversa });
         const decisao = decidirCadTipoTratamento(classificacao, context);
+
+        // v43 Bloco C (Parte 4): esta etapa só é alcançada por correção a partir de
+        // cad_confirmacao (tipo_tratamento saiu do caminho obrigatório) — escreve no
+        // registro já existente assim que a categoria é decisiva (continuo/dias).
+        if (context?.medication_id && (classificacao.categoria === 'continuo' || classificacao.categoria === 'dias')) {
+            await atualizarMedicamentoCampos({
+                medicationId: context.medication_id,
+                campos: {
+                    tipo_tratamento: decisao.contextUpdates.tipo_tratamento,
+                    tratamento_dias: decisao.contextUpdates.tratamento_dias
+                }
+            });
+        }
+
         // MH-073 Parte B.1: acao no nível de topo — ver comentário no ramo cad_horarios.
         return { proximaEtapa: decisao.proximaEtapa, contextUpdates: decisao.contextUpdates, contextParaPrompt: { acaoTipoTratamento: decisao.acao }, acao: decisao.acao };
     }
@@ -2466,11 +2698,14 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
                     // com status_frasco já resolvido de uma rodada anterior e seria
                     // interpretada como resposta à contagem de frascos (fase 2), pulando
                     // a pergunta "aberto ou fechado?" que a correção deveria refazer.
+                    // v43 Bloco C: estoque_perguntado também reseta — é ele quem faz
+                    // primeiraEtapaFaltante voltar a perguntar (MH-094).
                     return {
                         proximaEtapa: 'cad_estoque',
                         contextUpdates: {
                             status_frasco: null, frascos: null, volume_frasco: null,
-                            estoque_resolvido: null, estoque_motivo: null, estoque_estimado: false,
+                            estoque_perguntado: false, estoque_resolvido: null,
+                            estoque_motivo: null, estoque_estimado: false,
                             estoque_fracao_pendente: null, estoque_valor_exato_pendente: null,
                             alerta_estoque_baixo: null
                         }
@@ -2485,6 +2720,10 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
                         // forma corrigida (briefing v36 #3, seção 2.2) — forma_farmaceutica
                         // é puramente descritiva; incoerência com a unidade já coletada
                         // fica visível no resumo, não é silenciada nem inferida aqui.
+                        // v43 Bloco C (Parte 4): o registro já existe — escreve direto nele.
+                        if (context?.medication_id) {
+                            await atualizarMedicamentoCampos({ medicationId: context.medication_id, campos: { forma_farmaceutica: forma } });
+                        }
                         return {
                             proximaEtapa: 'cad_confirmacao',
                             contextUpdates: { forma_explicita: forma, forma_confirmada: forma }
@@ -2504,7 +2743,7 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
                         emCorrecao: classificacao.campoAlvo === 'horarios',
                         unidadeDoseContexto: context?.unidade_dose
                     });
-                    const r = corrigirPosologiaEmConfirmacao(classificacao.campoAlvo, posologia, context);
+                    const r = await corrigirPosologiaEmConfirmacao(classificacao.campoAlvo, posologia, context);
                     return {
                         proximaEtapa: r.proximaEtapa,
                         contextUpdates: r.contextUpdates,
@@ -2532,27 +2771,32 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
 // do único ponto — dentro de processarEstoque — que antes sempre renderizava o resumo).
 // Aplicada UMA vez, no despacho (ponto único, Princípio 30), em vez de espalhada pelas
 // transições que levam até a etapa.
+//
+// v43 Bloco C (MH-094, Parte 3.5, P56): o resumo passou a ser lido do BANCO
+// (montarResumoDoBanco), nunca mais do rascunho — cad_confirmacao só é alcançável
+// depois da gravação antecipada (Parte 3.1), então medication_id sempre existe aqui.
+// Continua idempotente: quando um chamador já montou o resumo (finalizarComEstoque,
+// finalizarComEstoqueDesconhecido, corrigirPosologiaEmConfirmacao — todos já leem do
+// banco eles mesmos, no momento exato da escrita), este ponto único não repete a leitura.
 async function garantirResumo(proximaEtapa, contextCompleto, contextParaPrompt) {
     if (proximaEtapa !== 'cad_confirmacao') return contextParaPrompt;
     if (contextParaPrompt?.resumoRenderizado) return contextParaPrompt;
 
-    const estoque = contextCompleto?.estoque_resolvido;
-    // estoque === null || === undefined, NUNCA !estoque: zero é estoque legítimo (BUG-97).
-    if (estoque === null || estoque === undefined || !contextCompleto?.pares_posologia?.length) {
+    if (!contextCompleto?.medication_id) {
+        // Invariante MH-094: nunca deveria ocorrer (ver comentário acima).
         return degradar({
             origem: 'cadastro',
-            motivo: 'confirmacao_sem_resumo',
+            motivo: 'confirmacao_sem_medication_id',
             agent: 'cadastro',
-            detalhe: {
-                estoque_resolvido: estoque ?? null,
-                pares_posologia_len: contextCompleto?.pares_posologia?.length ?? 0
-            },
+            detalhe: { pares_posologia_len: contextCompleto?.pares_posologia?.length ?? 0 },
             fallback: contextParaPrompt
         });
     }
+
+    const { resumo } = await montarResumoDoBanco(contextCompleto.medication_id);
     return {
         ...contextParaPrompt,
-        resumoRenderizado: renderizarResumo(contextCompleto, estoque)
+        resumoRenderizado: resumo
     };
 }
 
@@ -2694,11 +2938,17 @@ Não repita horários nem quantidade coletados antes.`;
         case 'cad_estoque_fracao':
         case 'cad_estoque_volume': {
             const pergunta = renderizarPerguntaEstoque(etapaDaPergunta, context);
-            return `Faça EXATAMENTE esta pergunta, sem reescrever, sem acrescentar outra pergunta e
+            // v43 Bloco C (MH-094, Parte 3.2): chegando direto da gravação antecipada, a
+            // pessoa precisa de confirmação de que o medicamento JÁ foi salvo — lida de
+            // volta do registro (P56), nunca "prometida" em prosa. "Anotei aqui" evita
+            // ter que escolher artigo de gênero para o nome do medicamento.
+            const prefixoGravacao = context?.medicamentoRecemGravado
+                ? `Comece com a linha EXATA "Anotei aqui: *${context.medicamentoRecemGravado}* 💊", pule uma linha, e então `
+                : '';
+            return `${prefixoGravacao}Faça EXATAMENTE esta pergunta, sem reescrever, sem acrescentar outra pergunta e
 sem antecipar nenhuma etapa seguinte (é fluxo de dado de saúde renderizado em código):
 "${pergunta}"
-Você pode acrescentar no máximo uma saudação curta e calorosa ANTES da pergunta.
-Não confirme nada como registrado ou salvo.`;
+${context?.medicamentoRecemGravado ? '' : 'Você pode acrescentar no máximo uma saudação curta e calorosa ANTES da pergunta.\n'}Não confirme nada como registrado ou salvo além do que a linha "Anotei aqui" (quando houver) já diz.`;
         }
 
         case 'cad_confirmacao':
@@ -2842,7 +3092,9 @@ async function processarAcao(action, user) {
         dosagem: action.dosagem,
         tipo_tratamento: action.tipo_tratamento || 'continuo',
         tratamento_dias: action.tratamento_dias || null,
-        estoque: action.estoque || 0,
+        // v43 Bloco C (P49): NUNCA `action.estoque || 0` — "não informado" (null/undefined)
+        // é diferente de "zero", e `|| 0` colapsava os dois no mesmo valor.
+        estoque: action.estoque ?? null,
         unidade_dose: action.unidade_dose || 'unidade',
         unidade_estoque: action.unidade_estoque || 'unidade',
         gotas_por_ml: action.gotas_por_ml ?? null,
@@ -2861,17 +3113,27 @@ async function processarAcao(action, user) {
         };
     }
 
-    // Salva os horários com a quantidade por dose de cada um (MH-073 Parte B)
-    for (const par of action.pares || []) {
-        await saveSchedule({
-            medicationId: med.id,
-            horario: String(par.horario).trim().substring(0, 5),
-            quantidadePorDose: Number(par.quantidade) || 1
-        });
+    // Salva os horários com a quantidade por dose de cada um (MH-073 Parte B).
+    // v43 Bloco C (Parte 3.3): invariante "todo medications.ativo=true tem ao menos um
+    // schedules ativo" — o bloco medication+schedules é tratado como unidade. Se o
+    // insert de schedules falhar (ex: no meio de vários horários), o medicamento recém
+    // criado é desativado antes de propagar o erro, nunca fica órfão sem horário nenhum.
+    try {
+        for (const par of action.pares || []) {
+            await saveSchedule({
+                medicationId: med.id,
+                horario: String(par.horario).trim().substring(0, 5),
+                quantidadePorDose: Number(par.quantidade) || 1
+            });
+        }
+    } catch (e) {
+        console.error(`❌ Falha ao salvar horários de ${action.nome} (id: ${med.id}) — desativando para preservar o invariante:`, e.message);
+        await encerrarTratamento(med.id);
+        throw e;
     }
 
     console.log(`✅ Medicamento salvo: ${action.nome} (id: ${med.id}) para ${user.phone}`);
-    return null;
+    return { med };
 }
 
 // ============================================================
@@ -2892,9 +3154,12 @@ export async function handleCadastro({ user, message, state, context, historicoC
             return `Tudo bem! Se precisar de algo mais, é só me chamar 🌿`;
         }
 
-        // Item 9.2 do briefing MH-073 Parte B: cad_forma foi removida — reencadastro
-        // entra em cad_dosagem, não mais em cad_forma.
-        const systemPrompt = buildSystemPrompt('cad_dosagem', { nome: context.nome }, user.name, historicoConversa);
+        // Item 9.2 do briefing MH-073 Parte B: cad_forma foi removida. v43 Bloco C
+        // (MH-094): dosagem também saiu do caminho obrigatório — reencadastro (novo
+        // tratamento, novo registro) entra na primeira etapa faltante de verdade
+        // (horários), não mais em cad_dosagem.
+        const etapaReinicio = primeiraEtapaFaltante({ nome: context.nome });
+        const systemPrompt = buildSystemPrompt(etapaReinicio, { nome: context.nome }, user.name, historicoConversa);
         const claudeResponse = await callClaude({
             systemPrompt,
             message: `Quero cadastrar o ${context.nome} novamente`
@@ -2902,7 +3167,7 @@ export async function handleCadastro({ user, message, state, context, historicoC
 
         await saveConversationState(user.id, {
             state: 'adding_med',
-            context: { nome: context.nome, etapa: 'cad_dosagem' }
+            context: { nome: context.nome, etapa: etapaReinicio }
         });
         return claudeResponse.message;
     }
@@ -2926,18 +3191,6 @@ export async function handleCadastro({ user, message, state, context, historicoC
         return `Tudo bem, parei o cadastro por aqui 🌿 Se quiser retomar depois, é só me chamar!`;
     }
 
-    const contextResolvido = { ...(context || {}), ...decisao.contextUpdates, ...(decisao.contextParaPrompt || {}) };
-
-    // MH-091 (aviso de "ainda sendo construída" no fechamento): checagem feita só
-    // no turno de fechamento, para não repetir a consulta a cada etapa do cadastro.
-    if (decisao.proximaEtapa === 'cad_salvo') {
-        const medicamentosAtivos = await getUserMedications(user.id);
-        contextResolvido.primeiroMedicamento = medicamentosAtivos.length === 0;
-    }
-
-    const systemPrompt = buildSystemPrompt(decisao.proximaEtapa, contextResolvido, user.name, historicoConversa);
-    const claudeResponse = await callClaude({ systemPrompt, message });
-
     const proximaEtapa = decisao.proximaEtapa;
     // MH-073 Parte B.2 (BUG-91): novoContext vem só de context + decisao.contextUpdates —
     // não existe mais caminho pelo qual o LLM escreva no contexto persistido.
@@ -2946,6 +3199,10 @@ export async function handleCadastro({ user, message, state, context, historicoC
     // TRABALHO 2: verificação antecipada de medicamento existente. O gatilho é o FATO
     // "o nome acabou de ser coletado", não a posição na máquina de estados (seção 6.6
     // do briefing) — robusto a novas etapas inseridas antes de cad_dosagem no futuro.
+    //
+    // v43 Bloco C: esta checagem roda ANTES de qualquer geração de mensagem (inclusive
+    // antes de cad_gravar) — sem isso, o MH-80 poderia extrair nome+horários na mesma
+    // mensagem e gravar um medicamento duplicado antes de perguntar "quer reativar?".
     const nomeRecemColetado = !context?.nome && !!novoContext.nome;
     if (nomeRecemColetado) {
         const existente = await verificarMedicamentoExistente(user.id, novoContext.nome);
@@ -3003,47 +3260,84 @@ export async function handleCadastro({ user, message, state, context, historicoC
         }
     }
 
-    let mensagemFinal = claudeResponse.message;
-    if (proximaEtapa === 'cad_salvo') {
-        // Observabilidade (seção 7 do briefing) — nenhum dos cenários de validação
-        // pegaria o "Claritin fantasma" sem isso: agent_logs registra a resposta
-        // pretendida, não o efeito real (Princípio 24).
-        const paresVazio = (novoContext.pares_posologia || []).length === 0;
-        const estoqueNulo = novoContext.estoque_resolvido === null || novoContext.estoque_resolvido === undefined;
-        if (paresVazio || estoqueNulo) {
-            await degradar({
-                origem: 'cadastro',
-                motivo: 'salvamento_com_estado_incompleto',
-                agent: 'cadastro',
-                userId: user.id,
-                detalhe: { pares_vazio: paresVazio, estoque_nulo: estoqueNulo },
-                fallback: null
-            });
-        }
+    // v43 Bloco C (MH-094, Parte 3.2): cad_gravar é ação interna, nunca vista pelo
+    // usuário como etapa. Grava o have-to-have (nome + posologia) AGORA — antes de
+    // qualquer campo opcional — e segue, no MESMO turno, para a pergunta real seguinte
+    // (normalmente estoque), com a confirmação de gravação lida de volta do banco (P56).
+    if (proximaEtapa === 'cad_gravar') {
+        // Se o estoque já veio nesta mesma mensagem (MH-80/extrairCadastroCompleto), a
+        // gravação já aplica esse valor — sem isso, a pessoa teria que repetir o que já
+        // disse (P57). `!== null && !== undefined`: zero é estoque legítimo (BUG-97).
+        const estoqueJaConhecido = novoContext.estoque_resolvido !== null && novoContext.estoque_resolvido !== undefined;
+
+        const medicamentosAtivosAntes = await getUserMedications(user.id);
+        const primeiroMedicamento = medicamentosAtivosAntes.length === 0;
 
         const action = {
-            type: 'SAVE_MEDICATION',
             nome: novoContext.nome,
-            dosagem: novoContext.dosagem,
+            dosagem: novoContext.dosagem ?? null,
             tipo_tratamento: novoContext.tipo_tratamento || 'continuo',
             tratamento_dias: novoContext.tratamento_dias || null,
             pares: novoContext.pares_posologia || [],
-            estoque: novoContext.estoque_resolvido ?? 0,
+            estoque: estoqueJaConhecido ? novoContext.estoque_resolvido : null,
             unidade_dose: novoContext.unidade_dose || 'unidade',
             unidade_estoque: novoContext.unidade_estoque || 'unidade',
             gotas_por_ml: novoContext.gotas_por_ml ?? null,
             forma_explicita: novoContext.forma_explicita || null,
             forma_confirmada: novoContext.forma_confirmada || null,
-            estoque_motivo: novoContext.estoque_motivo || null,
-            estoque_estimado: !!novoContext.estoque_estimado
+            estoque_motivo: estoqueJaConhecido ? (novoContext.estoque_motivo || null) : null,
+            estoque_estimado: estoqueJaConhecido ? !!novoContext.estoque_estimado : false
         };
         const resultado = await processarAcao(action, user);
 
-        // BUG-92: o cadastro terminou AGORA. Não existe "próximo turno de cad_salvo" —
-        // o estado precisa sair de adding_med imediatamente, senão a próxima mensagem
-        // do usuário (inclusive confirmação de dose) é sequestrada pelo cadastro.
+        if (resultado?.messageOverride) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return resultado.messageOverride;
+        }
+
+        console.log(`✅ [MH-094] Gravação antecipada: ${resultado.med.nome} (id: ${resultado.med.id}) — ${user.phone}`);
+
+        const contextComMedId = {
+            ...novoContext,
+            medication_id: resultado.med.id,
+            primeiroMedicamento,
+            ...(estoqueJaConhecido ? {
+                estoque_perguntado: true,
+                alerta_estoque_baixo: calcularAlertaEstoque(novoContext, novoContext.estoque_resolvido)
+            } : {})
+        };
+        const proximaEtapaReal = primeiraEtapaFaltante(contextComMedId);
+
+        const contextParaPromptGravar = { medicamentoRecemGravado: resultado.med.nome };
+        const contextResolvidoGravar = await garantirResumo(
+            proximaEtapaReal,
+            contextComMedId,
+            await garantirBlocoConfirmaForma(proximaEtapaReal, contextComMedId, contextParaPromptGravar)
+        );
+        const systemPromptGravar = buildSystemPrompt(
+            proximaEtapaReal, { ...contextComMedId, ...contextResolvidoGravar }, user.name, historicoConversa
+        );
+        const claudeResponseGravar = await callClaude({ systemPrompt: systemPromptGravar, message: '' });
+
+        await saveConversationState(user.id, {
+            state: 'adding_med',
+            context: { ...contextComMedId, etapa: proximaEtapaReal }
+        });
+        return claudeResponseGravar.message;
+    }
+
+    const contextResolvido = { ...(context || {}), ...decisao.contextUpdates, ...(decisao.contextParaPrompt || {}) };
+    const systemPrompt = buildSystemPrompt(proximaEtapa, contextResolvido, user.name, historicoConversa);
+    const claudeResponse = await callClaude({ systemPrompt, message });
+    const mensagemFinal = claudeResponse.message;
+
+    if (proximaEtapa === 'cad_salvo') {
+        // v43 Bloco C (MH-094): o medicamento já foi gravado em cad_gravar, e estoque/
+        // correções já escrevem direto no banco (Parte 4) — não existe mais nada a
+        // salvar aqui. cad_salvo só fecha o fluxo (P56: a mensagem de sucesso reflete
+        // um estado que já está gravado, nunca uma promessa).
         await saveConversationState(user.id, { state: 'idle', context: {} });
-        return resultado?.messageOverride || mensagemFinal;
+        return mensagemFinal;
     }
 
     await saveConversationState(user.id, {
