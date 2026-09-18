@@ -1,10 +1,15 @@
 // ============================================================
-// FILA POR USUÁRIO + JANELA DE AGREGAÇÃO (MH-040 A + B)
+// FILA POR USUÁRIO + JANELA DE AGREGAÇÃO (MH-040 A + B, Adendo 1)
 // Serializa turnos do mesmo usuário e agrupa mensagens fragmentadas.
 // Estado em memória do processo: correto apenas com 1 réplica (ver CONTEXT.md §6).
+// Janela DESLIZANTE (Adendo 1): cada mensagem nova reinicia o relógio, até um
+// teto absoluto contado desde a primeira mensagem — sem isso, uma frase digitada
+// em várias bolhas fecha a janela no meio, e a primeira bolha vira uma decisão
+// sozinha (ver evidência do briefing).
 // ============================================================
 
-const JANELA_MS = Number(process.env.JANELA_AGREGACAO_MS || 5000);
+const JANELA_MS = Number(process.env.JANELA_AGREGACAO_MS || 5000);       // reinicia a cada msg
+const JANELA_TETO_MS = Number(process.env.JANELA_TETO_MS || 15000);      // desde a 1ª msg
 const MAX_FRAGMENTOS = 10;
 
 const cadeias = new Map();   // phone -> Promise (cauda da fila)
@@ -35,14 +40,19 @@ export function agregar(fragmento, aoFechar) {
 
     if (!janela) {
         janela = {
-            textos: [], image: null, audio: false,
-            messageIds: [], referenceMessageId: null, timer: null
+            image: null, audio: false,
+            messageIds: [], referenceMessageId: null, timer: null,
+            abertaEm: Date.now(),
+            itens: []                      // { texto, enviadaEm } — ordenados no fechamento
         };
         janelas.set(phone, janela);
-        janela.timer = setTimeout(() => fechar(phone, aoFechar), JANELA_MS);
+    } else {
+        clearTimeout(janela.timer);        // deslizante: a mensagem nova reinicia o relógio
     }
 
-    if (fragmento.text) janela.textos.push(fragmento.text);
+    if (fragmento.text) {
+        janela.itens.push({ texto: fragmento.text, enviadaEm: fragmento.enviadaEm || Date.now() });
+    }
     if (fragmento.image && !janela.image) janela.image = fragmento.image;
     if (fragmento.audio) janela.audio = true;
     if (fragmento.referenceMessageId && !janela.referenceMessageId) {
@@ -51,19 +61,27 @@ export function agregar(fragmento, aoFechar) {
     janela.messageIds.push(fragmento.messageId);
 
     if (janela.messageIds.length >= MAX_FRAGMENTOS) {
-        clearTimeout(janela.timer);
         fechar(phone, aoFechar);
+        return;
     }
+
+    const restanteAteOTeto = JANELA_TETO_MS - (Date.now() - janela.abertaEm);
+    const espera = Math.max(0, Math.min(JANELA_MS, restanteAteOTeto));
+    janela.timer = setTimeout(() => fechar(phone, aoFechar), espera);
 }
 
 function fechar(phone, aoFechar) {
     const janela = janelas.get(phone);
     if (!janela) return;
+    clearTimeout(janela.timer);
     janelas.delete(phone);
+
+    const ordenados = [...janela.itens].sort((a, b) => a.enviadaEm - b.enviadaEm);
+    const texto = ordenados.map(i => i.texto).join('\n') || null;
 
     const entrada = {
         phone,
-        text: janela.textos.join('\n') || null,
+        text: texto,
         image: janela.image,
         audio: janela.audio,
         messageId: janela.messageIds[0],

@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import 'dotenv/config';
 import { saveConversationState, updateUser, formatarHistoricoConversa } from '../database.js';
 import { degradar } from '../observabilidade.js';
+import { GUIA_COMPOSICAO } from '../templates/composicao.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -372,11 +373,7 @@ Você está no momento de boas-vindas com um novo usuário.
 
 Seu tom é: acolhedor, caloroso, humano, responsável e confiável.
 Use linguagem natural e próxima. Não seja robótica nem excessivamente formal.
-Use emojis com moderação para tornar a conversa mais leve.
-
-Formatação do WhatsApp: negrito é UM asterisco de cada lado (*assim*). NUNCA use dois
-asteriscos: eles aparecem literalmente na tela do usuário.
-
+${GUIA_COMPOSICAO}
 Etapa atual: ${etapa}
 Contexto coletado até agora: ${JSON.stringify(context)}
 Mensagem original do usuário (primeira mensagem): ${mensagemInicial}

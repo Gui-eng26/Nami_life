@@ -18,6 +18,7 @@ import { saveConversationState, updateUser, formatarHistoricoConversa } from '..
 import { extrairComponenteData, montarDataNascimento } from '../dataNascimento.js';
 import { definirEstadoPosOnboarding } from '../estadoPosOnboarding.js';
 import { degradar } from '../observabilidade.js';
+import { GUIA_COMPOSICAO } from '../templates/composicao.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -161,8 +162,8 @@ Regras obrigatórias, válidas em TODA etapa deste fluxo:
 
 Você está coletando a data de nascimento de ${nome} durante o onboarding, logo depois do aceite da LGPD. A finalidade é só conhecer a idade média do público da Nami (estatística agregada) — não há personalização por idade.
 
-Seu tom é: acolhedor, caloroso, humano, responsável e confiável. Use linguagem natural e próxima, não robótica. Use emojis com moderação.
-
+Seu tom é: acolhedor, caloroso, humano, responsável e confiável. Use linguagem natural e próxima, não robótica.
+${GUIA_COMPOSICAO}
 Responda APENAS com a mensagem que deve ser enviada ao usuário. Sem explicações, sem prefixos, sem aspas.${estadoTexto}`;
 
     const correcaoTexto = correcaoAplicada
@@ -179,7 +180,7 @@ Responda APENAS com a mensagem que deve ser enviada ao usuário. Sem explicaçõ
     if (etapa === 'nasc_data') {
         return `${base}${correcaoTexto}${saudacaoTexto}
 
-Pergunte a *DATA DE NASCIMENTO* completa de ${nome}, com negrito do WhatsApp (um asterisco de cada lado) na expressão "data de nascimento". O exemplo de formato é OBRIGATÓRIO e deve ser de data completa.
+Pergunte a *DATA DE NASCIMENTO* completa de ${nome}. O exemplo de formato é OBRIGATÓRIO e deve ser de data completa.
 Exemplo: "Qual é a sua *data de nascimento*? Pode mandar completa — por exemplo: 06/11/1989"`;
     }
 
@@ -187,26 +188,26 @@ Exemplo: "Qual é a sua *data de nascimento*? Pode mandar completa — por exemp
         if (motivo === 'combinacao_invalida') {
             return `${base}${correcaoTexto}
 
-A combinação de dia/mês/ano que ${nome} informou não existe no calendário (ex: 31 de fevereiro). Explique gentilmente que a data não bate e peça o *DIA* de novo (negrito do WhatsApp — um asterisco de cada lado da palavra), com exemplo obrigatório de formato.
+A combinação de dia/mês/ano que ${nome} informou não existe no calendário (ex: 31 de fevereiro). Explique gentilmente que a data não bate e peça o *DIA* de novo, com exemplo obrigatório de formato.
 Exemplo de tom: "Acho que essa data não existe no calendário! 😅 Vamos conferir de novo — em que *dia* do mês você nasceu? Por exemplo: 7"`;
         }
         return `${base}${correcaoTexto}${saudacaoTexto}
 
-Pergunte em que *DIA* do mês ${nome} nasceu, com negrito do WhatsApp (um asterisco de cada lado) na palavra "dia". O exemplo de formato é OBRIGATÓRIO na pergunta.
+Pergunte em que *DIA* do mês ${nome} nasceu. O exemplo de formato é OBRIGATÓRIO na pergunta.
 Exemplo: "Em que *dia* do mês você nasceu? Pode mandar só o número — por exemplo: 7"`;
     }
 
     if (etapa === 'nasc_mes') {
         return `${base}${correcaoTexto}${saudacaoTexto}
 
-Pergunte de qual *MÊS* ${nome} nasceu, com negrito do WhatsApp (um asterisco de cada lado) na palavra "mês". O exemplo de formato é OBRIGATÓRIO na pergunta.
+Pergunte de qual *MÊS* ${nome} nasceu. O exemplo de formato é OBRIGATÓRIO na pergunta.
 Exemplo: "E de qual *mês*? Pode escrever o nome — por exemplo: março"`;
     }
 
     if (etapa === 'nasc_ano') {
         return `${base}${correcaoTexto}${saudacaoTexto}
 
-Pergunte em que *ANO* ${nome} nasceu, com negrito do WhatsApp (um asterisco de cada lado) na palavra "ano". O exemplo de formato é OBRIGATÓRIO na pergunta.
+Pergunte em que *ANO* ${nome} nasceu. O exemplo de formato é OBRIGATÓRIO na pergunta.
 Exemplo: "E em que *ano*? Os quatro números — por exemplo: 1958"`;
     }
 
@@ -283,13 +284,19 @@ Exemplo (quando a msg original foi "quero cadastrar losartana"):
     if (etapa === 'nasc_fechamento') {
         return `${base}
 
-${nome} acabou de confirmar a data de nascimento, que já foi salva. Agradeça de forma breve (ex: "Anotei aqui 📝") e retome com naturalidade o que ${nome} pediu originalmente antes do onboarding, para seguir a conversa dali.
+${nome} acabou de confirmar a data de nascimento, que já foi salva. Agradeça em UMA
+expressão curta (ex: "Anotei aqui 📝") e emende DIRETO no primeiro medicamento.
 
-MENSAGEM ORIGINAL DE ${nome}: "${mensagemInicial}"
+NÃO se reapresente. NÃO repita o que a Nami faz. NÃO retome a mensagem inicial —
+a pessoa já passou pela apresentação e pelo consentimento.
 
-Se a mensagem original indicar pedido de cadastro de remédio, siga para isso, citando o remédio mencionado. Caso contrário, pergunte por onde ${nome} quer começar.
-Exemplo (quando a msg original foi "quero cadastrar losartana"):
-"Maravilha, ${nome}! Anotei aqui 📝 Agora vamos ao que você me pediu — cadastrar a losartana. Qual a dosagem?"`;
+Peça o primeiro remédio pedindo os três dados de uma vez, com exemplo:
+Exemplo: "Anotei aqui 📝
+
+Agora me conta: qual remédio você quer cadastrar? Se quiser, já manda tudo de uma vez —
+nome, quanto você toma por vez e os horários.
+
+Por exemplo: Losartana, 1 comprimido, 8h e 20h"`;
     }
 
     return base;

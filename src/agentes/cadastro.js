@@ -11,6 +11,7 @@ import {
     converterDoseParaEstoque
 } from '../database.js';
 import { degradar } from '../observabilidade.js';
+import { GUIA_COMPOSICAO } from '../templates/composicao.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -227,7 +228,7 @@ function pluralizarRotulo(rotulo, quantidade) {
 function renderizarBlocoPosologia(pares, rotulo) {
     return [...(pares || [])]
         .sort((a, b) => a.horario.localeCompare(b.horario))
-        .map(p => `**${p.quantidade} ${pluralizarRotulo(rotulo, p.quantidade)}** às ${p.horario}`)
+        .map(p => `*${p.quantidade} ${pluralizarRotulo(rotulo, p.quantidade)}* às ${p.horario}`)
         .join(' e ');
 }
 
@@ -2632,37 +2633,37 @@ async function decidirEtapa(etapaAtual, message, context, historicoConversa) {
 function montarBlocoEtapa(etapaDaPergunta, context, nome) {
     switch (etapaDaPergunta) {
         case 'cad_nome':
-            return `Pergunte o **NOME** do medicamento. Ex: "Vamos cadastrar seu **MEDICAMENTO**! Qual o **NOME** dele?"`;
+            return `Pergunte o *NOME* do medicamento. Ex: "Vamos cadastrar seu *MEDICAMENTO*! Qual o *NOME* dele?"`;
 
         case 'cad_dosagem':
-            return `Pergunte a **DOSAGEM** do ${nome} — geralmente vem no rótulo (ex: 50mg, 0,5%, 100mg/ml).`;
+            return `Pergunte a *DOSAGEM* do ${nome} — geralmente vem no rótulo (ex: 50mg, 0,5%, 100mg/ml).`;
 
         case 'cad_horarios':
             if (context?.acaoPosologia === 'frequencia_sem_inicio') {
                 return `Pergunte apenas: "Qual o horário da primeira dose do dia?"`;
             }
             if (context?.acaoPosologia === 'indeterminado') {
-                return `Desculpe, não peguei direito 😊 Pergunte de novo em quais **HORÁRIOS** a
+                return `Desculpe, não peguei direito 😊 Pergunte de novo em quais *HORÁRIOS* a
 pessoa toma ou usa o ${nome}. Não cite nenhum horário ou quantidade — nem os que apareceram antes
 na conversa.`;
             }
-            return `Pergunte em quais **HORÁRIOS** a pessoa toma ou usa o ${nome}. Ex: "Agora vamos
-à **FORMA DE USO**. Em quais **HORÁRIOS** você toma ou usa o ${nome}?"`;
+            return `Pergunte em quais *HORÁRIOS* a pessoa toma ou usa o ${nome}. Ex: "Agora vamos
+à *FORMA DE USO*. Em quais *HORÁRIOS* você toma ou usa o ${nome}?"`;
 
         case 'cad_quantidade_por_dose':
             if (context?.mencionaConcentracao) {
                 return `O usuário respondeu com a concentração do remédio (mg/ml/%), não com a
 quantidade por dose. Distinga os dois: "Essa é a dosagem do remédio (a concentração). O que eu
-preciso saber agora é **QUANTO** você toma de cada vez — por exemplo, 1 comprimido, 2 comprimidos,
+preciso saber agora é *QUANTO* você toma de cada vez — por exemplo, 1 comprimido, 2 comprimidos,
 20 gotas."`;
             }
             if (context?.acaoPosologia === 'indeterminado') {
-                return `Desculpe, não peguei direito 😊 Pergunte de novo **QUANTO** de ${nome} a
+                return `Desculpe, não peguei direito 😊 Pergunte de novo *QUANTO* de ${nome} a
 pessoa toma ou usa em cada horário — por exemplo, 1 comprimido, 2 comprimidos, 20 gotas. Não cite
 horários nem quantidades — nem os que apareceram antes na conversa.`;
             }
-            return `Pergunte **QUANTO** de ${nome} a pessoa toma ou usa em cada horário. Ex: "Ainda
-sobre a **FORMA DE USO**: **QUANTO** de ${nome} você toma ou usa em cada horário? (ex: 2
+            return `Pergunte *QUANTO* de ${nome} a pessoa toma ou usa em cada horário. Ex: "Ainda
+sobre a *FORMA DE USO*: *QUANTO* de ${nome} você toma ou usa em cada horário? (ex: 2
 comprimidos, 1 cápsula, 20 gotas, 5ml)"`;
 
         case 'cad_confirma_forma':
@@ -2671,7 +2672,7 @@ comprimidos, 1 cápsula, 20 gotas, 5ml)"`;
         case 'cad_tipo_tratamento':
             if (context?.acaoTipoTratamento === 'indeterminado') {
                 return `Desculpe, não peguei direito 😊 Pergunte de novo: "O ${nome} é de uso
-**CONTÍNUO** (sem previsão de parada) ou **TEMPORÁRIO**, com prazo definido — como um antibiótico
+*CONTÍNUO* (sem previsão de parada) ou *TEMPORÁRIO*, com prazo definido — como um antibiótico
 ou anti-inflamatório?" Não repita horários nem quantidade coletados antes.`;
             }
             if (context?.acaoTipoTratamento === 'temporario_sem_dias' || context?.tipo_tratamento_pendente) {
@@ -2679,8 +2680,8 @@ ou anti-inflamatório?" Não repita horários nem quantidade coletados antes.`;
 dias. Pergunte: "Por quantos dias, aproximadamente, é o tratamento com ${nome}?" Não repita
 horários nem quantidade coletados antes.`;
             }
-            return `Pergunte: "O ${nome} é de uso **CONTÍNUO** (sem previsão de parada) ou
-**TEMPORÁRIO**, com prazo definido — como um antibiótico ou anti-inflamatório?" Se o usuário já
+            return `Pergunte: "O ${nome} é de uso *CONTÍNUO* (sem previsão de parada) ou
+*TEMPORÁRIO*, com prazo definido — como um antibiótico ou anti-inflamatório?" Se o usuário já
 puder responder com o número de dias na mesma mensagem, tudo bem — a extração é feita em código.
 Não repita horários nem quantidade coletados antes.`;
 
@@ -2743,7 +2744,7 @@ horários certos!"${instrucaoPrimeiroMedicamento}`;
         }
 
         default:
-            return `Pergunte o **NOME** do medicamento.`;
+            return `Pergunte o *NOME* do medicamento.`;
     }
 }
 
@@ -2770,13 +2771,13 @@ Nome do usuário: ${userName || 'usuário'}
 
 CONVERSA RECENTE:
 ${formatarHistoricoConversa(historicoConversa)}
-
+${GUIA_COMPOSICAO}
 REGRAS DE TEXTO:
 - Seja clara e direta. UMA informação por mensagem.
 - O verbo é sempre "toma ou usa", nunca só "toma" — pomada e colírio não são ingeridos.
 - O nome do medicamento (${nome}) SEMPRE aparece na pergunta.
-- O rótulo do dado pedido vem em NEGRITO e MAIÚSCULA: **NOME**, **DOSAGEM**, **HORÁRIOS**,
-  **QUANTO**, **CONTÍNUO**/**TEMPORÁRIO**, **FRASCOS**, **VOLUME**.
+- O rótulo do dado pedido vem em MAIÚSCULA e em negrito de um asterisco (regra de composição
+  acima): *NOME*, *DOSAGEM*, *HORÁRIOS*, *QUANTO*, *CONTÍNUO*/*TEMPORÁRIO*, *FRASCOS*, *VOLUME*.
 - Você NUNCA escreve horário, quantidade, unidade ou número de estoque de próprio punho — nem
   recalculando, nem repetindo o que apareceu na CONVERSA RECENTE. Esses valores só podem vir de um
   trecho pronto indicado explicitamente na instrução abaixo. Se a instrução não fornecer nenhum

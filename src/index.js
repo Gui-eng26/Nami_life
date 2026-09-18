@@ -34,8 +34,13 @@ app.post('/webhook/whatsapp', async (req, res) => {
         console.log(`📦 Z-API payload:`, JSON.stringify(req.body, null, 2));
         console.log(`📩 Mensagem recebida de ${phone}: ${text || '[mídia]'}`);
 
+        // Adendo 1 (MH-040 A): a Z-API não garante ordem de entrega dos webhooks —
+        // usa o instante de envio (momment) pra ordenar dentro da janela, com
+        // fallback pra ordem de chegada se o campo não vier.
+        const enviadaEm = Number(req.body.momment) || Date.now();
+
         agregar(
-            { phone, text, audio, image, messageId, referenceMessageId },
+            { phone, text, audio, image, messageId, referenceMessageId, enviadaEm },
             (entrada) => handleIncomingMessage(entrada)
         );
 
