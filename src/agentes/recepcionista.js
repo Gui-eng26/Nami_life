@@ -245,30 +245,40 @@ function buildSystemPrompt(etapa, context, extras = {}) {
     const temContextoMedicamento = !!context.contexto_medicamento;
     const intencaoInicial = context.intencao_inicial || 'neutro';
 
-    // --- Bloco recep_apresentacao (MH-074) ---
+    // --- Bloco recep_apresentacao (MH-074, MH-091 Parte B) ---
     const apresentacaoTexto = extras.motivoApresentacao === 'ruido' ? `
-  A última mensagem do usuário não deu pra entender como resposta ao convite que você acabou de fazer. Repita o convite de forma gentil e mais curta, sem soar repetitiva ou impaciente.
-  NÃO peça o nome, NÃO mencione LGPD, NÃO inicie cadastro.` : extras.motivoApresentacao === 'nova_duvida' ? `
-  O usuário fez uma NOVA pergunta sobre a Nami, em vez de aceitar ou recusar o convite anterior. Responda a essa dúvida em uma ou duas frases objetivas e depois REOFEREÇA o convite para começar a usar — mais leve e mais curto do que da vez anterior (esta é a rodada ${extras.rodadasDuvida || 1} de reoferta: quanto mais rodadas, mais leve e menos insistente deve soar).
-  NÃO peça o nome, NÃO mencione LGPD, NÃO inicie cadastro.` : `
-  Esta é a primeira resposta da Nami a alguém que só quer entender o que ela faz — a pessoa ainda NÃO pediu para usar.
-  A pergunta feita está em "Mensagem original do usuário" acima. Responda ESPECIFICAMENTE a ela, citando-a — se a pergunta foi "você serve pra cadastrar remédio?", comece por algo como "sim, eu ajudo você a cadastrar os horários dos seus remédios".
-  Complemente com as demais capacidades da Nami: lembretes nos horários certos, confirmação de dose, controle de estoque, e acompanhamento de adesão ao tratamento.
-  Feche com um convite explícito e caloroso para começar a usar — é uma oferta, não um funil. Sem pressão.
+  A última mensagem do usuário não deu pra entender como resposta ao convite que você acabou
+  de fazer. Repita o convite de forma gentil e mais curta, sem soar repetitiva ou impaciente,
+  pedindo o nome junto.
+  NÃO mencione LGPD, NÃO inicie cadastro, NÃO mencione que está em desenvolvimento.` : extras.motivoApresentacao === 'nova_duvida' ? `
+  O usuário fez uma NOVA pergunta sobre a Nami, em vez de aceitar ou recusar o convite
+  anterior. Responda a essa dúvida em uma ou duas frases objetivas e depois REOFEREÇA o
+  convite, pedindo o nome junto — mais leve e mais curto do que da vez anterior (esta é a
+  rodada ${extras.rodadasDuvida || 1} de reoferta: quanto mais rodadas, mais leve e menos
+  insistente deve soar).
+  NÃO mencione LGPD, NÃO inicie cadastro, NÃO mencione que está em desenvolvimento.` : `
+  Esta é a primeira resposta da Nami a alguém que chegou querendo entender o que ela faz.
+  A pergunta está em "Mensagem original do usuário" acima.
 
-  Antes do convite, inclua também um lembrete breve e leve de que a Nami ainda está em
-  desenvolvimento, sendo melhorada com o tempo. NUNCA use a expressão "teste beta" — adapte
-  livremente, no seu tom, algo como:
-  Exemplo: "E uma coisinha importante: eu ainda estou em desenvolvimento, sendo melhorada com
-  carinho a cada dia ✨ Por isso pode acontecer algum errinho de vez em quando, e ainda tem
-  coisas novas que vou aprender a fazer em breve. Mas pode contar comigo, do jeito que eu já
-  consigo te ajudar!"
+  Esta mensagem tem NO MÁXIMO 4 linhas curtas. É a porta de entrada de quem chega por QR
+  code, cartaz ou indicação de alguém — cada linha a mais custa usuário.
 
-  RESTRIÇÕES ABSOLUTAS NESTA ETAPA:
-  - NÃO peça o nome do usuário
-  - NÃO mencione LGPD, dados ou consentimento
-  - NÃO inicie o cadastro de medicamento
-  - NUNCA use a expressão "teste beta"`;
+  Estrutura obrigatória, nesta ordem:
+  1. Responda ESPECIFICAMENTE o que a pessoa perguntou, citando-a. Se ela apenas disse que
+     quer conhecer a Nami, apresente-se em uma frase.
+  2. Diga o que você faz em UMA frase: lembra dos remédios na hora certa, aqui no WhatsApp,
+     sem instalar nada. NÃO liste capacidades em tópicos. NÃO cite controle de estoque,
+     adesão nem relatórios aqui — isso a pessoa descobre usando.
+  3. Convide a começar JÁ PEDINDO O NOME, em uma frase, sem pressão. Responder com o nome é
+     o aceite.
+     Exemplo: "Quer começar agora? Me diz como posso te chamar que a gente organiza seus
+     remédios juntos 😊"
+
+  NÃO mencione LGPD, dados ou consentimento neste momento.
+  NÃO mencione que está em desenvolvimento, em construção, aprendendo, em teste ou em
+  evolução — esse aviso foi movido para o fim do primeiro cadastro.
+  NUNCA use a expressão "teste beta".
+  NÃO inicie o cadastro de medicamento.`;
 
     // --- Bloco apresentacao_declinada (MH-074) ---
     const declinioTexto = extras.motivoDeclinio === 'retorno' ? `
@@ -363,6 +373,9 @@ Você está no momento de boas-vindas com um novo usuário.
 Seu tom é: acolhedor, caloroso, humano, responsável e confiável.
 Use linguagem natural e próxima. Não seja robótica nem excessivamente formal.
 Use emojis com moderação para tornar a conversa mais leve.
+
+Formatação do WhatsApp: negrito é UM asterisco de cada lado (*assim*). NUNCA use dois
+asteriscos: eles aparecem literalmente na tela do usuário.
 
 Etapa atual: ${etapa}
 Contexto coletado até agora: ${JSON.stringify(context)}
@@ -534,20 +547,40 @@ export async function handleRecepcionista({ user, message, context, historicoCon
         }
 
     } else if (etapa === 'recep_apresentacao') {
-        const categoria = await classificarRespostaConvite({ message, historicoConversa });
+        // MH-091 Parte B (Adendo 1): o convite agora pede o nome junto — a
+        // resposta mais provável deixa de ser "sim" e passa a ser o próprio
+        // nome. Roda o extrator de nome primeiro; só cai no classificador de
+        // convite (fluxo antigo) quando a resposta for saudação ou
+        // indeterminada — ele não decide sozinho nada além disso.
+        const classificacaoNome = await classificarNome({ message, historicoConversa });
 
-        if (categoria === 'afirmativo') {
+        if (classificacaoNome.tipo === 'nome') {
+            // Mesma transição que recep_boas_vindas faz hoje ao coletar o nome
+            // com sucesso — mesma etapa de destino, mesmas chaves de contexto.
+            // O ganho é pular um turno, não criar um segundo caminho.
+            nextEtapa = 'recep_coleta_nome';
+            updatedContext = {
+                etapa: nextEtapa,
+                nome_coletado: classificacaoNome.valor,
+                mensagem_inicial: context.mensagem_inicial,
+                intencao_inicial: context.intencao_inicial
+            };
+
+        } else if (classificacaoNome.tipo === 'contexto_saude') {
+            // A pessoa trouxe um remédio em vez do nome — é aceite (quer usar).
             nextEtapa = 'recep_boas_vindas';
             updatedContext = {
                 etapa: nextEtapa,
                 nome_coletado: null,
-                mensagem_inicial: context.mensagem_inicial,
+                mensagem_inicial: message,
                 intencao_inicial: context.intencao_inicial,
+                contexto_medicamento: message,
                 tentativas_nome: 0
             };
             extras = { modoBoasVindas: 'pos_convite' };
 
-        } else if (categoria === 'negativo') {
+        } else if (classificacaoNome.tipo === 'recusa') {
+            // Trata como negativo do convite.
             nextEtapa = 'apresentacao_declinada';
             updatedContext = {
                 etapa: nextEtapa,
@@ -556,29 +589,61 @@ export async function handleRecepcionista({ user, message, context, historicoCon
             };
             extras = { motivoDeclinio: 'declinado' };
 
-        } else if (categoria === 'nova_duvida') {
-            // Não conta para o teto — servir a curiosidade é o propósito da etapa.
+        } else if (classificacaoNome.tipo === 'pergunta') {
+            // Trata como nova_duvida do convite — não conta para o teto.
             nextEtapa = 'recep_apresentacao';
             const rodadas = (context.rodadas_duvida || 0) + 1;
             updatedContext = { ...context, etapa: nextEtapa, rodadas_duvida: rodadas };
             extras = { motivoApresentacao: 'nova_duvida', rodadasDuvida: rodadas };
 
         } else {
-            // ruido — único ramo que consome tentativa.
-            const tentativas = (context.tentativas_ruido || 0) + 1;
-            if (tentativas >= MAX_TENTATIVAS_APRESENTACAO) {
-                console.log(`👋 [RECEPCIONISTA] ${tentativas}ª tentativa de ruído em recep_apresentacao — encerrando em apresentacao_declinada (${user.phone})`);
+            // saudacao | indeterminado — cai no fluxo atual do convite.
+            const categoria = await classificarRespostaConvite({ message, historicoConversa });
+
+            if (categoria === 'afirmativo') {
+                nextEtapa = 'recep_boas_vindas';
+                updatedContext = {
+                    etapa: nextEtapa,
+                    nome_coletado: null,
+                    mensagem_inicial: context.mensagem_inicial,
+                    intencao_inicial: context.intencao_inicial,
+                    tentativas_nome: 0
+                };
+                extras = { modoBoasVindas: 'pos_convite' };
+
+            } else if (categoria === 'negativo') {
                 nextEtapa = 'apresentacao_declinada';
                 updatedContext = {
                     etapa: nextEtapa,
                     mensagem_inicial: context.mensagem_inicial,
                     intencao_inicial: context.intencao_inicial
                 };
-                extras = { motivoDeclinio: 'limite_tentativas' };
-            } else {
+                extras = { motivoDeclinio: 'declinado' };
+
+            } else if (categoria === 'nova_duvida') {
+                // Não conta para o teto — servir a curiosidade é o propósito da etapa.
                 nextEtapa = 'recep_apresentacao';
-                updatedContext = { ...context, etapa: nextEtapa, tentativas_ruido: tentativas };
-                extras = { motivoApresentacao: 'ruido' };
+                const rodadas = (context.rodadas_duvida || 0) + 1;
+                updatedContext = { ...context, etapa: nextEtapa, rodadas_duvida: rodadas };
+                extras = { motivoApresentacao: 'nova_duvida', rodadasDuvida: rodadas };
+
+            } else {
+                // ruido — único ramo que consome tentativa.
+                const tentativas = (context.tentativas_ruido || 0) + 1;
+                if (tentativas >= MAX_TENTATIVAS_APRESENTACAO) {
+                    console.log(`👋 [RECEPCIONISTA] ${tentativas}ª tentativa de ruído em recep_apresentacao — encerrando em apresentacao_declinada (${user.phone})`);
+                    nextEtapa = 'apresentacao_declinada';
+                    updatedContext = {
+                        etapa: nextEtapa,
+                        mensagem_inicial: context.mensagem_inicial,
+                        intencao_inicial: context.intencao_inicial
+                    };
+                    extras = { motivoDeclinio: 'limite_tentativas' };
+                } else {
+                    nextEtapa = 'recep_apresentacao';
+                    updatedContext = { ...context, etapa: nextEtapa, tentativas_ruido: tentativas };
+                    extras = { motivoApresentacao: 'ruido' };
+                }
             }
         }
 
