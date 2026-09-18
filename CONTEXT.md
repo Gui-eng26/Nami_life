@@ -4,7 +4,7 @@
 > Atualizado no encerramento de cada sessão. O backlog **não** vive aqui — vive em
 > `backlog_items` no Supabase.
 
-**Última atualização:** 09/09/2026 (encerramento da sessão v42)
+**Última atualização:** 18/09/2026 (encerramento da sessão v43)
 
 ---
 
@@ -230,6 +230,10 @@ Números em pt-BR: inteiro sem casas decimais, fracionário com vírgula (`2,5 m
   economia.** Nasceu da v42: fazer a pessoa repetir o que já disse é o comportamento que
   mais custa na conversa. O extrator sempre procura todos os campos do esquema, e a
   transição entre etapas ou agentes carrega o que já foi coletado.
+- **P58 — todo estado novo de uma coluna exige varredura dos consumidores existentes
+  antes do merge.** O Bloco C da v43 introduziu `estoque_atual = NULL` corretamente e
+  cinco leitores ficaram para trás, um deles afirmando ao usuário que o remédio tinha
+  acabado. A lição não é sobre estoque: é sobre a varredura.
 - **Sem contador de tentativas em laço controlado pelo usuário.** Teto só onde o sistema
   pode iterar sozinho.
 - **Cálculo de saúde é determinístico.** Resultado numérico relevante para saúde vem de
@@ -286,6 +290,22 @@ Números em pt-BR: inteiro sem casas decimais, fracionário com vírgula (`2,5 m
     ativo, e todo `ativo = false` tem zero. Verificado na v42 (13 e 56 registros). Qualquer
     mudança que introduza medicamento ativo sem horário quebra scheduler, relatórios,
     bloco "Medicamentos cadastrados" do prompt do `principal` e dashboard.
+16. A fila por usuário de `src/filaTurnos.js` vive na memória do processo. É correta APENAS
+    com 1 réplica e serverless desligado. Subir para 2+ réplicas, ou ligar serverless,
+    invalida a solução SILENCIOSAMENTE — sem erro, sem log, só o bug de concorrência de
+    volta. Verificado em 18/09: produção e staging com 1 réplica, serverless off.
+17. `system_events.tipo` tem CHECK que aceita apenas `erro_tecnico`, `desvio_comportamental`
+    e `intencao_nao_suportada`. Tipo novo exige migração.
+18. A Z-API NÃO garante ordem de entrega dos webhooks. Confirmado em 18/09: cinco mensagens
+    digitadas em sequência chegaram embaralhadas. Qualquer agregação precisa ordenar pelo
+    timestamp da mensagem.
+19. Negrito do WhatsApp é UM asterisco de cada lado. A LLM escreve `**texto**` de markdown
+    por padrão e os asteriscos externos aparecem literalmente na tela do usuário.
+20. O projeto de staging NÃO era cópia fiel da produção: 8 chaves estrangeiras estavam sem
+    `ON DELETE CASCADE` (users ← medications, conversation_state, agent_logs,
+    intencoes_nao_suportadas, care_network ×2; medications ← schedules, dose_logs), o que
+    quebrava `delete_user_account` apenas lá. Corrigido por SQL em 18/09. Outras diferenças
+    podem existir e nunca foram auditadas.
 
 ---
 
@@ -520,239 +540,143 @@ projeto `Nami-staging` (`+5511941065858`, `onboarded = true`).
 
 ---
 
-## 11. Jornada de chegada — arquitetura decidida na v42
+## 11. Jornada de chegada — arquitetura e estado
 
-### 11.1 Motivação e evidência
+### 11.1 Objetivo
 
-Dez dias de beta expuseram que a jornada do "Oi" até o primeiro medicamento cadastrado é o
-gargalo do produto. Funil do Ciclo 2 em 09/09/2026 (base real, `is_teste = false`, usuários
-criados a partir de 30/08):
+Tornar fluido o caminho do "Oi" até o primeiro medicamento cadastrado. Linha de base do
+Ciclo 2 (09/09): 19 chegaram → 10 deram nome e aceitaram a LGPD → 9 informaram data de
+nascimento → 6 cadastraram um medicamento. Nove dos 19 pararam tendo visto apenas o texto
+de acolhida. O público do beta é JOVEM, não idoso — tolera menos fricção do que a persona
+originalmente imaginada.
 
-| Etapa | Usuários |
-|---|---|
-| Mandaram a primeira mensagem | 19 |
-| Deram o nome e aceitaram a LGPD | 10 |
-| Completaram data de nascimento | 9 |
-| Cadastraram ao menos 1 medicamento | 6 |
+### 11.2 Arquitetura em três camadas (decidida na v42)
 
-**68% de perda entre chegar e ter um medicamento.** A maior perda é a primeira: 9 dos 19
-mandaram uma ou duas mensagens e sumiram sem dar o nome — viram apenas o texto de acolhida.
+Extrator (LLM, saída tipada, SEM autoridade — nunca condicionado à etapa corrente, sempre
+procura todos os campos do schema) → máquina de estados (código determinístico: valida,
+persiste, calcula o que falta) → renderização (o código decide o que dizer a partir de uma
+leitura pós-escrita; a LLM apenas escreve na voz da Nami).
 
-Custo em turnos de quem chegou ao fim: `data_nascimento` custa **4 turnos como piso
-arquitetural** (dia → mês → ano → confirmação) para todos; `cadastro` custa **7 a 10 turnos
-por medicamento**. Fragmentação de mensagens atingiu **5 dos 19 usuários (26%)**.
+Três valores de campo nunca colapsados: extraído / ausente (`null`) / ambíguo
+(`indeterminado`).
 
-**Público observado é jovem, não idoso** — a expectativa de agilidade é maior, e cada
-pergunta a mais custa mais do que custaria com o público originalmente imaginado.
+### 11.3 A jornada, como ficou (v43)
 
-### 11.2 Causas raiz confirmadas por leitura de código (v42)
-
-1. **Concorrência de turnos** — `src/index.js` sem serialização (ver §6, item 12).
-2. **Descarte da mensagem rica no roteamento** — no bloco `post_onboarding` do
-   `router.js`, `despacharCadastro` é chamado com `context: { etapa: 'cad_nome' }`
-   **literal**, e a `message` repassada é a do turno corrente. Uma mensagem com quatro
-   medicamentos e horários seguida de "Sim" faz o `cadastro` receber apenas o "Sim", no
-   primeiro degrau, com contexto vazio. Mesmo padrão no bloco `cadastrando_medicamento`,
-   que reinicia do zero por decisão explícita.
-3. **`detectarIntencaoCadastro` é lista de substrings** (`'cadastrar'`, `'adicionar
-   remédio'`, …). Uma mensagem como `"Suplemento Bariatron 12:00 / Fluxetina 08:00"` — a
-   expressão mais inequívoca possível de intenção de cadastro — não contém nenhum termo e
-   cai no `else`, indo para o `principal`.
-4. **`principal` tem vocabulário de ação que não cobre cadastro.** Emite `CONFIRM_DOSE`,
-   `UPDATE_STOCK`, `REGISTER_NAO_TOMADO`, `REVERSE_CONFIRMATION` — nada para "usuário
-   trouxe medicamento novo" — e não há regra proibindo-o de prometer a ação. Recebeu uma
-   lista de medicamentos, não tinha verbo, e escreveu prosa. É o P51 aplicado ao
-   vocabulário de ação.
-5. **O extrator multi-campo já existe e estava travado.** `cadastro.js`,
-   `extrairCadastroCompleto` (MH-80), extrai **14 campos numa chamada** com validação
-   determinística campo a campo e `degradar()` no fracasso. Dois portões o prendem:
-   (a) só roda quando `etapaAtual === 'cad_nome'`; (b) só quando a mensagem tem dígito ou
-   mais de 6 palavras. No caso real, a mensagem que chegou ao agente foi "Sim" — reprovada
-   no portão (b). **O extrator funcionava; nunca viu os dados.**
-6. **O rascunho morre na escalada, não no abandono.** O bloco `adding_med` repassa
-   `context: state?.context || {}` — abandono puro preserva o rascunho indefinidamente,
-   sem TTL. Quem zera é `despacharEscalada`, que faz
-   `saveConversationState(user.id, { state: 'idle', context: {} })` ao escalar para
-   qualquer agente que não seja `configuracao`. O mecanismo de preservação **já existe**
-   para `configuracao` (`contextoPreservado` com `medicationId`, `medicationNome`,
-   `schedulesAtivos`) — só não é aplicado ao cadastro.
-7. **`extrairCadastroCompleto` devolve `nome` como string única** — não suporta múltiplos
-   medicamentos em uma mensagem. As duas usuárias analisadas bateram nesse limite.
-8. **O Juiz Offline não marcou a afirmação de persistência falsa.** Três conversas com
-   falha grave, zero registros em `system_events`. Se é lacuna de taxonomia ou falha de
-   disparo, exige leitura do código do Juiz (ACH-008).
-
-### 11.3 Inventário de chamadas de LLM (v42)
-
-**26 chamadas** de `messages.create`, todas em `claude-sonnet-4-6` (inclusive
-`MODELO_JUIZ`). Destas, **17 são classificadores ou extratores**: 11 em `cadastro.js`,
-4 em `recepcionista.js`, 1 em `router.js` (`classificarIntencaoComContexto`), 1 em
-`data_nascimento.js`, mais `configuracao.js`, `exclusaoConta.js` e `estadoPosOnboarding.js`.
-
-Consequência arquitetural: **não é possível avaliar troca de modelo por tarefa hoje**,
-porque interpretação, decisão e redação acontecem na mesma chamada em cada agente.
-Consolidar em um runner único é o que torna a medição possível. Nenhuma troca de modelo
-está decidida ou recomendada — a decisão exige medição, não intuição.
-
-### 11.4 A tensão arquitetural
-
-**A rigidez do fluxo não é descuido — é o preço pago pela confiabilidade.** O MH-073 Parte
-C reduziu o contrato do LLM a `{ message }` para acabar com a divergência entre o que o LLM
-gerava e o que a máquina de estados decidia. Foi correto. A consequência é que o código só
-avança **um degrau por turno**, porque só interpreta **uma resposta classificada por vez**.
-
-Devolver autoridade de estado ao LLM devolveria fluidez e devolveria junto a afirmação
-falsa. **Esse caminho está fechado.** A arquitetura precisa dar fluidez sem devolver
-autoridade.
-
-### 11.5 Arquitetura decidida — três camadas
-
-**Camada 1 — Extrator de entrada (LLM, saída tipada, sem autoridade).** Roda uma vez por
-turno, antes da máquina de estados. Recebe mensagem + estado atual + **esquema de campos do
-fluxo corrente** (escolhido pelo estado, nunca todos os esquemas juntos — é o que evita o
-P44 mudar de endereço). Devolve JSON estrito. Não decide estado, não escreve, não produz
-texto ao usuário. **Não é gateado pela etapa atual** — sempre procura todos os campos do
-esquema (P57).
-
-Três valores distintos, nunca colapsados (P49): **valor extraído**, **ausente da mensagem**
-(`null`), **presente mas ambíguo** (`indeterminado`). O terceiro é o que impede que "menos
-perguntas" vire "dado errado em silêncio".
-
-**Camada 2 — Máquina de estados (código, determinística).** Recebe o saco de campos,
-valida, persiste o válido, calcula o que falta, decide o próximo estado. O número de turnos
-deixa de ser propriedade do prompt e passa a ser propriedade do que o usuário disse.
-
-**Camada 3 — Renderização (código decide o quê, LLM só escreve).** O código monta a lista
-de fatos — o que foi persistido (lido de volta do banco, P56), o que falta, qual a próxima
-pergunta. O LLM recebe isso e escreve na voz da Nami, contrato `{ message }`.
-
-**Decisão D1:** uma função runner, N esquemas declarados como dado (mesmo padrão do P55).
-Não N prompts que divergem.
-
-### 11.6 Call único `{ intencao, campos }`
-
-O extrator sozinho não fecha beco sem saída, porque extrai **campos**, não **intenção**. E
-rodar extrator de esquema em mensagem fora de assunto aumenta a superfície de invenção.
-
-Uma única chamada por turno devolve as duas coisas, nenhuma com autoridade:
-
-```json
-{ "intencao": "continuar_fluxo | corrigir | duvida | desistir | outro_fluxo",
-  "campos":   { "nome": "Cataflam", "horarios": ["10:00"] } }
-```
-
-| `intencao` | O que o código faz com `campos` |
-|---|---|
-| `continuar_fluxo` | consome, persiste no rascunho, calcula o que falta |
-| `corrigir` | consome, **sobrescreve** o campo correspondente |
-| `duvida` | ignora, responde, **preserva o rascunho** e retoma |
-| `desistir` | preserva o rascunho para retomada futura, sai do fluxo |
-| `outro_fluxo` | preserva o rascunho, despacha para o agente certo |
-
-Resolve `"na verdade é 20h"`, hoje beco sem saída: `intencao: corrigir` +
-`campos: { horarios: ["20:00"] }` num turno.
-
-**As duas metades já existem separadas:** `extrairCadastroCompleto` (campos) e
-`classificarIndeterminadoCadastro` (que devolve exatamente `recusa | duvida |
-nova_intencao | ruido`). Hoje rodam em sequência — a intenção só é avaliada **depois** que
-a extração falha, o que torna impossível corrigir um campo e sinalizar intenção no mesmo
-turno. Fundir as duas é o ganho.
-
-**Precedência:** os portões determinísticos existentes (fast-path de confirmação de dose,
-portão de exclusão de conta) permanecem **antes** do call. São baratos, corretos e têm
-precedência declarada.
-
-### 11.7 Níveis de campo — fronteira de commit
-
-Hoje `cadastro.js` trata todos os campos como igualmente obrigatórios; a lista de
-pré-requisitos está achatada, e é daí que vêm os 7 a 10 turnos.
-
-| Nível | Campos | Sem eles |
+| # | Nami | Usuário |
 |---|---|---|
-| **Have to have** | `nome`, `quantidade_por_dose`, `horario` | não existe registro, ou existe registro que nunca lembra |
-| **Nice to have** | `dosagem`, `estoque_atual`, `tipo_tratamento` | lembrete funciona; alerta de recompra e relatório ficam pobres |
-| **Derivados** | `unidade_estoque`, `unidade_dose` | derivam da quantidade por dose |
-| **Eliminado** | `instrucoes` | — |
+| 1 | acolhida curta + pede o nome | nome |
+| 2 | LGPD | sim |
+| 3 | data de nascimento completa, com exemplo | 06/11/1989 |
+| 4 | pede o primeiro remédio: nome, quantidade, horários | Losartana 50mg, 1 cp, 8h e 20h |
+| 5 | **grava** + pergunta o estoque | 30 comprimidos |
+| 6 | resumo lido do banco + "está tudo certo?" | sim |
+| 7 | fecha + aviso de que ainda está sendo construída | |
 
-**A unidade de dose vem junto da quantidade.** "1 cp" / "10 ml" / "20 gts" já carrega
-`UNIDADES_DOSE_VALIDAS` (`unidade`, `gota`, `ml`), e `FORMAS_COMPATIVEIS` deriva a forma a
-partir dela. A derivação é **de uma para várias** (`unidade` → comprimido, cápsula, pomada,
-injetável): suficiente para o lembrete, possivelmente insuficiente para contagem de estoque
-— verificar quando o alerta de recompra for tocado.
+Antes da v43 esse caminho custava cerca de 15 turnos.
 
-**A fronteira de commit fica entre have to have e nice to have.** A Nami persiste assim que
-tiver os três; tudo do nice to have é enriquecimento posterior, nunca bloqueio.
+### 11.4 As DUAS portas de entrada
 
-**O acumulado parcial continua em `conversation_state.context`, não em `medications`** —
-gravar rascunho na tabela quebraria o invariante do §6 item 15.
+A intenção da primeira mensagem decide a porta, e as duas precisam ser mantidas curtas:
 
-### 11.8 Consentimento LGPD com recuperação de rascunho
+- `cadastrar` ou `neutro` → `recep_boas_vindas`
+- `descobrir` → `recep_apresentacao` (caminho do curioso, MH-074)
 
-Decisão de Guilherme, corrigindo proposta anterior de descarte:
+Quem chega por QR code de camiseta, folheto ou cartão cai em `descobrir`. Em evento
+presencial essa é a porta PRINCIPAL, não a exceção. Desde a v43 o convite dessa porta pede
+o nome na mesma mensagem, e responder com o nome é o aceite — ajuste deliberado da decisão
+original do MH-074 de que a apresentação não pediria dado nenhum.
 
-- **Consentimento explícito + dados na mesma mensagem** → persiste tudo, um turno.
-- **Dados sem consentimento explícito** → guarda no rascunho, refaz a pergunta. Resposta
-  positiva recupera os dados e segue; resposta negativa descarta tudo.
+### 11.5 Níveis de campo no cadastro
 
-Descartar dado já entregue e obrigar o usuário a repetir é o comportamento que mais destrói
-fluidez (P57), e pune quem leu a pergunta corretamente.
+- **Have-to-have** (sem isso não existe lembrete): `nome`, quantidade por dose, horário.
+- **Nice-to-have** (nunca bloqueiam): `dosagem`, `estoque_atual`, `tipo_tratamento`.
+- `forma_farmaceutica` é DERIVADA da unidade da dose e nunca perguntada.
+- A gravação acontece assim que os have-to-have existem, **antes** da pergunta de estoque.
+- O resumo vem DEPOIS do estoque, para que a correção continue dentro do fluxo, e é lido de
+  volta do banco: diz "isto está registrado", nunca "isto vou gravar".
+- Correção no resumo edita o REGISTRO, não o rascunho — `atualizarMedicamentoCampos` para
+  campos simples, `replaceMedication` para horários, `registrarMovimentoEstoque` para estoque.
 
-**Duas salvaguardas obrigatórias:** nada vai para `users` antes do consentimento — o
-rascunho vive só em `conversation_state.context`, e a gravação em `users` ocorre no mesmo
-instante do aceite; e o descarte na recusa é **explícito e verificável** (apagar o
-`context`, não apenas sair do fluxo).
+### 11.6 Estoque tem três estados, não dois
 
-### 11.9 Fragmentação — fila e janela
+`estoque_atual` NULL significa "nunca informado" e é diferente de zero (P49). Ramos:
 
-São dois problemas distintos:
+| Resposta | Grava |
+|---|---|
+| "30 comprimidos" | valor + movimento `cadastro_inicial` |
+| "acho que uns 20" | valor + `estoque_estimado = true` |
+| "não sei" | `NULL`, sem movimento, sem insistir |
 
-- **Fila por usuário** — nunca processar dois turnos concorrentes do mesmo `user_id`.
-  Corrige decisão tomada sobre estado obsoleto. **Não-negociável**; sem ela, qualquer fluxo
-  mais curto fica mais frágil, não menos.
-- **Janela de agregação — 5 segundos** (decisão de Guilherme, ajustável após medição).
-  Mensagens que chegam na janela viram **uma entrada só**. Corrige o usuário receber N
-  respostas para um pensamento fragmentado.
+Enquanto for NULL, a primeira confirmação de dose de cada dia traz um convite para informar
+o estoque. Quando o estoque recebe valor, o convite cessa e o alerta normal de recompra
+assume. O convite vive apenas no caminho da confirmação — não entra no lembrete agendado
+nem na cobrança de dose não confirmada.
 
-A janela pressupõe a fila. Definir no briefing de execução a precedência quando um lembrete
-agendado dispara com a janela aberta.
+### 11.7 Fila e janela de agregação
 
-### 11.10 Retomada de rascunho
+`src/filaTurnos.js` serializa turnos por usuário e agrupa mensagens fragmentadas.
 
-**Passiva** (decisão de Guilherme): a Nami retoma quando o usuário volta, sem puxar
-proativamente. **Sem TTL** — o rascunho já sobrevive indefinidamente hoje e adicionar prazo
-seria restrição nova disfarçada de correção. O trabalho é estender o `contextoPreservado`
-de `despacharEscalada` ao cadastro, replicando padrão que já existe no mesmo arquivo.
+- Fila por `phone`, em memória do processo. **Correta apenas com 1 réplica** (ver §6).
+- Janela DESLIZANTE: cada mensagem reinicia o timer (`JANELA_AGREGACAO_MS`, default 5000),
+  com teto desde a primeira (`JANELA_TETO_MS`, default 15000). Janela fixa foi tentada e
+  falhou: medição em staging mostrou fragmentos legítimos a 6s de intervalo.
+- Concatenação ordenada pelo timestamp da mensagem, não pela ordem de chegada — a Z-API
+  entrega webhooks fora de ordem (confirmado por print em 18/09).
+- Lembrete agendado que dispara com a janela aberta ENTRA NA FILA e espera o turno corrente
+  fechar. Nunca fura a fila.
+- **Pendente de ajuste pós-evento:** 5000ms não cobre o intervalo de 6s observado. Valor
+  recomendado 7000ms, adiado por tempo. Medir antes de fixar.
 
-### 11.11 Plano de implementação — 7 fases
+### 11.8 Data de nascimento
 
-| # | Fase | Item | Muda o quê | Staging |
-|---|---|---|---|---|
-| 0 | Acolhida enxuta | MH-091 | copy do `recepcionista` | direto |
-| 1 | Fila + janela 5s | MH-040 A+B | `index.js` | sim |
-| 2 | Verdade + rascunho | BUG-104, MH-090 | `router.js` (L587, bloco `post_onboarding`), `principal.js` | sim |
-| 3 | Níveis have/nice-to-have | — | `primeiraEtapaFaltante` em `cadastro.js` | sim |
-| 4 | Destravar MH-80 em qualquer etapa | — | portão `cad_nome` em `calcularDecisaoEtapa` | sim |
-| 5 | Múltiplos medicamentos | MH-094 | extrator: `nome` string → lista | sim |
-| 6 | Call único `{ intencao, campos }` | — | runner novo | sim |
-| 7 | Runner + esquema do onboarding | MH-092 | `recepcionista.js`, 4 classificadores → 1 esquema | sim |
+Etapa inicial `nasc_data` pede a data completa com exemplo obrigatório. Dia/mês/ano isolados
+continuam existindo como fallback quando chega só um pedaço.
 
-**Ordem justificada.** A Fase 0 é independente, é copy, e ataca a maior perda isolada do
-funil. A Fase 1 é pré-requisito de tudo. A Fase 2 sozinha já melhora o caso real: com a
-mensagem rica chegando ao `cad_nome`, o portão de heurística do MH-80 aprova (tem dígitos) e
-o extrator roda — um medicamento dos quatro seria cadastrado de fato. O onboarding fica por
-último **de propósito**: é a fase de maior risco de regressão (mexe em consentimento LGPD e
-na porta de entrada de 100% dos usuários) e a que mais se beneficia de o runner já ter
-rodado no cadastro; sua perda é atacada antes pela Fase 0.
+Confirmação segue uma regra única: **a Nami só confirma o que ela inferiu ou montou.**
 
-**Métrica de validação, medível em `agent_logs`:** turnos em `agent = 'cadastro'` por
-medicamento cadastrado. Baseline v42: **7 a 10**. Alvo com níveis: 3 a 4. Alvo com extrator
-destravado, para mensagem rica: 1 a 2.
+| Entrada | Confirmação |
+|---|---|
+| data completa, ano de 4 dígitos | não |
+| data completa, ano de 2 dígitos (`06/11/89`) | sim, mostrando o ano expandido |
+| data montada por partes | sim |
 
-### 11.12 Fora de escopo, registrado
+Expansão do ano de 2 dígitos: assume o século atual; se cair no futuro, usa o anterior.
+Ponto cego aceito: 00–26 colide com 1900–1926, faixa que a validação de idade já limita.
+Medição por log `🎂 [ANO2D]` no Railway — `system_events.tipo` tem CHECK que não aceita tipo
+novo sem migração.
 
-- **MH-093** — formas por medida ou massa (pó, sachê, granulado). `FORMAS_VALIDAS` tem 7
-  formas e **não inclui "pó"**; `UNIDADES_DOSE_VALIDAS` não representa colher, scoop ou
-  grama. Usuária real tentou cadastrar cúrcuma em pó e o valor foi descartado por
-  validação. Exige decisão própria sobre dedução de estoque.
-- **Design das mensagens ao usuário** — Guilherme pediu conversa dedicada, posterior à
-  arquitetura.
+### 11.9 Guia de composição visual
+
+`src/templates/composicao.js` é ponto único (mesmo padrão do P55): curto não é cru, itens em
+linhas próprias com emoji semântico, negrito do WhatsApp com UM asterisco, pergunta sozinha
+na última linha. Aplicado em `recepcionista.js`, `data_nascimento.js` e `cadastro.js`.
+
+**Ainda NÃO aplicado** em `principal.js`, `configuracao.js`, `relatorios.js`, `lembrete.js` e
+`exclusaoConta.js` — esses agentes ainda podem emitir `**`. Mensagens renderizadas em código
+(`src/templates/*.js`) não passam pelo guia e precisam de edição manual.
+
+### 11.10 O que falta das 7 fases
+
+| Fase | Estado |
+|---|---|
+| 0 acolhida enxuta | entregue (MH-091 A e B) |
+| 1 fila + janela | entregue (MH-040 A e B) |
+| 2 verdade no roteamento | entregue (BUG-104, MH-090) |
+| 3 níveis de campo | entregue (MH-094) |
+| 4 destravar o extrator | entregue (dentro do Bloco C) |
+| 5 múltiplos medicamentos numa mensagem | **aberta** |
+| 6 call único `{ intencao, campos }` | **aberta** |
+| 7 runner do onboarding | **aberta** |
+
+Limitação conhecida e não mascarada: **corrigir e continuar no mesmo turno** ("na verdade é
+às 20h" no meio do fluxo) só se resolve na Fase 6. Hoje o extrator roda em qualquer etapa mas
+só preenche campo vazio, nunca sobrescreve — é a trava que evita corrupção silenciosa.
+
+### 11.11 Métrica
+
+Turnos em `agent='cadastro'` por medicamento cadastrado. Base v42: 7 a 10. Alvo com níveis de
+campo: 3 a 4. Com extrator destravado numa mensagem rica: 1 a 2. **Ainda não medido depois da
+v43** — primeira ação da próxima sessão.
+
+Cada fase precisa do próprio briefing de execução, gerado perto da execução: briefing é
+contrato, e contrato de 7 fases envelhece antes de ser cumprido.
