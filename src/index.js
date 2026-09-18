@@ -4,6 +4,7 @@ import { handleIncomingMessage } from './agent.js';
 import { parseZApiPayload } from './whatsapp.js';
 import { startScheduler } from './scheduler.js';
 import { getPendingReminders } from './database.js';
+import { agregar } from './filaTurnos.js';
 
 const app = express();
 app.use(express.json());
@@ -32,7 +33,11 @@ app.post('/webhook/whatsapp', async (req, res) => {
 
         console.log(`📦 Z-API payload:`, JSON.stringify(req.body, null, 2));
         console.log(`📩 Mensagem recebida de ${phone}: ${text || '[mídia]'}`);
-        await handleIncomingMessage({ phone, text, audio, image, messageId, referenceMessageId });
+
+        agregar(
+            { phone, text, audio, image, messageId, referenceMessageId },
+            (entrada) => handleIncomingMessage(entrada)
+        );
 
     } catch (error) {
         console.error('❌ Erro no webhook:', error.message);

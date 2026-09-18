@@ -9,6 +9,7 @@ import { registrarEvento, tituloEstavel, degradar } from './observabilidade.js';
 import { executarJuizOffline } from './juizOffline.js';
 import { verboDoMedicamento, verboDoGrupo } from './templates/verbos.js';
 import { linhaQuantidadeDose } from './templates/dose.js';
+import { enfileirar } from './filaTurnos.js';
 
 // ============================================================
 // INICIA O SCHEDULER
@@ -69,7 +70,7 @@ async function checkAndSendReminders() {
 
             // Doses sem estoque: sempre individuais (mensagem de estoque zerado)
             for (const reminder of semEstoque) {
-                await sendReminder(reminder);
+                enfileirar(reminder.phone, () => sendReminder(reminder), 'lembrete');
                 await sleep(1000);
             }
 
@@ -81,9 +82,9 @@ async function checkAndSendReminders() {
             );
             for (const grupo of grupos) {
                 if (grupo.length === 1) {
-                    await sendReminder(grupo[0]);
+                    enfileirar(grupo[0].phone, () => sendReminder(grupo[0]), 'lembrete');
                 } else {
-                    await sendGroupedReminder(grupo);
+                    enfileirar(grupo[0].phone, () => sendGroupedReminder(grupo), 'lembrete');
                 }
                 await sleep(1000);
             }
@@ -150,7 +151,7 @@ async function checkAndSendFollowUps() {
             if (grupo.length === 1) {
                 await handleFollowUp({ doseLog: grupo[0], reminder: grupo[0] });
             } else {
-                await handleGroupedFollowUp(grupo);
+                enfileirar(grupo[0].phone, () => handleGroupedFollowUp(grupo), 'follow-up');
             }
             await sleep(1000);
         }

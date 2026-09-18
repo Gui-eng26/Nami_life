@@ -94,6 +94,17 @@ function anoAtualBRT() {
     return Number(hojeBRT().split('-')[0]);
 }
 
+// Expande ano de 2 dígitos. Regra: assume o século atual; se cair no futuro, usa o anterior.
+// 89 -> 1989 · 60 -> 1960 · 05 -> 2005 · 25 -> 2025
+// Ponto cego conhecido e aceito: 00..26 colide com 1900..1926 — faixa de 100 a 110 anos,
+// que a validação de idade já limita.
+export function expandirAno2Digitos(n) {
+    const anoAtual = anoAtualBRT();
+    const seculo = Math.floor(anoAtual / 100) * 100;
+    const candidato = seculo + n;
+    return candidato > anoAtual ? candidato - 100 : candidato;
+}
+
 function extrairAno4Digitos(norm) {
     const matches = norm.match(/\b\d{4}\b/g);
     if (!matches) return null;
@@ -150,24 +161,29 @@ function extrairNumeroSolto(norm) {
 }
 
 // Data completa: dd/mm/aaaa (com -, . ou / como separador) ou "dd de <mês> de aaaa".
+// Aceita ano de 2 ou 4 dígitos — quando de 2, expande e sinaliza anoInferido (MH-092).
 function extrairDataCompleta(norm) {
-    const mNumerico = norm.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})\b/);
+    const mNumerico = norm.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2}|\d{4})\b/);
     if (mNumerico) {
         const dia = Number(mNumerico[1]);
         const mes = Number(mNumerico[2]);
-        const ano = Number(mNumerico[3]);
+        const anoBruto = mNumerico[3];
+        const anoInferido = anoBruto.length === 2;
+        const ano = anoInferido ? expandirAno2Digitos(Number(anoBruto)) : Number(anoBruto);
         if (dia >= 1 && dia <= 31 && mes >= 1 && mes <= 12) {
-            return { dia, mes, ano };
+            return { dia, mes, ano, anoInferido };
         }
     }
 
-    const mTextual = norm.match(/\b(\d{1,2})\s+de\s+([a-z]+)\s+de\s+(\d{4})\b/);
+    const mTextual = norm.match(/\b(\d{1,2})\s+de\s+([a-z]+)\s+de\s+(\d{2}|\d{4})\b/);
     if (mTextual) {
         const dia = Number(mTextual[1]);
         const mes = extrairMes(`de ${mTextual[2]} de`);
-        const ano = Number(mTextual[3]);
+        const anoBruto = mTextual[3];
+        const anoInferido = anoBruto.length === 2;
+        const ano = anoInferido ? expandirAno2Digitos(Number(anoBruto)) : Number(anoBruto);
         if (dia >= 1 && dia <= 31 && mes !== null) {
-            return { dia, mes, ano };
+            return { dia, mes, ano, anoInferido };
         }
     }
 
@@ -204,10 +220,12 @@ export function extrairComponenteData(mensagem, campoEsperado) {
     const numero = extrairNumeroSolto(norm);
     if (numero === null) return { tipo: 'indeterminado', valor: null, candidatos: null };
 
-    // Ano de 2 dígitos → indeterminado, NUNCA inferência (regra explícita: "60" pode
-    // ser 1960; "25" é ambíguo entre 1925 e 2025 — nunca decidir por conta própria).
+    // Ano de 2 dígitos isolado — expande pelo mesmo critério de extrairDataCompleta
+    // (MH-092, decisão de Guilherme v43): assume século atual, cai pro anterior se
+    // o resultado for futuro. anoInferido: true avisa quem chama que o valor foi
+    // inferido, não digitado por extenso — dispara confirmação (seção 4.4).
     if (campoEsperado === 'ano' && numero >= 10 && numero <= 99) {
-        return { tipo: 'indeterminado', valor: null, candidatos: null };
+        return { tipo: 'ano', valor: expandirAno2Digitos(numero), anoInferido: true, candidatos: null };
     }
 
     const cabeDia = numero >= 1 && numero <= 31;

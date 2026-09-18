@@ -25,8 +25,11 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 // (recusa/dúvida/nova_intencao, item 7, A.1) são EXCLUÍDAS do contador — ele conta
 // exclusivamente tentativa real de resposta ininteligível à pergunta pendente.
 const MAX_TENTATIVAS_INDETERMINADO = 3;
-const CAMPO_ESPERADO_POR_ETAPA = { nasc_dia: 'dia', nasc_mes: 'mes', nasc_ano: 'ano' };
-const CAMPO_LABEL_POR_ETAPA = { nasc_dia: 'dia', nasc_mes: 'mês', nasc_ano: 'ano', nasc_confirmacao: 'confirmação' };
+// nasc_data (MH-092): etapa inicial única que já pede a data completa. Um número solto
+// respondido aqui é lido como dia (montagem por partes segue dali, terminando em
+// confirmação de qualquer forma) — daí o campo esperado ser 'dia', não um tipo próprio.
+const CAMPO_ESPERADO_POR_ETAPA = { nasc_data: 'dia', nasc_dia: 'dia', nasc_mes: 'mes', nasc_ano: 'ano' };
+const CAMPO_LABEL_POR_ETAPA = { nasc_data: 'data de nascimento', nasc_dia: 'dia', nasc_mes: 'mês', nasc_ano: 'ano', nasc_confirmacao: 'confirmação' };
 
 function firstNameOf(user) {
     return user.name ? user.name.split(' ')[0] : 'você';
@@ -58,17 +61,6 @@ function proximaEtapaFaltante(context) {
     if (context.mes === null || context.mes === undefined) return 'nasc_mes';
     if (context.ano === null || context.ano === undefined) return 'nasc_ano';
     return 'nasc_confirmacao';
-}
-
-// Puramente informativo (MH-072 A.1 item 1): identifica um ano de 2 dígitos que
-// extrairComponenteData já descartou por regra (nunca infere século — "89" pode ser
-// 1889, 1989 ou 2089). Serve só pra avisar a LLM do que foi rejeitado e por quê; a
-// decisão de fluxo já foi tomada pelo extrator, isso não reabre decisão nenhuma.
-function detectarAnoDoisDigitosRejeitado(message) {
-    const norm = (message || '').toLowerCase();
-    if (/\b\d{3,4}\b/.test(norm)) return null;
-    const m = norm.match(/\b(\d{2})\b/);
-    return m ? m[1] : null;
 }
 
 // Estado determinístico do preenchimento — mesma leitura que o JS usa pra decidir
@@ -160,7 +152,9 @@ ESTADO ATUAL (única fonte de verdade — nunca contradiga isto, nunca invente v
 Regras obrigatórias, válidas em TODA etapa deste fluxo:
 1. Nunca proponha, sugira ou confirme um valor que não esteja em "Campos já confirmados" acima. Se a resposta do usuário for inválida, peça de novo — não adivinhe o que ele quis dizer.
 2. Nunca trate como erro do usuário um valor que acabou de ser aceito (ver "Acabou de aceitar" acima, quando presente).
-3. O exemplo de formato na pergunta deve corresponder exatamente ao campo pendente — nunca misture com exemplo de data completa (DD/MM/AAAA) quando só um campo isolado foi pedido.
+3. O exemplo de formato na pergunta deve corresponder exatamente ao campo pendente. Quando o
+   campo pendente for dia, mês ou ano ISOLADO, nunca use exemplo de data completa (DD/MM/AAAA).
+   Quando a etapa for nasc_data, o exemplo DEVE ser de data completa.
 4. Nunca insista, negocie ou minimize desconforto do usuário. Proibido: "só mais uma", "é rapidinho", "prometo que é a última", "é só uma informação", "não vai demorar", ou qualquer promessa de brevidade. Se a pessoa demonstrar desconforto, acolha e ofereça a saída — nunca tente convencer.`;
 
     const base = `Você é a Nami, uma assistente de saúde pessoal que ajuda pessoas a não esquecerem seus medicamentos de uso contínuo.
@@ -181,6 +175,13 @@ Responda APENAS com a mensagem que deve ser enviada ao usuário. Sem explicaçõ
     const saudacaoTexto = motivo === 'saudacao'
         ? `\n\n${nome} só te cumprimentou ou retomou a conversa (ex: "oi", "voltei") — não respondeu à pergunta ainda e não recusou nada. Reconheça a saudação de forma breve e calorosa, e então repita a pergunta pendente normalmente.`
         : '';
+
+    if (etapa === 'nasc_data') {
+        return `${base}${correcaoTexto}${saudacaoTexto}
+
+Pergunte a *DATA DE NASCIMENTO* completa de ${nome}, com negrito do WhatsApp (um asterisco de cada lado) na expressão "data de nascimento". O exemplo de formato é OBRIGATÓRIO e deve ser de data completa.
+Exemplo: "Qual é a sua *data de nascimento*? Pode mandar completa — por exemplo: 06/11/1989"`;
+    }
 
     if (etapa === 'nasc_dia') {
         if (motivo === 'combinacao_invalida') {
@@ -323,6 +324,9 @@ async function fecharSemDado({ user, context, message, motivo = 'recusa' }) {
 async function gravarEFechar({ user, context, message }) {
     await updateUser(user.id, { data_nascimento: context.iso });
     console.log(`🎂 [DATA-NASCIMENTO] Data de nascimento gravada — ${user.phone} — ${context.iso}`);
+    if (context.ano_inferido) {
+        console.log(`🎂 [ANO2D] resultado=confirmado — ${user.phone}`);
+    }
     const resposta = await gerarTexto({ etapa: 'nasc_fechamento', context, user, message });
     await definirEstadoPosOnboarding(user, context.mensagem_inicial || '');
     return resposta;
@@ -361,7 +365,7 @@ async function validarConcluirOuContinuar({ user, message, novoContext, correcao
     });
 }
 
-async function aplicarPreenchimento({ user, message, context, etapaAtual, campo, valor, foiCorrecao }) {
+async function aplicarPreenchimento({ user, message, context, etapaAtual, campo, valor, foiCorrecao, anoInferido }) {
     const novoContext = {
         ...context,
         [campo]: valor,
@@ -369,6 +373,13 @@ async function aplicarPreenchimento({ user, message, context, etapaAtual, campo,
         oferta_pular_ativa: false
     };
     delete novoContext.desambiguando;
+
+    if (campo === 'ano') {
+        novoContext.ano_inferido = !!anoInferido;
+        if (anoInferido) {
+            console.log(`🎂 [ANO2D] digitado=${String(valor).slice(-2)} expandido=${valor} — ${user.phone}`);
+        }
+    }
 
     const correcaoAplicada = foiCorrecao ? { campo, valor } : null;
 
@@ -401,7 +412,7 @@ async function aplicarPreenchimento({ user, message, context, etapaAtual, campo,
 
 export async function handleDataNascimento({ user, message, state, historicoConversa = [] }) {
     const context = state?.context || {};
-    const etapa = context.etapa || 'nasc_dia';
+    const etapa = context.etapa || 'nasc_data';
 
     // Saída de emergência já oferecida (dúvida com oferta ativa) — aceite explícito.
     if (context.oferta_pular_ativa && respostaAfirmativaSimples(message)) {
@@ -453,10 +464,14 @@ export async function handleDataNascimento({ user, message, state, historicoConv
             if (extracaoValor.tipo === campoErrado) {
                 // Caso A: campo + valor na mesma mensagem — corrige direto, sem zerar.
                 console.log(`🎂 [DATA-NASCIMENTO] Negação com valor — corrigindo ${campoErrado}=${extracaoValor.valor} direto — ${user.phone}`);
+                if (campoErrado === 'ano' && context.ano_inferido) {
+                    console.log(`🎂 [ANO2D] resultado=corrigido — ${user.phone}`);
+                }
                 const etapaCampo = { dia: 'nasc_dia', mes: 'nasc_mes', ano: 'nasc_ano' }[campoErrado];
                 return await aplicarPreenchimento({
                     user, message, context, etapaAtual: etapaCampo,
-                    campo: campoErrado, valor: extracaoValor.valor, foiCorrecao: true
+                    campo: campoErrado, valor: extracaoValor.valor, foiCorrecao: true,
+                    anoInferido: extracaoValor.anoInferido
                 });
             }
 
@@ -572,12 +587,9 @@ export async function handleDataNascimento({ user, message, state, historicoConv
             });
         }
 
-        const anoRejeitado = campoEsperado === 'ano' ? detectarAnoDoisDigitosRejeitado(message) : null;
-        const valorRejeitado = anoRejeitado ? { valor: anoRejeitado, motivo: 'ano precisa de 4 dígitos' } : null;
-
         return await gerarTexto({
             etapa: 'nasc_ruido', context: novoContext, user, message,
-            motivo: 'repetir', campo: campoRuido, valorRejeitado
+            motivo: 'repetir', campo: campoRuido
         });
     }
 
@@ -591,13 +603,26 @@ export async function handleDataNascimento({ user, message, state, historicoConv
     }
 
     if (extracao.tipo === 'data_completa') {
-        const { dia, mes, ano } = extracao.valor;
+        const { dia, mes, ano, anoInferido } = extracao.valor;
         const foiCorrecaoDia = context.dia !== null && context.dia !== undefined;
         const novoContext = {
             ...context, dia, mes, ano,
             tentativas_indeterminado: 0, oferta_pular_ativa: false
         };
         delete novoContext.desambiguando;
+
+        const montagem = montarDataNascimento({ dia, mes, ano });
+
+        if (montagem.valida && !anoInferido && !context.dia && !context.mes && !context.ano) {
+            // Data completa, ano explícito (4 dígitos), nada montado antes: grava e fecha em 1 turno (MH-092).
+            novoContext.iso = montagem.iso;
+            return await gravarEFechar({ user, context: novoContext, message });
+        }
+
+        if (anoInferido) {
+            console.log(`🎂 [ANO2D] digitado=${String(ano).slice(-2)} expandido=${ano} — ${user.phone}`);
+            novoContext.ano_inferido = true;
+        }
 
         const correcaoAplicada = foiCorrecaoDia ? { campo: 'dia', valor: dia } : null;
         return await validarConcluirOuContinuar({ user, message, novoContext, correcaoAplicada });
@@ -606,5 +631,8 @@ export async function handleDataNascimento({ user, message, state, historicoConv
     // dia | mes | ano
     const campo = extracao.tipo;
     const foiCorrecao = context[campo] !== null && context[campo] !== undefined;
-    return await aplicarPreenchimento({ user, message, context, etapaAtual: etapa, campo, valor: extracao.valor, foiCorrecao });
+    return await aplicarPreenchimento({
+        user, message, context, etapaAtual: etapa, campo, valor: extracao.valor, foiCorrecao,
+        anoInferido: extracao.anoInferido
+    });
 }

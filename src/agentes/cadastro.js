@@ -6,6 +6,7 @@ import {
     saveSchedule,
     replaceMedication,
     verificarMedicamentoExistente,
+    getUserMedications,
     formatarHistoricoConversa,
     converterDoseParaEstoque
 } from '../database.js';
@@ -2728,10 +2729,17 @@ estoque?"`;
             const instrucaoHorarios = blocoHorarios
                 ? ` Se quiser citar os horários, use EXATAMENTE este trecho, sem alterar nada: "${blocoHorarios}".`
                 : ' Não cite horários, quantidade nem estoque — nenhum bloco renderizado está disponível para esta mensagem.';
+            const instrucaoPrimeiroMedicamento = context?.primeiroMedicamento
+                ? ` Se este for o PRIMEIRO medicamento cadastrado por esta pessoa, acrescente ao final,
+em UMA linha curta e leve, que você ainda está sendo construída e melhorando a cada dia, e que por
+isso pode escorregar de vez em quando. NUNCA use a expressão "teste beta". Exemplo: "Ah, e uma
+coisinha: eu ainda estou sendo construída e melhorando a cada dia — se eu escorregar em algo, me
+avisa? 😊"`
+                : '';
             return `O usuário confirmou os dados e o cadastro FOI SALVO com sucesso pelo código.
 Gere uma mensagem de sucesso carinhosa, sem inventar nem recalcular horário, quantidade ou
 estoque.${instrucaoHorarios} Ex: "Ótimo! ${nome} foi cadastrado com sucesso 💊✅ Vou te lembrar nos
-horários certos!"`;
+horários certos!"${instrucaoPrimeiroMedicamento}`;
         }
 
         default:
@@ -2918,6 +2926,13 @@ export async function handleCadastro({ user, message, state, context, historicoC
     }
 
     const contextResolvido = { ...(context || {}), ...decisao.contextUpdates, ...(decisao.contextParaPrompt || {}) };
+
+    // MH-091 (aviso de "ainda sendo construída" no fechamento): checagem feita só
+    // no turno de fechamento, para não repetir a consulta a cada etapa do cadastro.
+    if (decisao.proximaEtapa === 'cad_salvo') {
+        const medicamentosAtivos = await getUserMedications(user.id);
+        contextResolvido.primeiroMedicamento = medicamentosAtivos.length === 0;
+    }
 
     const systemPrompt = buildSystemPrompt(decisao.proximaEtapa, contextResolvido, user.name, historicoConversa);
     const claudeResponse = await callClaude({ systemPrompt, message });
