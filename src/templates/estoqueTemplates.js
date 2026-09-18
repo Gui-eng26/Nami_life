@@ -1,5 +1,6 @@
 import { classificarNivelEstoquePorDias } from '../database.js';
 import { verboDoMedicamento } from './verbos.js';
+import { rotuloEstoquePlural } from './dose.js';
 
 // ============================================================
 // TEMPLATES DETERMINÍSTICOS — ALERTA DE ESTOQUE PÓS-CONFIRMAÇÃO
@@ -39,10 +40,22 @@ export function buildAlertaEstoquePosConfirmacao(info) {
 }
 
 export function buildAlertaEstoqueNaoInformado(firstName, info) {
-    const { medNome, medForma, novoEstoque, diasRestantes } = info;
+    const { medNome, medForma, novoEstoque, diasRestantes, estoqueDesconhecido } = info;
+    const verbo = verboDoMedicamento(medForma);
+
+    // v43 Bloco C Adendo 1 (P49, seção 4): estoque nunca informado — a mensagem de
+    // dose não confirmada continua, mas SEM citar quantidade nenhuma (nem "null", nem
+    // um número inventado). O convite para informar o estoque não entra aqui — ele
+    // vive só no caminho da confirmação de dose (buildConviteEstoqueNaoCadastrado).
+    if (estoqueDesconhecido) {
+        return (
+            `⚠️ ${firstName}, não recebi confirmação da sua dose do *${medNome}*.\n\n` +
+            `Quando puder, me avise se ${verbo.passado}! 💊`
+        );
+    }
+
     const nivel = classificarNivelEstoquePorDias({ novoEstoque, diasRestantes });
     const unidade = novoEstoque === 1 ? 'unidade' : 'unidades';
-    const verbo = verboDoMedicamento(medForma);
 
     const prazo = nivel === 'zerado'
         ? 'está esgotado'
@@ -54,5 +67,17 @@ export function buildAlertaEstoqueNaoInformado(firstName, info) {
         `⚠️ ${firstName}, não recebi confirmação da sua dose do *${medNome}*.\n\n` +
         `Seu estoque atual é de *${novoEstoque}* ${unidade} — ${prazo}.\n` +
         `Quando puder, me avise se ${verbo.passado}, e não esqueça de providenciar a recompra! 💊`
+    );
+}
+
+// v43 Bloco C Adendo 1 (seção 2) — estoque nunca informado (MH-094 / P49). NÃO é
+// alerta de falta: a Nami não sabe quanto existe, então não afirma nada sobre a
+// quantidade. É um convite a completar o cadastro, com o benefício explícito.
+export function buildConviteEstoqueNaoCadastrado({ medNome, medForma, unidadeEstoque }) {
+    const rotulo = rotuloEstoquePlural({ unidade_estoque: unidadeEstoque, forma_farmaceutica: medForma });
+    return (
+        `\n\n📦 Ainda não tenho o estoque do *${medNome}* cadastrado.\n` +
+        `Me diz quantos ${rotulo} você tem em casa e eu te aviso quando estiver acabando, ` +
+        `pra você comprar antes de ficar sem.`
     );
 }

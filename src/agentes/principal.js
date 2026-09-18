@@ -22,7 +22,7 @@ import {
     confirmarDoseRetroativa,
     reverterConfirmacao
 } from '../database.js';
-import { buildAlertaEstoquePosConfirmacao } from '../templates/estoqueTemplates.js';
+import { buildAlertaEstoquePosConfirmacao, buildConviteEstoqueNaoCadastrado } from '../templates/estoqueTemplates.js';
 import { degradar } from '../observabilidade.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -218,7 +218,13 @@ Medicamentos cadastrados: ${medications.length === 0
 
             const tratamentoInfo = `tipo: ${m.tipo_tratamento || 'contínuo'}`;
 
-            return `[id:${m.id}] ${m.nome} (${m.dosagem}, estoque: ${m.estoque_atual}, horários: ${horarios}, ${proximaDoseStr}, ${tratamentoInfo})`;
+            // v43 Bloco C Adendo 1 (P49): "não informado" nunca vira "estoque: null"
+            // no prompt — o LLM levaria isso ao pé da letra.
+            const estoqueTexto = (m.estoque_atual === null || m.estoque_atual === undefined)
+                ? 'estoque: não informado'
+                : `estoque: ${m.estoque_atual}`;
+
+            return `[id:${m.id}] ${m.nome} (${m.dosagem}, ${estoqueTexto}, horários: ${horarios}, ${proximaDoseStr}, ${tratamentoInfo})`;
         }).join(' | ')
     }
 
@@ -353,7 +359,14 @@ async function processAction(action, user) {
             // Verificar se deve emitir alerta de estoque pós-confirmação
             try {
                 const estoqueInfo = await getEstoqueInfoParaAlerta(medId);
-                if (estoqueInfo) {
+                if (estoqueInfo?.estoqueDesconhecido) {
+                    // v43 Bloco C Adendo 1: convite (não alerta) na 1ª confirmação do
+                    // dia, persistindo enquanto o estoque continuar NULL.
+                    const confirmacoesDoDia = await contarConfirmacoesHoje(medId);
+                    if (confirmacoesDoDia <= 1) {
+                        return { alertaEstoque: buildConviteEstoqueNaoCadastrado(estoqueInfo) };
+                    }
+                } else if (estoqueInfo) {
                     const confirmacoesDoDia = await contarConfirmacoesHoje(medId);
                     const deveAlertar = calcularAlertaEstoque({
                         diasRestantes: estoqueInfo.diasRestantes,
@@ -388,7 +401,12 @@ async function processAction(action, user) {
             }
             try {
                 const estoqueInfo = await getEstoqueInfoParaAlerta(medIdRetro);
-                if (estoqueInfo) {
+                if (estoqueInfo?.estoqueDesconhecido) {
+                    const confirmacoesDoDia = await contarConfirmacoesHoje(medIdRetro);
+                    if (confirmacoesDoDia <= 1) {
+                        return { alertaEstoque: buildConviteEstoqueNaoCadastrado(estoqueInfo) };
+                    }
+                } else if (estoqueInfo) {
                     const confirmacoesDoDia = await contarConfirmacoesHoje(medIdRetro);
                     const deveAlertar = calcularAlertaEstoque({
                         diasRestantes: estoqueInfo.diasRestantes,

@@ -614,6 +614,21 @@ export async function confirmDose(medicationId) {
         .eq('id', log.id);
     console.log(`✅ Dose confirmada — log id: ${log.id}`);
 
+    // v43 Bloco C Adendo 1 (P49): estoque NULL ("não informado") nunca é decrementado
+    // — sem baseline real, um delta contra 0 criaria um zero falso (a causa raiz
+    // observada em staging: confirmar dose de um remédio com estoque nunca informado
+    // gravava estoque_atual = 0 de verdade, transformando "não sei" em "acabou").
+    const { data: medAtual } = await supabase
+        .from('medications')
+        .select('estoque_atual')
+        .eq('id', medicationId)
+        .single();
+
+    if (medAtual?.estoque_atual === null || medAtual?.estoque_atual === undefined) {
+        console.log(`📦 Estoque não informado — movimento de dose_confirmada pulado (medication: ${medicationId})`);
+        return;
+    }
+
     // Decrementa o estoque (MH-073: quantidade vem da posologia, não é mais fixa em 1)
     const deltaDose = await calcularDeltaEstoqueDaDose(log);
     await registrarMovimentoEstoque({
@@ -773,6 +788,13 @@ export async function confirmDoseByLogId(doseLogId) {
 
     if (updateError) throw new Error(`Erro ao confirmar dose: ${updateError.message}`);
     console.log(`✅ Dose confirmada por log id: ${doseLogId}`);
+
+    // v43 Bloco C Adendo 1 (P49): estoque NULL ("não informado") nunca é decrementado
+    // — ver comentário em confirmDose acima, mesma causa raiz.
+    if (log.medications?.estoque_atual === null || log.medications?.estoque_atual === undefined) {
+        console.log(`📦 Estoque não informado — movimento de dose_confirmada pulado (medication: ${log.medication_id})`);
+        return log.medication_id;
+    }
 
     const deltaDose = await calcularDeltaEstoqueDaDose(log);
     await registrarMovimentoEstoque({
@@ -952,6 +974,12 @@ export async function confirmarDoseRetroativa(doseLogId, motivo) {
     if (updateError) throw new Error(`Erro ao confirmar dose retroativa: ${updateError.message}`);
     console.log(`⏪ Dose confirmada retroativamente — log id: ${doseLogId}`);
 
+    // v43 Bloco C Adendo 1 (P49): estoque NULL ("não informado") nunca é decrementado.
+    if (log.medications?.estoque_atual === null || log.medications?.estoque_atual === undefined) {
+        console.log(`📦 Estoque não informado — movimento de dose_retroativa pulado (medication: ${log.medication_id})`);
+        return log.medication_id;
+    }
+
     const deltaDose = await calcularDeltaEstoqueDaDose(log);
     await registrarMovimentoEstoque({
         medicationId: log.medication_id,
@@ -992,6 +1020,14 @@ export async function reverterConfirmacao(doseLogId, motivo) {
 
     if (updateError) throw new Error(`Erro ao reverter confirmação: ${updateError.message}`);
     console.log(`↩️ Confirmação revertida — log id: ${doseLogId}, novo status: ${novoStatus}`);
+
+    // v43 Bloco C Adendo 1 (P49): estoque NULL ("não informado") nunca é incrementado
+    // de volta — se nunca foi decrementado (guarda em confirmDoseByLogId), não há o
+    // que reverter, e inventar um número aqui seria o mesmo colapso ao contrário.
+    if (log.medications?.estoque_atual === null || log.medications?.estoque_atual === undefined) {
+        console.log(`📦 Estoque não informado — movimento de dose_revertida pulado (medication: ${log.medication_id})`);
+        return { medicationId: log.medication_id, novoStatus };
+    }
 
     const deltaDose = await calcularDeltaEstoqueDaDose(log);
     await registrarMovimentoEstoque({
@@ -1674,7 +1710,7 @@ export async function getUsuariosAtivos() {
 export async function getEstoqueInfoParaAlerta(medicationId) {
     const { data: med } = await supabase
         .from('medications')
-        .select('nome, estoque_atual, tipo_tratamento, tratamento_dias, forma_farmaceutica')
+        .select('nome, estoque_atual, tipo_tratamento, tratamento_dias, forma_farmaceutica, unidade_estoque')
         .eq('id', medicationId)
         .single();
 
@@ -1686,15 +1722,21 @@ export async function getEstoqueInfoParaAlerta(medicationId) {
     const { consumoDiario, dosesPerDia } = await calcularConsumoDiario(medicationId);
     if (dosesPerDia === 0 || consumoDiario <= 0) return null;
 
-    const diasRestantes = Math.floor(Number(med.estoque_atual) / consumoDiario);
+    // v43 Bloco C Adendo 1 (P49): NULL é "nunca informado", não "acabou". Nunca
+    // colapsar num número — Number(null) é 0 e produz o alerta de última dose para
+    // quem nunca contou o estoque. Quem consome este retorno decide pelo
+    // estoqueDesconhecido, nunca por diasRestantes/novoEstoque sozinhos.
+    const estoqueDesconhecido = med.estoque_atual === null || med.estoque_atual === undefined;
 
     return {
         medNome: med.nome,
         medForma: med.forma_farmaceutica,
-        novoEstoque: med.estoque_atual,
+        unidadeEstoque: med.unidade_estoque,
+        estoqueDesconhecido,
+        novoEstoque: estoqueDesconhecido ? null : med.estoque_atual,
         dosesPerDia,
         consumoDiario,
-        diasRestantes,
+        diasRestantes: estoqueDesconhecido ? null : Math.floor(Number(med.estoque_atual) / consumoDiario),
         tipo_tratamento: med.tipo_tratamento || 'continuo',
         tratamento_dias: med.tratamento_dias || null
     };
@@ -1711,6 +1753,12 @@ export async function getEstoqueStatusSimples(medicationId) {
         .single();
 
     if (!med) return null;
+
+    // v43 Bloco C Adendo 1 (P49): NULL nunca é "crítico" — é "desconhecido". Quem
+    // consumir `status` precisa tratar 'desconhecido' sem afirmar quantidade.
+    if (med.estoque_atual === null || med.estoque_atual === undefined) {
+        return { medNome: med.nome, estoqueAtual: null, status: 'desconhecido' };
+    }
 
     const status = med.estoque_atual <= 0
         ? 'critico'
@@ -1740,7 +1788,12 @@ export async function contarConfirmacoesHoje(medicationId) {
 
 // Classifica o nível de urgência do estoque com base em unidades reais E dias de
 // cobertura — nunca infere "zerado" a partir de diasRestantes sozinho (BUG-065).
+//
+// v43 Bloco C Adendo 1 (P49): barreira contra qualquer chamador futuro que tente
+// produzir "zerado" a partir de nulo. novoEstoque/diasRestantes nulos são "nunca
+// informado" — nunca "sem unidades".
 export function classificarNivelEstoquePorDias({ novoEstoque, diasRestantes }) {
+    if (novoEstoque === null || novoEstoque === undefined) return 'desconhecido';
     if (novoEstoque <= 0) return 'zerado';       // literalmente sem unidades
     if (diasRestantes === 0) return 'urgente';   // sobra estoque, mas não fecha 1 dia
     return 'ok';                                  // diasRestantes >= 1

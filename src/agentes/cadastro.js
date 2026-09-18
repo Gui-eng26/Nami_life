@@ -324,7 +324,13 @@ function renderizarPerguntaEstoque(etapa, context) {
             if (context?.status_frasco === 'fechado') return `Quantos frascos de ${nome} você tem?`;
             return `O frasco de ${nome} já está *ABERTO* (você já está usando) ou ainda está *FECHADO* (nunca foi aberto)?`;
         }
-        return `Quantas unidades de ${nome} você tem agora?`;
+        // v43 Bloco C Adendo 1 (seção 6): pergunta proativa, explica o benefício na
+        // mesma frase, e usa o rótulo da forma farmacêutica — nunca "unidades" genérico.
+        {
+            const forma = derivarFormaFarmaceutica(context?.forma_explicita, context?.forma_confirmada, context?.unidade_dose);
+            const rotulo = pluralizarRotulo(rotuloDaDose(context?.unidade_dose, forma), 2);
+            return `Me fala quantos ${rotulo} de ${nome} você tem em casa hoje? Assim eu te aviso quando estiver acabando, pra você comprar antes de ficar sem.`;
+        }
     }
 
     if (etapa === 'cad_estoque_volume') {

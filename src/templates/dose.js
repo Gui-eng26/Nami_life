@@ -113,3 +113,21 @@ export function linhaQuantidadeDose(args, { indentacao = '' } = {}) {
     const rotulo = formatarQuantidadeDose(args);
     return rotulo ? `\n${indentacao}Quantidade: ${rotulo}` : '';
 }
+
+/**
+ * v43 Bloco C Adendo 1 — rótulo PLURAL da unidade de ESTOQUE (não de dose): "comprimidos",
+ * "cápsulas", "ml" — para perguntas como "quantos X você tem em casa?" e para o convite de
+ * estoque não informado. Reaproveita formatarQuantidadeDose (mesma tabela de substantivos),
+ * nunca reimplementa o mapeamento — só força uma quantidade plural (2) e descarta o número.
+ *
+ * unidade_estoque decide a CATEGORIA (ml é sempre "ml"; qualquer outra coisa é contável e
+ * usa o substantivo derivado de forma_farmaceutica) — nunca unidade_dose: estoque líquido
+ * em gotas ainda é contado em ml (gotas_por_ml já faz essa conversão na dose).
+ *
+ * @returns {string} ex: "comprimidos" · "cápsulas" · "ml" · "unidades"
+ */
+export function rotuloEstoquePlural({ unidade_estoque, forma_farmaceutica }) {
+    const unidadeDoseEquivalente = unidade_estoque === 'ml' ? 'ml' : 'unidade';
+    const rotulo = formatarQuantidadeDose({ quantidade: 2, unidade_dose: unidadeDoseEquivalente, forma_farmaceutica });
+    return rotulo ? rotulo.replace(/^2 /, '') : 'unidades';
+}

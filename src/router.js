@@ -5,7 +5,7 @@ import { getConversationState, logAgentInteraction, getRecentDoses,
     getDosesRetroativas, confirmarDoseRetroativa, usuarioRespondeuDesde } from './database.js';
 import { registrarEvento, registrarFeedback } from './observabilidade.js';
 import { CAPACIDADES, NAO_SUPORTADO } from './inventario.js';
-import { buildAlertaEstoquePosConfirmacao } from './templates/estoqueTemplates.js';
+import { buildAlertaEstoquePosConfirmacao, buildConviteEstoqueNaoCadastrado } from './templates/estoqueTemplates.js';
 import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
 import { handleCadastro, repetirPerguntaCadastro } from './agentes/cadastro.js';
@@ -97,7 +97,12 @@ async function tentarConfirmarRespostaTardia(user, message) {
     for (const medId of medicationIds) {
         try {
             const estoqueInfo = await getEstoqueInfoParaAlerta(medId);
-            if (estoqueInfo) {
+            if (estoqueInfo?.estoqueDesconhecido) {
+                // v43 Bloco C Adendo 1: estoque nunca informado é um CONVITE, não um
+                // alerta — e só na 1ª confirmação do dia, persistindo enquanto for NULL.
+                const confirmacoesDoDia = await contarConfirmacoesHoje(medId);
+                if (confirmacoesDoDia <= 1) alertaSufixo += buildConviteEstoqueNaoCadastrado(estoqueInfo);
+            } else if (estoqueInfo) {
                 const confirmacoesDoDia = await contarConfirmacoesHoje(medId);
                 const deveAlertar = calcularAlertaEstoque({
                     diasRestantes: estoqueInfo.diasRestantes,
@@ -673,7 +678,10 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             let alertaSufixo = '';
             try {
                 const estoqueInfo = await getEstoqueInfoParaAlerta(doseLog.medication_id);
-                if (estoqueInfo) {
+                if (estoqueInfo?.estoqueDesconhecido) {
+                    const confirmacoesDoDia = await contarConfirmacoesHoje(doseLog.medication_id);
+                    if (confirmacoesDoDia <= 1) alertaSufixo = buildConviteEstoqueNaoCadastrado(estoqueInfo);
+                } else if (estoqueInfo) {
                     const confirmacoesDoDia = await contarConfirmacoesHoje(doseLog.medication_id);
                     const deveAlertar = calcularAlertaEstoque({
                         diasRestantes: estoqueInfo.diasRestantes,

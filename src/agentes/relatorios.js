@@ -368,7 +368,11 @@ async function relatorioEstoque({ user, message, params }) {
 
     let msg = cabecalho;
     for (const m of lista) {
-        if (m.estoque_atual <= 0) {
+        // v43 Bloco C Adendo 1 (P49): NULL é "nunca informado", nunca "acabou" —
+        // ramo próprio ANTES do `<= 0`, que em JS é `true` para null.
+        if (m.estoque_atual === null || m.estoque_atual === undefined) {
+            msg += `📦 *${m.nome}* — estoque não informado (me diga quantos você tem e eu acompanho)\n`;
+        } else if (m.estoque_atual <= 0) {
             msg += `🚨 *${m.nome}* — sem estoque! Compre com urgência\n`;
         } else if (m.estoque_atual <= m.estoque_minimo) {
             msg += `⚠️ *${m.nome}* — ${m.estoque_atual} unidades (hora de comprar mais!)\n`;

@@ -296,7 +296,7 @@ Exemplo: "Anotei aqui 📝
 Agora me conta: qual remédio você quer cadastrar? Se quiser, já manda tudo de uma vez —
 nome, quanto você toma por vez e os horários.
 
-Por exemplo: Losartana, 1 comprimido, 8h e 20h"`;
+Por exemplo: Losartana 50mg, 1 comprimido, 8h e 20h"`;
     }
 
     return base;
