@@ -112,9 +112,11 @@ export function buildEstoqueAtualizadoMessage({ medNome, estoqueAnterior, estoqu
 // quantidade. É um convite a completar o cadastro, com o benefício explícito.
 export function buildConviteEstoqueNaoCadastrado({ medNome, medForma, unidadeEstoque }) {
     const rotulo = rotuloEstoquePlural({ unidade_estoque: unidadeEstoque, forma_farmaceutica: medForma });
+    // v44 (replay 19/09, Constituição regra 1): convite, nunca ordem — com a porta
+    // de saída implícita ("se souber").
     return (
         `\n\n📦 Ainda não tenho o estoque do *${medNome}* cadastrado.\n` +
-        `Me diz quantos ${rotulo} você tem em casa e eu te aviso quando estiver acabando, ` +
-        `pra você comprar antes de ficar sem.`
+        `Se souber quantos ${rotulo} você tem em casa, é só me falar — eu anoto e te aviso ` +
+        `quando estiver acabando, pra você comprar antes de ficar sem.`
     );
 }

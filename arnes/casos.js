@@ -373,7 +373,7 @@ export const CASOS = [
             const r2 = await turno(ctx, user, 'Losartana 50mg, 1cp às 13:32');
             checagensDeForma(checks, 'turno 2', r2);
             checks.push({ nome: 'turno 2: nada ignorado — responde sobre a Losartana (regra 3)', ...contem(r2, /losartana/i, 'Losartana') });
-            checks.push({ nome: 'turno 2: não repete a pergunta de estoque do anterior', ...naoContem(r2, /quantos comprimidos de Desvenlafaxina/i, 'repergunta de estoque do anterior') });
+            checks.push({ nome: 'turno 2: não repete o convite de estoque do anterior', ...naoContem(r2, /quantos .{0,30}Desvenlafaxina|cadastrar o estoque do \*?Desvenlafaxina/i, 'convite de estoque do anterior') });
 
             const losartana = await medicamentos(ctx.db, user.id, { nomeIlike: 'Losartana%' });
             const horariosLosartana = losartana.flatMap(m => (m.schedules || []).filter(s => s.ativo).map(s => String(s.horario).slice(0, 5)));

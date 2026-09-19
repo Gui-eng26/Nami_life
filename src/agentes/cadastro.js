@@ -336,7 +336,7 @@ function montarFechamentoEstoque({ med, alerta, primeiroMedicamento, firstName }
 // conversa em vez da etapa real, trocando "VOLUME" por "DOSAGEM" e por aí vai. Uma
 // etapa determinística com pergunta gerada pelo LLM ainda deixava esse espaço; com o
 // texto fixo aqui, não sobra o que confundir.
-function renderizarPerguntaEstoque(etapa, context) {
+function renderizarPerguntaEstoque(etapa, context, firstName = null) {
     const nome = context?.nome || '{nome}';
     const acao = context?.acaoEstoque;
 
@@ -354,12 +354,15 @@ function renderizarPerguntaEstoque(etapa, context) {
             if (context?.status_frasco === 'fechado') return `Quantos frascos de ${nome} você tem?`;
             return `O frasco de ${nome} já está *ABERTO* (você já está usando) ou ainda está *FECHADO* (nunca foi aberto)?`;
         }
-        // v43 Bloco C Adendo 1 (seção 6): pergunta proativa, explica o benefício na
-        // mesma frase, e usa o rótulo da forma farmacêutica — nunca "unidades" genérico.
+        // v43 Bloco C Adendo 1 (seção 6): explica o benefício na mesma frase e usa o
+        // rótulo da forma farmacêutica — nunca "unidades" genérico.
+        // v44 (replay 19/09, Constituição regra 1): estoque é opcional — o pedido é
+        // CONVITE, nunca ordem ("me fala..."), e carrega a porta de saída na própria
+        // mensagem.
         {
             const forma = derivarFormaFarmaceutica(context?.forma_explicita, context?.forma_confirmada, context?.unidade_dose);
             const rotulo = pluralizarRotulo(rotuloDaDose(context?.unidade_dose, forma), 2);
-            return `Me fala quantos ${rotulo} de ${nome} você tem em casa hoje? Assim eu te aviso quando estiver acabando, pra você comprar antes de ficar sem.`;
+            return `${firstName ? `${firstName}, se` : 'Se'} você souber e já quiser cadastrar o estoque do ${nome}, é só me falar quantos ${rotulo} tem em casa — eu anoto e te aviso quando estiver acabando, pra você comprar antes de ficar sem. Se não souber agora, tudo bem também.`;
         }
     }
 
@@ -3024,10 +3027,10 @@ Não repita horários nem quantidade coletados antes.`;
             const prefixoGravacao = context?.medicamentoRecemGravado
                 ? `Comece com a linha EXATA "*${context.medicamentoRecemGravado}* cadastrado! Vou te lembrar nos horários certos. 💊", pule uma linha, e então `
                 : '';
-            return `${prefixoGravacao}Faça EXATAMENTE esta pergunta, sem reescrever, sem acrescentar outra pergunta e
+            return `${prefixoGravacao}Reproduza EXATAMENTE este texto, sem reescrever, sem acrescentar pergunta e
 sem antecipar nenhuma etapa seguinte (é fluxo de dado de saúde renderizado em código):
 "${pergunta}"
-${context?.medicamentoRecemGravado ? '' : 'Você pode acrescentar no máximo uma saudação curta e calorosa ANTES da pergunta.\n'}Não confirme nada como registrado ou salvo além do que a linha "Anotei aqui" (quando houver) já diz.`;
+${context?.medicamentoRecemGravado ? '' : 'Você pode acrescentar no máximo uma saudação curta e calorosa ANTES dele.\n'}Não confirme nada como registrado ou salvo por conta própria.`;
         }
 
         case 'cad_confirmacao':
@@ -3485,7 +3488,7 @@ export async function handleCadastro({ user, message, state, context, historicoC
         const { resumo, med: medGravado } = await montarResumoDoBanco(resultado.med.id);
 
         if (proximaEtapaReal.startsWith('cad_estoque')) {
-            const pergunta = renderizarPerguntaEstoque(proximaEtapaReal, contextComMedId);
+            const pergunta = renderizarPerguntaEstoque(proximaEtapaReal, contextComMedId, firstName);
             await saveConversationState(user.id, {
                 state: 'adding_med',
                 context: { ...contextComMedId, etapa: proximaEtapaReal }
