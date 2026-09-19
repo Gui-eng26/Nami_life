@@ -604,6 +604,16 @@ export const CASOS = [
             checks.push({ nome: 'postura AINDA_NAO: honestidade + expectativa', ...contem(r2, /ainda n[ãa]o|est(á|a) chegando|em breve|estou aprendendo/i, 'honestidade com expectativa') });
             checks.push({ nome: 'oferece o caminho real (a própria pessoa usar a Nami)', ...contem(r2, /pr[óo]pri[ao]|telefone del[ae]|n[úu]mero del[ae]|el[ae] .{0,25}(usar|falar|conversar|mandar|me chamar)/i, 'caminho real de hoje') });
             checks.push({ nome: 'mantém o acolhimento e segue a recepção (pede o nome)', ...contem(r2, /chamar|nome/i, 'retomada da recepção') });
+
+            // Turno real da validação humana (19/09): o agradecimento de fechamento
+            // recebia a explicação INTEIRA de novo (regra 6 do guia).
+            const r3 = await turno(ctx, user, 'Ah não, eu não uso remédio. Obrigado');
+            checagensDeForma(checks, 'fechamento', r3);
+            // Aceno curto de porta aberta ("é só mandar um oi") é ok — o proibido é a
+            // REEXPLICAÇÃO (limite de capacidade + expectativa + caminho, de novo).
+            checks.push({ nome: 'fechamento: não reexplica o que acabou de dizer', ...naoContem(r3, /ainda n[ãa]o conect|est(á|a) chegando|funcionalidade|caminho que j[áa] funciona|pr[óo]pria pessoa que toma/i, 'reexplicação do turno anterior') });
+            const linhasFechamento = r3.split('\n').map(l => l.trim()).filter(Boolean).length;
+            checks.push({ nome: 'fechamento curto (até 3 linhas de conteúdo)', ok: linhasFechamento <= 3, detalhe: `${linhasFechamento} linha(s) de conteúdo` });
             return checks;
         }
     },
