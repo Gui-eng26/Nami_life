@@ -409,7 +409,24 @@ export async function registrarMovimentoEstoque({
 // HORÁRIOS
 // ============================================================
 
+// v44 M2 (ACH-3): guarda anti-duplicata no PONTO ÚNICO de escrita de schedules —
+// horário duplicado do mesmo medicamento é recusado (skip com log), nunca inserido.
+// replaceMedication/reativarComAtualizacao apagam/desativam antes de recriar, então
+// nunca esbarram na guarda; quem esbarraria é exatamente o bug que ela mata.
 export async function saveSchedule({ medicationId, horario, quantidadePorDose = 1 }) {
+    const horarioStr = String(horario).substring(0, 5);
+    const { data: existentes } = await supabase
+        .from('schedules')
+        .select('id, horario')
+        .eq('medication_id', medicationId)
+        .eq('ativo', true);
+
+    const duplicado = (existentes || []).some(s => String(s.horario).substring(0, 5) === horarioStr);
+    if (duplicado) {
+        console.warn(`⚠️ [ACH-3] saveSchedule recusou horário duplicado ${horarioStr} (medication: ${medicationId})`);
+        return;
+    }
+
     const { error } = await supabase
         .from('schedules')
         .insert({

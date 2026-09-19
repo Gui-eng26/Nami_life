@@ -9,7 +9,8 @@ import { buildAlertaEstoquePosConfirmacao, buildConviteEstoqueNaoCadastrado } fr
 import { interpretarTurno } from './porta.js';
 import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
-import { handleCadastro, repetirPerguntaCadastro } from './agentes/cadastro.js';
+import { executarRunner, repetirPergunta } from './runner.js';
+import { SCHEMA_CADASTRO } from './schemas/cadastro.js';
 import { handleRelatorios, extrairPeriodo } from './agentes/relatorios.js';
 import { handleConfiguracao } from './agentes/configuracao.js';
 import { handleExclusaoConta, confirmarIntencaoExclusaoConta } from './agentes/exclusaoConta.js';
@@ -417,14 +418,14 @@ async function entrarNoCadastro({ user, message, image, state, camposExtraidos =
 }
 
 // ============================================================
-// DESPACHO DE CADASTRO (MH-073 Parte B.1) — ponto ÚNICO de chamada de handleCadastro.
+// DESPACHO DE CADASTRO (MH-073 Parte B.1) — ponto ÚNICO de chamada do runner do cadastro.
 // REGRA DE REENTRADA: quando a porta, reinterpretando a escalada, devolve
 // 'cadastro' de novo, ela está CONCORDANDO que o usuário não saiu do fluxo —
 // contexto mantido, pergunta pendente repetida. Nenhum dado coletado é descartado.
 // ============================================================
 async function despacharCadastro({ user, message, image, state, context, historicoConversa,
                                    contextoProativo = null }) {
-    const resultado = await handleCadastro({ user, message, state, context, historicoConversa });
+    const resultado = await executarRunner({ schema: SCHEMA_CADASTRO, user, message, state, context, historicoConversa });
 
     if (!resultado?.escalarParaRoteador) {
         return { agentName: 'cadastro', response: resultado };
@@ -449,7 +450,8 @@ async function despacharCadastro({ user, message, image, state, context, histori
         // pergunta pendente sem descartar nada (comportamento original).
         if (citaOutroMedicamento(proposta.campos?.medicamentos, context?.nome)) {
             console.log(`💊 [ESCALADA-CADASTRO] Novo medicamento sobre cadastro em andamento (${context?.nome} → ${proposta.campos.medicamentos.join(', ')}) — ${user.phone}`);
-            const respostaNovo = await handleCadastro({
+            const respostaNovo = await executarRunner({
+                schema: SCHEMA_CADASTRO,
                 user, message, state: { state: 'idle', context: {} }, historicoConversa,
                 context: { etapa: 'cad_nome' }
             });
@@ -464,7 +466,7 @@ async function despacharCadastro({ user, message, image, state, context, histori
         }
 
         console.log(`💊 [ESCALADA-CADASTRO] Porta confirmou cadastro — mantendo fluxo — ${user.phone}`);
-        const retomada = await repetirPerguntaCadastro({ context, userName: user.name, historicoConversa });
+        const retomada = await repetirPergunta({ schema: SCHEMA_CADASTRO, context, userName: user.name });
         return { agentName: 'cadastro', response: retomada, feedback: proposta.feedback };
     }
 
@@ -523,10 +525,11 @@ async function despacharEscalada({ user, message, image, contextoPreservado, his
 
         if (intencao === 'cadastro') {
             console.log(`💊 [ESCALADA] Roteando para cadastro — ${user.phone}`);
-            // Chama handleCadastro DIRETO, não despacharCadastro — despacharEscalada
+            // Chama o runner DIRETO, não despacharCadastro — despacharEscalada
             // já É o destino de uma escalada; despachar de dentro do despacho criaria
             // recursão. A entrada única monta o contexto mínimo aqui.
-            response = await handleCadastro({
+            response = await executarRunner({
+                schema: SCHEMA_CADASTRO,
                 user, message, state: idleState, historicoConversa,
                 context: { etapa: 'cad_nome' }
             });
