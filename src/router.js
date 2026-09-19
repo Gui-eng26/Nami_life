@@ -806,7 +806,11 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             && isAffirmativeSimple(message) && state?.context?.mensagem_rica) {
             console.log(`💊 Aceite pós-onboarding com mensagem rica preservada — ${user.phone}`);
             const rCad = await entrarNoCadastro({
-                user, message, image, state, camposExtraidos: null,
+                user, message, image, state,
+                // campos que a porta extraiu da mensagem rica no turno anterior —
+                // sem eles, uma mensagem com N medicamentos perderia o caminho
+                // multi-med (achado da 1ª execução do arnês, A2).
+                camposExtraidos: state?.context?.campos_rica ?? null,
                 historicoConversa, contextoProativo
             });
             agentName = rCad.agentName;
@@ -840,17 +844,18 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         }
 
         // ---- PORTA ÚNICA (§5.1): 1 chamada de interpretação por turno ----
+        let propostaPorta = null;
         if (response === undefined) {
-            const proposta = await interpretarTurno({
+            propostaPorta = await interpretarTurno({
                 message, currentState, historicoConversa, contextoProativo, mensagemCitada
             });
 
-            if (!proposta) {
+            if (!propostaPorta) {
                 agentName = 'porta_degradada';
                 response = reperguntaSegura(user);
             } else {
                 const r = await despacharPorProposta({
-                    proposta, user, message, image, state, currentState,
+                    proposta: propostaPorta, user, message, image, state, currentState,
                     historicoConversa, contextoProativo
                 });
                 agentName = r.agentName;
@@ -861,13 +866,18 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         }
 
         // Pós-onboarding: guarda SEMPRE a mensagem anterior (§5.1, rede de segurança
-        // P57 — a condição de regex que perdeu os 4 medicamentos da Thaielly morreu).
+        // P57 — a condição de regex que perdeu os 4 medicamentos da Thaielly morreu),
+        // junto com os campos que a porta extraiu dela (o "sim" seguinte recupera tudo).
         if (currentState === 'post_onboarding' && agentName === 'principal') {
             const exchanges = state?.context?.exchanges || 0;
             if (exchanges < 1) {
                 await saveConversationState(user.id, {
                     state: 'post_onboarding',
-                    context: { exchanges: exchanges + 1, mensagem_rica: message }
+                    context: {
+                        exchanges: exchanges + 1,
+                        mensagem_rica: message,
+                        campos_rica: propostaPorta?.campos ?? null
+                    }
                 });
                 console.log(`🔄 post_onboarding preservado com mensagem_rica (exchanges: ${exchanges + 1}) — ${user.phone}`);
             }

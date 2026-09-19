@@ -1,23 +1,33 @@
-# Baseline do arnês — pré-M1 (documentado em 19/09/2026)
+# Baseline do arnês — 1ª execução real (19/09/2026, staging, alvo M1)
 
-**Status: previsto a partir das transcrições reais de produção; aguardando a
-1ª execução** (o arnês exige `.env.arnes` apontando para o staging — a máquina
-local só tem credenciais de produção, que o arnês recusa por construção).
+Executado por Guilherme após a implementação completa do M1 (commits até
+`fix: v44 §5.6/T0 concluído`). Resultado: **50 asserções verdes · 7 falhas no
+alvo M1 · 4 conhecidas (M2/M4)**.
 
-Vermelhos esperados no baseline, caso a caso, com a evidência de produção que
-os define:
-
-| Caso | Vermelho esperado no baseline | Evidência (agent_logs, produção) |
+| Caso | Resultado | Observação |
 |---|---|---|
-| A1 | Confirmação declarativa — hoje responde "Anotei aqui: *Minoxidil*", que a regra 2 não aceita como confirmação de persistência | Sid 18/09 16:05 UTC-3 |
-| A2 | "Sim" pós-mensagem rica perde os dados (mensagem_rica exige horário+palavra NA MESMA linha; "8h" isolado não casa) → repergunta o nome | Thaielly 18/09: "Sim" → "Qual o *NOME* do medicamento?" |
-| A3 | Grava posologia de dias da semana sem representá-la e sem avisar do limite | Manô 18/09 15:26 |
-| A4 | "sim" com dose pendente durante adding_med é engolido pelo ramo 9 (cadastro) — dose não confirmada | Manô 19/09 09:58 (corrigida à mão em produção) |
-| A5 | Dois blocos de estoque na mesma mensagem, com números divergentes (pré e pós-débito) | Eloísa ("4"+"3"), Wellington ("2"+"1"), Flávia 18/09 |
-| A6 | "Depois faço isso" na pergunta de estoque responde "parei o cadastro por aqui" com o medicamento JÁ gravado e ativo | Carla 18/09 16:46 |
-| A7 | Consentimento LGPD sai como parágrafo corrido, sem lista com emoji semântico (a forma só aparecia quando o usuário se chamava Guilherme — exemplo literal do guia) | João, staging 18/09 06:36 |
-| A8 | Recusa de áudio é atalho fora do pipeline (`agent.js:12`) — invisível em agent_logs e fora do funil | código |
-| A9 | 🟡 conhecido (M2 — BUG-103): correção "Na verdade 9" no resumo é ignorada e a pergunta repetida | João Pedro 18/09 15:52 |
-| A10 | 🟡 conhecido (M4): data de nascimento enviada junto do nome é reperguntada | Felipe 18/09 12:02 |
+| A1 | ✅ VERDE (11/11) | mensagem rica → gravado em 1 turno, confirmação declarativa |
+| A2 | ❌ 5 falhas | porta propôs `nao_suportado` para a mensagem com 4 medicamentos (multi-med está na lista AINDA_NAO e a porta seguiu o inventário ao pé da letra, desviando do cadastro); o "sim" recuperou a mensagem rica mas sem os campos da porta → sem caminho multi-med → reperguntou horários |
+| A3 | ❌ 2 falhas | mesma causa raiz da A2 (porta → nao_suportado); e o validador de recorrência só disparava quando o extrator produzia pares — com texto de dia-da-semana ele não produz |
+| A4 | ✅ VERDE (5/5) | dose vence coleta, estado preservado |
+| A5 | ✅ VERDE (6/6) | um único bloco de estoque, número pós-débito |
+| A6 | ✅ VERDE (6/6) | recusa do estoque fecha pela verdade do banco |
+| A7 | ✅ VERDE (5/5) | consentimento LGPD em lista com emoji por item |
+| A8 | ✅ VERDE (5/5) | recusa de áudio pelo funil, registrada em agent_logs |
+| A9 | 🟡 conhecidos (M2, BUG-103) | correção "Na verdade 9" ainda ignorada |
+| A10 | 🟡 conhecido (M4) | data de nascimento junto do nome ainda reperguntada |
 
-Após a 1ª execução real, substituir esta tabela pela saída do runner.
+Achados de infraestrutura da execução (corrigidos em seguida):
+- `system_events_origem_check` não aceitava `origem: 'porta'` — eventos da porta
+  eram perdidos (migration 20260919000002).
+- Limpeza do arnês quebrava em `stock_movements` (FK deliberadamente sem CASCADE)
+  — passou a usar `delete_user_account`, o mesmo caminho da LGPD.
+
+Correções de comportamento aplicadas após esta execução (re-rodar para validar):
+1. Regra na porta: mensagem que traz medicamento(s) é SEMPRE `cadastro`, mesmo
+   multi-med ou com recorrência — o especialista faz a honestidade de limite
+   sem descartar dados.
+2. Validador de recorrência também dispara por horários citados na mensagem
+   (regex), sem depender do extrator produzir pares.
+3. `campos_rica` preservado junto da `mensagem_rica` — o "sim" recupera o
+   caminho multi-med.

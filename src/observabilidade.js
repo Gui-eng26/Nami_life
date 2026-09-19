@@ -112,6 +112,10 @@ const DEGRADACOES = {
         severidade: 'media',
         titulo: 'Classificador de destino pós-onboarding falhou — assumido outro (post_onboarding)'
     },
+    'porta:interpretacao_falhou_duas_vezes': {
+        severidade: 'media',
+        titulo: 'Porta única falhou nas duas tentativas de interpretação — repergunta segura'
+    },
     'cadastro:classificador_posologia_falhou': {
         severidade: 'media',
         titulo: 'Classificador de posologia falhou — etapa repete a pergunta'

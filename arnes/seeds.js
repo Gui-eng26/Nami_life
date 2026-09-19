@@ -11,10 +11,20 @@ export function fabricaSeeds(db) {
     let proximoSufixo = 1;
 
     async function limparUsuariosDoArnes() {
-        // Staging tem ON DELETE CASCADE nas FKs (corrigido em 18/09) — apagar o
-        // usuário derruba medications/schedules/dose_logs/agent_logs/estado.
-        const { error } = await db.from('users').delete().like('phone', `${PREFIXO_TELEFONE_ARNES}%`);
-        if (error) throw new Error(`Limpeza do arnês falhou: ${error.message}`);
+        // A limpeza usa a MESMA função atômica da exclusão LGPD (delete_user_account):
+        // stock_movements e adesao_estado têm FK deliberadamente sem CASCADE e são
+        // apagados explicitamente lá — DELETE direto em users quebrava nessas duas
+        // (achado da 1ª execução do arnês, 19/09). Reusar o caminho de produção
+        // também exercita a função a cada execução da suíte.
+        const { data: usuarios, error: eSel } = await db.from('users')
+            .select('id, phone')
+            .like('phone', `${PREFIXO_TELEFONE_ARNES}%`);
+        if (eSel) throw new Error(`Limpeza do arnês falhou (seleção): ${eSel.message}`);
+
+        for (const u of usuarios || []) {
+            const { error } = await db.rpc('delete_user_account', { p_user_id: u.id });
+            if (error) throw new Error(`Limpeza do arnês falhou (delete_user_account de ${u.phone}): ${error.message}`);
+        }
     }
 
     async function criarUsuario({ nome = null, onboarded = true, nascimento = null, estado = 'idle', contexto = {} } = {}) {

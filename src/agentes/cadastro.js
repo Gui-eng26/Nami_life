@@ -3239,8 +3239,12 @@ export async function handleCadastro({ user, message, state, context, historicoC
         (Array.isArray(updHorarios.horarios) && updHorarios.horarios.length > 0) ||
         (Array.isArray(updHorarios.pares_posologia) && updHorarios.pares_posologia.length > 0);
     const recorrencia = detectarRecorrenciaNaoSuportada(message);
+    // Achado da 1ª execução do arnês (A3): com texto de dia-da-semana o extrator de
+    // posologia costuma NÃO produzir pares — o gatilho não pode depender só dele.
+    // Horários citados na própria mensagem (regex determinística) também disparam.
+    const horariosNaMensagem = extrairHorariosCitados(message);
 
-    if (recorrencia.detectado && mensagemTrouxeHorarios) {
+    if (recorrencia.detectado && (mensagemTrouxeHorarios || horariosNaMensagem.length > 0)) {
         const { horarios, pares_posologia, intervalo_horas, horario_inicio, ...updatesPreservados } = updHorarios;
 
         // Quantidade embutida nos pares bloqueados sobrevive como pendente —
@@ -3255,9 +3259,8 @@ export async function handleCadastro({ user, message, state, context, historicoC
         const contextoBloqueado = { ...(context || {}), ...updatesPreservados, etapa: 'cad_horarios' };
         await saveConversationState(user.id, { state: 'adding_med', context: contextoBloqueado });
 
-        const citados = extrairHorariosCitados(message);
-        const oferta = citados.length > 0
-            ? `Qual desses horários você quer usar todos os dias — ${citados.join(' ou ')}?`
+        const oferta = horariosNaMensagem.length > 0
+            ? `Qual desses horários você quer usar todos os dias — ${horariosNaMensagem.join(' ou ')}?`
             : 'Qual horário você quer usar todos os dias?';
 
         console.log(`🧱 [VALIDADOR] Recorrência não suportada (${recorrencia.padroes.join(', ')}) — horários bloqueados — ${user.phone}`);
