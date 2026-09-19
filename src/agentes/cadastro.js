@@ -2961,14 +2961,21 @@ A pergunta fica sozinha na última linha (regra 8).`;
             // composto vem primeiro, e o código coleta os pedaços que faltarem.
             // Emenda da regra 8 (Cardilol, 19/09): o exemplo que ILUSTRA a pergunta pode
             // vir depois dela — e o tom continua sendo o da Nami, nunca seco.
-            return `Pergunte a posologia do ${nome} numa pergunta só: QUANTO a pessoa toma por vez
-E em quais HORÁRIOS — com o tom caloroso de sempre (pode abrir com meia frase acolhedora).
-Depois da pergunta, encerre com UM exemplo curto que ilustre a resposta, em linha própria
-começando com "Por exemplo:". Nada além do exemplo depois da pergunta. Ex:
-"Agora me conta como você toma o ${nome} 😊
+            // Sinvalip (19/09): a abertura CONFIRMA a ação em curso, conectando o que a
+            // pessoa acabou de mandar com o que a Nami vai perguntar em seguida.
+            {
+                const nomeComDosagem = context?.dosagem ? `${nome} ${context.dosagem}` : nome;
+                return `A pessoa acabou de mandar o medicamento e o cadastro começou agora. Abra
+CONFIRMANDO a ação em curso, conectando com o que ela disse — chame-a pelo primeiro nome e cite o
+medicamento como ela escreveu (ex: "Certo, {nome do usuário}! Vamos cadastrar o ${nomeComDosagem}
+pra você."). Em seguida, pergunte a posologia numa pergunta só: QUANTO ela toma ou usa por vez E
+em quais HORÁRIOS. Depois da pergunta, encerre com UM exemplo curto que ilustre a resposta, em
+linha própria começando com "Por exemplo:". Nada além do exemplo depois da pergunta. Ex:
+"Certo, Guilherme! Vamos cadastrar o ${nomeComDosagem} pra você. 😊
 
-Quanto você toma por vez, e em quais horários?
-Por exemplo: 1 comprimido às 8h e às 20h"`;
+Me conta: quanto você toma ou usa por vez, e em quais horários?
+Por exemplo: 1 comprimido às 22h"`;
+            }
 
         case 'cad_quantidade_por_dose':
             if (context?.mencionaConcentracao) {
