@@ -2614,8 +2614,14 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
                 // v43 Bloco C: cad_confirma_forma saiu do caminho obrigatório (forma é
                 // sempre derivada) — o salto do MH-80 nunca mais aterrissa lá, então o
                 // preparo de blocoConfirmaForma não é mais necessário aqui.
+                // v44 micro-entrega (caso A2): a próxima etapa considera TAMBÉM o que o
+                // contexto JÁ traz (ex.: horários semeados pela entrada multi-med) —
+                // decidir só pelos updates reperguntava o que já estava coletado (P57).
                 const decisao = montarSaltoCadastroCompleto(completo);
-                return { proximaEtapa: decisao.proximaEtapa, contextUpdates: decisao.contextUpdates };
+                return {
+                    proximaEtapa: primeiraEtapaFaltante({ ...context, ...decisao.contextUpdates }),
+                    contextUpdates: decisao.contextUpdates
+                };
             }
         }
 
@@ -3061,7 +3067,10 @@ function montarBlocoEtapa(etapaDaPergunta, context, nome) {
             if (context?.acaoPosologia === 'indeterminado') {
                 return `Desculpe, não peguei direito 😊 Pergunte de novo a posologia do ${nome} —
 quanto por vez e em quais horários. Não cite nenhum horário ou quantidade — nem os que apareceram
-antes na conversa. Qualquer explicação vem ANTES; a pergunta fica sozinha na última linha (regra 8).`;
+antes na conversa. Se a pessoa mencionou uma apresentação (pó, sachê, spray, creme...), RECONHEÇA
+com honestidade o que ela disse (regra 3) e explique em meia frase que você registra por
+comprimidos, cápsulas, gotas, ml ou unidades (um sachê/uma dose conta como unidade) — nunca finja
+que não viu. Qualquer explicação vem ANTES; a pergunta fica sozinha na última linha (regra 8).`;
             }
             if (context?.quantidade_pendente !== null && context?.quantidade_pendente !== undefined) {
                 return `A quantidade por vez JÁ foi dita e está anotada — falta só o horário.
@@ -3099,6 +3108,10 @@ preciso saber agora é *QUANTO* você toma de cada vez — por exemplo, 1 compri
             if (context?.acaoPosologia === 'indeterminado') {
                 return `Desculpe, não peguei direito 😊 Pergunte de novo *QUANTO* de ${nome} a
 pessoa toma ou usa em cada horário. Não cite quantidades que apareceram antes na conversa.
+Os HORÁRIOS JÁ estão coletados — NUNCA os repergunte nem mencione "quais horários".
+Se a pessoa mencionou uma apresentação (pó, sachê, spray, creme...), RECONHEÇA com honestidade o
+que ela disse (regra 3) e explique em meia frase que você registra por comprimidos, cápsulas,
+gotas, ml ou unidades (um sachê/uma dose conta como unidade) — nunca finja que não viu.
 Exemplos e explicações vêm ANTES; a pergunta fica sozinha na última linha (regra 8).`;
             }
             // v44 (decisão de produto, replay 19/09): os horários JÁ vieram — a pergunta

@@ -10,7 +10,7 @@
 // nunca regressão. Exit code 1 apenas quando uma checagem do alvo falha.
 // ============================================================
 
-const ORDEM_MARCOS = { M1: 1, M2: 2, M4: 4 };
+const ORDEM_MARCOS = { M1: 1, M2: 2, M3: 3, M4: 4 };
 
 function parseArgs(argv) {
     const args = { alvo: 'M1', caso: null, lista: false };

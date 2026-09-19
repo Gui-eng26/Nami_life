@@ -503,5 +503,157 @@ export const CASOS = [
             });
             return checks;
         }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A16',
+        marco: 'M1',
+        titulo: 'Aline 31/08 09:05 (produção) — lista nome+horário ×4 e "Sim" (dano máximo do BUG-104)',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Aline', onboarded: true, estado: 'post_onboarding' });
+
+            // Verdade de persistência (regra 2): afirmação de cadastro exige linha no banco.
+            async function verdadeDePersistencia(rotulo, resposta) {
+                const afirmou = /\bcadastrad[oa]s?\b|\bregistrad[oa]s?\b|tudo (anotado|certo|salvo)/i.test(resposta);
+                const meds = await medicamentos(ctx.db, user.id);
+                checks.push({
+                    nome: `${rotulo}: nunca afirma cadastro sem linha no banco (regra 2)`,
+                    ok: !afirmou || meds.length > 0,
+                    detalhe: afirmou ? `afirmou persistência com ${meds.length} linha(s) no banco` : 'nenhuma afirmação de persistência'
+                });
+            }
+
+            const r1 = await turno(ctx, user, 'Suplemento Bariatron 12:00\nImecap Hair : 08:00\nFluxetina 08:00\nTopiramato 21:00');
+            checagensDeForma(checks, 'turno 1', r1);
+            checks.push({ nome: 'turno 1: reconhece Bariatron', ...contem(r1, /bariatron/i, 'Bariatron') });
+            checks.push({ nome: 'turno 1: reconhece Imecap Hair', ...contem(r1, /imecap/i, 'Imecap') });
+            checks.push({ nome: 'turno 1: reconhece Fluxetina', ...contem(r1, /flu[o]?xetina/i, 'Fluxetina') });
+            checks.push({ nome: 'turno 1: reconhece Topiramato', ...contem(r1, /topiramato/i, 'Topiramato') });
+            await verdadeDePersistencia('turno 1', r1);
+
+            const r2 = await turno(ctx, user, 'Sim');
+            checagensDeForma(checks, 'turno 2', r2);
+            await verdadeDePersistencia('turno 2', r2);
+
+            // M2 (expected-fail): os 4 no banco, cada um com o horário DA SUA linha.
+            const meds = await medicamentos(ctx.db, user.id);
+            const porNome = (padrao) => meds.find(m => padrao.test(m.nome));
+            const horarioDe = (m) => (m?.schedules || []).filter(s => s.ativo).map(s => String(s.horario).slice(0, 5)).join(',');
+            const okM2 = meds.length === 4
+                && horarioDe(porNome(/bariatron/i)) === '12:00'
+                && horarioDe(porNome(/imecap/i)) === '08:00'
+                && horarioDe(porNome(/flux?o?etina/i)) === '08:00'
+                && horarioDe(porNome(/topiramato/i)) === '21:00';
+            checks.push({ marco: 'M2', nome: 'M2: 4 medicamentos, cada um com o horário da própria linha', ok: okM2, detalhe: `${meds.length} med(s): ${meds.map(m => `${m.nome}@${horarioDe(m)}`).join(' | ') || 'nenhum'}` });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A17',
+        marco: 'M1',
+        titulo: 'Priscila 30/08 23:35 (produção) — intenção pura → lista só-nomes → "Pó"',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Priscila', onboarded: true, estado: 'post_onboarding' });
+
+            const r1 = await turno(ctx, user, 'Lembrar de tomar minhas vitaminas');
+            checagensDeForma(checks, 'turno 1', r1);
+            checks.push({ nome: 'turno 1: roteia para coleta, nunca promessa vazia', ...naoContem(r1, /pode deixar|deixa comigo|vou (te )?lembrar/i, 'promessa sem executor') });
+            checks.push({ nome: 'turno 1: pede o medicamento', ...contem(r1, /nome|qual|medicamento|vitamina/i, 'início da coleta') });
+
+            const r2 = await turno(ctx, user, 'Curcuma C \nVitamina de A a Z \nVitamina b12\nVitamina D');
+            checagensDeForma(checks, 'turno 2', r2);
+            checks.push({ nome: 'turno 2: reconhece Curcuma C', ...contem(r2, /curcuma|cúrcuma/i, 'Curcuma') });
+            checks.push({ nome: 'turno 2: reconhece Vitamina de A a Z', ...contem(r2, /de a a z/i, 'Vitamina A a Z') });
+            checks.push({ nome: 'turno 2: reconhece Vitamina B12', ...contem(r2, /b12/i, 'B12') });
+            checks.push({ nome: 'turno 2: reconhece Vitamina D', ...contem(r2, /vitamina d\b/i, 'Vitamina D') });
+
+            const r3 = await turno(ctx, user, 'Pó');
+            checagensDeForma(checks, 'turno 3', r3);
+            checks.push({ nome: 'turno 3: NUNCA repergunta o nome que está na conversa', ...naoContem(r3, /qual o \*?nome\*?|\*NOME\*/i, 'repergunta de nome') });
+            checks.push({ nome: 'turno 3: reconhece o "pó" com honestidade (regra 3/7)', ...contem(r3, /p[óo]\b|sach[êe]/i, 'reconhecimento da apresentação') });
+            const medsGravados = await medicamentos(ctx.db, user.id);
+            checks.push({ nome: 'turno 3: nada gravado errado em silêncio', ok: !medsGravados.some(m => /^p[óo]$/i.test(m.nome)), detalhe: `medicamentos: ${medsGravados.map(m => m.nome).join(', ') || 'nenhum'}` });
+
+            // M2 (expected-fail): a lista dos 4 sobrevive no contexto para iterar item a item.
+            const { data: st } = await ctx.db.from('conversation_state').select('context').eq('user_id', user.id).single();
+            const ctxTexto = JSON.stringify(st?.context || {});
+            const listaPreservada = /b12/i.test(ctxTexto) && /vitamina d/i.test(ctxTexto);
+            checks.push({ marco: 'M2', nome: 'M2: coleta itera item a item sem perder a lista', ok: listaPreservada, detalhe: listaPreservada ? 'lista no contexto' : 'só o 1º item sobrevive no contexto' });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A18',
+        marco: 'M1',
+        titulo: 'Juliana 31/08 16:45 (produção) — "É para uma outra pessoa" na recepção',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: null, onboarded: false, estado: 'idle' });
+
+            await turno(ctx, user, 'oi');
+            const r2 = await turno(ctx, user, 'É para uma outra pessoa');
+            checagensDeForma(checks, 'resposta', r2);
+            checks.push({ nome: 'NÃO afirma capacidade de acompanhar outra pessoa', ...naoContem(r2, /funciona sim|consigo (cuidar|acompanhar)|posso acompanhar os medicamentos d/i, 'afirmação de capacidade fora do FAZ') });
+            checks.push({ nome: 'postura AINDA_NAO: honestidade + expectativa', ...contem(r2, /ainda n[ãa]o|est(á|a) chegando|em breve|estou aprendendo/i, 'honestidade com expectativa') });
+            checks.push({ nome: 'oferece o caminho real (a própria pessoa usar a Nami)', ...contem(r2, /pr[óo]pri[ao]|telefone del[ae]|n[úu]mero del[ae]|el[ae] .{0,25}(usar|falar|conversar|mandar|me chamar)/i, 'caminho real de hoje') });
+            checks.push({ nome: 'mantém o acolhimento e segue a recepção (pede o nome)', ...contem(r2, /chamar|nome/i, 'retomada da recepção') });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A19',
+        marco: 'M1',
+        titulo: 'Flávia 01/09 (produção) — dois produtos num nome ("Regenesis e ofolato D")',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Flávia', onboarded: true, estado: 'post_onboarding' });
+
+            await turno(ctx, user, 'Quero cadastrar um remédio');
+            await turno(ctx, user, 'Regenesis e ofolato D');
+            const r3 = await turno(ctx, user, '1 comprimido às 12h');
+            checagensDeForma(checks, 'turno 3', r3);
+
+            const meds = await medicamentos(ctx.db, user.id);
+            // M2 (expected-fail): dois registros propostos, nunca um nome composto gravado em silêncio.
+            checks.push({ marco: 'M2', nome: 'M2: "X e Y" vira DOIS registros (com confirmação)', ok: meds.length === 2, detalhe: `${meds.length} registro(s): ${meds.map(m => m.nome).join(' | ') || 'nenhum'}` });
+
+            // M1: se gravou como um, a confirmação declara EXATAMENTE o que está no banco.
+            if (meds.length === 1) {
+                checks.push({ nome: 'turno 3: confirmação declara o nome exato gravado (verdade do banco)', ok: r3.includes(meds[0].nome), detalhe: `banco: "${meds[0].nome}"` });
+                checks.push({ nome: 'turno 3: nunca "X e Y e Y" na renderização', ...naoContem(r3, /e ofolato D e ofolato D/i, 'nome duplicado na renderização') });
+            } else if (meds.length === 0) {
+                checks.push({ nome: 'turno 3: medicamento gravado após posologia completa', ok: false, detalhe: 'nenhuma linha em medications' });
+            }
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A20',
+        marco: 'M3',
+        titulo: 'Guilherme 02/09 20:04 (produção) — "Encerrar todos" (seleção múltipla em lote)',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Guilherme', onboarded: true, estado: 'idle' });
+            for (const [nome, horario] of [['Ômega 3', '08:00'], ['Losartana', '09:00'], ['Vitamina D', '10:00'], ['Melatonina', '22:00']]) {
+                await seeds.criarMedicamento({ userId: user.id, nome, horarios: [horario] });
+            }
+
+            const r1 = await turno(ctx, user, 'Encerrar todos');
+            checagensDeForma(checks, 'turno 1', r1);
+            checks.push({ marco: 'M3', nome: 'M3: reconhece "todos" com UMA confirmação agregada', ...contem(r1, /todos os (seus )?(4 )?(rem[ée]dios|medicamentos|tratamentos)|os 4 (rem[ée]dios|medicamentos|tratamentos)/i, 'confirmação agregada') });
+            checks.push({ marco: 'M3', nome: 'M3: nunca pede para escolher UM de cada vez', ...naoContem(r1, /qual (deles|medicamento|rem[ée]dio|tratamento) você (quer|deseja)/i, 'seleção um-a-um') });
+            return checks;
+        }
     }
 ];

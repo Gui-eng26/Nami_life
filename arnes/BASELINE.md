@@ -1,5 +1,29 @@
 # Arnês — execuções da v44 (staging, alvo M1)
 
+## Micro-entrega pré-M2 (19/09/2026) — casos A16–A20
+
+Cinco casos novos de transcrições reais de produção (30/08–02/09):
+
+| Caso | Resultado | O que documenta |
+|---|---|---|
+| A16 (Aline, dano máximo do BUG-104) | ✅ M1 verde · 🟡 M2 (4 meds com horário por linha) | verdade de persistência a cada turno; linha do 1º medicamento preservada (nunca a grade inteira no 1º) |
+| A17 (Priscila, intenção pura → lista → "Pó") | ✅ M1 verde · 🟡 M2 (lista iterada item a item) | coleta sem promessa vazia; "Pó" reconhecido com honestidade; nome nunca reperguntado |
+| A18 (Juliana, "é para outra pessoa") | ✅ verde (após a copy do recepcionista) | postura AINDA_NAO com expectativa + caminho real de hoje + retomada da recepção |
+| A19 (Flávia, "Regenesis e ofolato D") | ✅ M1 verde · 🟡 M2 (dois registros) | gravado como um, a confirmação declara o nome exato do banco; nunca "X e Y e Y" |
+| A20 (Guilherme, "Encerrar todos") | 🟡 M3 (confirmação agregada) | comportamento atual um-a-um documentado como evidência do MH-82/MH-39 |
+
+A18 estava vermelho antes da copy (a resposta omitia o caminho real de hoje) e ficou
+verde depois de a especificação torná-lo obrigatório — exatamente a sequência prevista
+no briefing da micro-entrega.
+
+Gate final da micro-entrega: **20/20 casos verdes · 126 asserções · 0 falhas no alvo
+M1 · 8 conhecidas (M2/M3/M4 deliberadas)**. Os casos novos ainda forçaram duas
+correções de M1: linha do 1º medicamento preservada no multi-med (nunca a grade
+inteira no 1º remédio — caso Aline) e horários compartilhados semeados
+deterministicamente no contexto, com o salto do extrator respeitando o contexto ao
+decidir a etapa (P57 — caso Thaielly/A2).
+
+
 ## 3ª execução (19/09/2026) — ENTREGA DO M1 ✅
 
 **57 asserções verdes · 0 falhas no alvo M1 · 4 conhecidas (marco futuro).**

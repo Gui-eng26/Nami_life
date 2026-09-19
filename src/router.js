@@ -15,6 +15,7 @@ import { handleConfiguracao } from './agentes/configuracao.js';
 import { handleExclusaoConta, confirmarIntencaoExclusaoConta } from './agentes/exclusaoConta.js';
 import { handleDataNascimento } from './agentes/data_nascimento.js';
 import { isCancelamento, pareceExclusaoConta, normalizar } from './nlp_helpers.js';
+import { extrairHorariosCitados } from './validadores/recorrencia.js';
 
 // ============================================================
 // IDEMPOTÊNCIA — descarta eventos duplicados da Z-API
@@ -353,6 +354,7 @@ async function entrarNoCadastro({ user, message, image, state, camposExtraidos =
     // os horários compartilhados da mensagem. A proposta da porta só REDUZ a
     // mensagem; os campos continuam passando pelos validadores do cadastro.
     let prefixoMultiMed = '';
+    let horariosSemeados = null;
     const medicamentosPropostos = camposExtraidos?.medicamentos || [];
     if (medicamentosPropostos.length > 1) {
         const lista = medicamentosPropostos.join(', ');
@@ -360,17 +362,52 @@ async function entrarNoCadastro({ user, message, image, state, camposExtraidos =
         prefixoMultiMed =
             `Vi tudo o que você me mandou: ${lista}.\n\n` +
             `Por enquanto eu cadastro um de cada vez, rapidinho — vamos começar pelo primeiro.`;
-        mensagemParaCadastro = `${medicamentosPropostos[0]}${horarios.length > 0 ? `, ${horarios.join(' e ')}` : ''}`;
-        console.log(`💊 [ENTRADA-CADASTRO] ${medicamentosPropostos.length} medicamentos na mensagem — começando por "${medicamentosPropostos[0]}" — ${user.phone}`);
+
+        // v44 micro-entrega (caso A16 — Aline 31/08): quando cada medicamento tem o
+        // SEU horário na própria linha, o 1º cadastro recebe a linha original dele —
+        // juntar todos os horários da mensagem atribuiria a grade inteira ao 1º
+        // medicamento (gravação errada, regra 7). Horário "compartilhado" (linha
+        // solta, caso Thaielly) só entra quando a linha do medicamento não tem hora.
+        const primeiro = medicamentosPropostos[0];
+        const linhas = String(mensagemParaCadastro).split('\n');
+        const linhaDoPrimeiro = linhas.find(l => normalizar(l).includes(normalizar(primeiro)))
+            || linhas.find(l => normalizar(l).includes(normalizar(primeiro).split(/\s+/).pop()))
+            || null;
+        // Horários compartilhados entram normalizados como "às HH:MM" — o formato que
+        // o classificador de posologia trata como horário SEM ambiguidade (REGRA 1);
+        // "8h" solto no fim da linha oscilava entre horário e nada.
+        const horariosNormalizados = extrairHorariosCitados(horarios.join(' '));
+        const sufixoHorarios = horariosNormalizados.length > 0
+            ? `, às ${horariosNormalizados.join(' e às ')}`
+            : '';
+        if (linhaDoPrimeiro) {
+            const linhaTemHorario = extrairHorariosCitados(linhaDoPrimeiro).length > 0;
+            mensagemParaCadastro = linhaTemHorario
+                ? linhaDoPrimeiro.trim()
+                : `${linhaDoPrimeiro.trim()}${sufixoHorarios}`;
+            // Horários compartilhados são dado DETERMINÍSTICO (regex sobre o que a porta
+            // achou) — semeados direto no contexto do cadastro, sem depender de o
+            // extrator re-extraí-los da mensagem reduzida (caso A2: oscilava).
+            if (!linhaTemHorario && horariosNormalizados.length > 0) {
+                horariosSemeados = horariosNormalizados;
+            }
+        } else {
+            mensagemParaCadastro = `${primeiro}${sufixoHorarios}`;
+            if (horariosNormalizados.length > 0) horariosSemeados = horariosNormalizados;
+        }
+        console.log(`💊 [ENTRADA-CADASTRO] ${medicamentosPropostos.length} medicamentos na mensagem — começando por "${mensagemParaCadastro}"${horariosSemeados ? ` (horários semeados: ${horariosSemeados.join(', ')})` : ''} — ${user.phone}`);
     }
 
     if (pareceLinhaDePosologia(message)) {
         console.log(`📎 [HEURÍSTICA] mensagem com cara de posologia — ${user.phone}`);
     }
 
+    const contextoCadastro = (horariosSemeados && horariosSemeados.length > 0)
+        ? { ...contextoBase, horarios: horariosSemeados }
+        : contextoBase;
     const rCad = await despacharCadastro({
         user, message: mensagemParaCadastro, image, state, historicoConversa,
-        contextoProativo, context: contextoBase
+        contextoProativo, context: contextoCadastro
     });
     const prefixos = [prefixoFechamentoAnterior, prefixoMultiMed].filter(Boolean).join('\n\n');
     if (prefixos && typeof rCad.response === 'string') {
