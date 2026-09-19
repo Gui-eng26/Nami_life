@@ -56,7 +56,14 @@ export async function sendTextMessage(phone, message) {
             || null;
 
         console.log(`✅ Mensagem enviada para ${cleanPhone}${zapiMessageId ? ` — msgId: ${zapiMessageId}` : ''}`);
-        return { ...response.data, zapiMessageId };
+        // v44 §5.5/T0: o funil grava zaapId E messageId separados até o teste de
+        // compatibilidade de citação decidir qual deles o webhook referencia.
+        return {
+            ...response.data,
+            zapiMessageId,
+            zaapId: response.data?.zaapId ?? null,
+            messageId: response.data?.messageId ?? null
+        };
 
     } catch (error) {
         console.error(`❌ Erro Z-API:`, error.response?.status, error.response?.data || error.message);

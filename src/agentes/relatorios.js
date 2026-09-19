@@ -13,7 +13,7 @@ import {
     registrarEventoProativo
 } from '../database.js';
 import { registrarEvento } from '../observabilidade.js';
-import { sendTextMessage } from '../whatsapp.js';
+import { enviarAoUsuario } from '../funil.js';
 import { isCancelamento, encontrarMedicamento } from '../nlp_helpers.js';
 import {
     escolherFaixa,
@@ -667,7 +667,12 @@ export async function enviarResumoSemanal(user) {
             texto += `\n\n${montarBlocoMarco()}`;
         }
 
-        await sendTextMessage(user.phone, texto);
+        await enviarAoUsuario({
+            phone: user.phone,
+            userId: user.id,
+            texto,
+            origem: 'proativo:resumo_semanal'
+        });
         await registrarEventoProativo({
             userId: user.id,
             tipo: 'resumo_semanal'

@@ -1,7 +1,8 @@
-import { sendTextMessage } from '../whatsapp.js';
+import { enviarAoUsuario } from '../funil.js';
 import {
     updateDoseLogTentativa,
     updateDoseLogZapiMessageId,
+    vincularDosesAoEnvio,
     markAsNaoInformado,
     getCaregivers,
     markCaregiverNotified,
@@ -82,7 +83,12 @@ async function notificarCuidadores(doseLog, reminder) {
             if (!phoneCaregiver) continue;
 
             try {
-                await sendTextMessage(phoneCaregiver, message);
+                await enviarAoUsuario({
+                    phone: phoneCaregiver,
+                    userId: entry.caregiver?.id ?? null,
+                    texto: message,
+                    origem: 'cuidador:follow_up_esgotado'
+                });
                 console.log(`📣 Cuidador notificado: ${phoneCaregiver} — dose de ${remedio}`);
             } catch (err) {
                 console.error(`❌ Erro ao notificar cuidador ${phoneCaregiver}:`, err.message);
@@ -134,8 +140,15 @@ export async function handleFollowUp({ doseLog, reminder }) {
             }
 
             const message = buildFollowUpMessage(tentativa, reminder, quantidade);
-            const zapiResult = await sendTextMessage(reminder.phone, message);
-            const zapiMessageId = zapiResult?.zapiMessageId || null;
+            // v44 §5.5: envio pelo funil, que grava zaapId E messageId (T0 decide qual
+            // vale para citação); zapi_message_id segue como legado do fast-path.
+            const { envioId, zaapId, messageId } = await enviarAoUsuario({
+                phone: reminder.phone,
+                userId: reminder.user_id ?? null,
+                texto: message,
+                origem: 'proativo:follow_up'
+            });
+            const zapiMessageId = zaapId || messageId || null;
 
             await updateDoseLogTentativa(doseLog.id, tentativa);
 
@@ -143,6 +156,7 @@ export async function handleFollowUp({ doseLog, reminder }) {
             if (zapiMessageId) {
                 await updateDoseLogZapiMessageId(doseLog.id, zapiMessageId);
             }
+            await vincularDosesAoEnvio([doseLog.id], envioId);
             await registrarEventoProativo({
                 userId: reminder.user_id,
                 tipo: 'follow_up',
@@ -172,7 +186,12 @@ export async function handleFollowUp({ doseLog, reminder }) {
                     if (deveAlertar) {
                         const firstName = reminder.user_name?.split(' ')[0] || 'você';
                         const msg = buildAlertaEstoqueNaoInformado(firstName, estoqueInfo);
-                        await sendTextMessage(reminder.phone, msg);
+                        await enviarAoUsuario({
+                            phone: reminder.phone,
+                            userId: reminder.user_id ?? null,
+                            texto: msg,
+                            origem: 'proativo:alerta_estoque_nao_informado'
+                        });
                         await registrarEventoProativo({
                             userId: reminder.user_id,
                             tipo: 'alerta_estoque_nao_informado',

@@ -438,7 +438,7 @@ export async function getMedicamentoDosesPerDia(medicationId) {
 export async function createDoseLog({
     medicationId, scheduledAt, reminderSent, reminderSentAt,
     zapiMessageId = null, status = 'pendente',
-    horarioAgendado = null, scheduleId = null
+    horarioAgendado = null, scheduleId = null, funilEnvioId = null
 }) {
     const now = new Date().toISOString();
     const { data, error } = await supabase
@@ -453,7 +453,8 @@ export async function createDoseLog({
             status: status,
             zapi_message_id: zapiMessageId,
             horario_agendado: horarioAgendado,
-            schedule_id: scheduleId
+            schedule_id: scheduleId,
+            funil_envio_id: funilEnvioId
         })
         .select()
         .single();
@@ -2059,4 +2060,69 @@ export async function registrarIntencaoNaoSuportada(userId, mensagem) {
         .insert({ user_id: userId, mensagem, created_at: new Date().toISOString() });
     if (error) console.error(`⚠️ Erro ao registrar intenção não suportada: ${error.message}`);
     else console.log(`📋 Intenção não suportada registrada: "${mensagem}"`);
+}
+// ============================================================
+// FUNIL ÚNICO DE SAÍDA (v44 M1, §5.5) — registro de entrega
+// ============================================================
+
+// Grava a linha do funil. zaapId e messageId AMBOS até o T0 decidir qual
+// deles o webhook devolve em referenceMessageId (briefing v44 §4).
+export async function registrarEnvioFunil({ userId = null, phone, texto, origem, zaapId = null, messageId = null, agentLogId = null }) {
+    const { data, error } = await supabase
+        .from('funil_envios')
+        .insert({
+            user_id: userId,
+            phone,
+            texto,
+            origem,
+            zaap_id: zaapId,
+            message_id: messageId,
+            agent_log_id: agentLogId
+        })
+        .select('id')
+        .single();
+    if (error) throw new Error(`Erro ao registrar envio no funil: ${error.message}`);
+    return data.id;
+}
+
+// MH-032 (gap): as N doses de um lembrete/follow-up agrupado apontam para o
+// registro do funil daquele envio — a citação da mensagem agrupada volta a
+// ser resolvível (§5.6).
+export async function vincularDosesAoEnvio(doseLogIds, envioId) {
+    if (!envioId || !doseLogIds || doseLogIds.length === 0) return;
+    const { error } = await supabase
+        .from('dose_logs')
+        .update({ funil_envio_id: envioId })
+        .in('id', doseLogIds);
+    if (error) throw new Error(`Erro ao vincular doses ao envio do funil: ${error.message}`);
+}
+
+// Resolução de citação (§5.6): referenceMessageId do webhook → linha do funil.
+// Compara contra os DOIS ids gravados (decisão pendente do T0).
+export async function getEnvioFunilPorProviderId(referenceMessageId) {
+    if (!referenceMessageId) return null;
+    const { data, error } = await supabase
+        .from('funil_envios')
+        .select('*')
+        .or(`zaap_id.eq.${referenceMessageId},message_id.eq.${referenceMessageId}`)
+        .order('created_at', { ascending: false })
+        .limit(1);
+    if (error) {
+        console.error(`⚠️ Erro ao buscar envio do funil por id de citação: ${error.message}`);
+        return null;
+    }
+    return data?.[0] ?? null;
+}
+
+// Doses vinculadas a um envio do funil (grupo de um lembrete agrupado).
+export async function getDosesDoEnvio(envioId) {
+    const { data, error } = await supabase
+        .from('dose_logs')
+        .select('*, medications(id, nome, user_id)')
+        .eq('funil_envio_id', envioId);
+    if (error) {
+        console.error(`⚠️ Erro ao buscar doses do envio: ${error.message}`);
+        return [];
+    }
+    return data || [];
 }

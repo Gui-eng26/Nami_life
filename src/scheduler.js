@@ -1,8 +1,9 @@
 import cron from 'node-cron';
 import 'dotenv/config';
 import { getPendingReminders, getPendingFollowUps, createDoseLog,
-    getUsuariosAtivos, updateDoseLogTentativa, registrarEventoProativo } from './database.js';
-import { sendTextMessage } from './whatsapp.js';
+    getUsuariosAtivos, updateDoseLogTentativa, registrarEventoProativo,
+    vincularDosesAoEnvio } from './database.js';
+import { enviarAoUsuario } from './funil.js';
 import { handleFollowUp } from './agentes/lembrete.js';
 import { enviarResumoSemanal } from './agentes/relatorios.js';
 import { registrarEvento, tituloEstavel, degradar } from './observabilidade.js';
@@ -203,10 +204,17 @@ async function sendGroupedReminder(grupo) {
 
         const message = buildGroupedReminderMessage(firstName, horario, grupo);
 
-        await sendTextMessage(primeiro.phone, message);   // envia, mas não usamos o zaapId
+        // v44 §5.5 (corrige o gap MH-032): o envio agrupado passa pelo funil e as
+        // N doses apontam para o registro do envio (funil_envio_id) — a citação da
+        // mensagem agrupada volta a ser resolvível. zapi_message_id segue NULL nas
+        // agrupadas: o vínculo do grupo é o funil, não o id solto.
+        const { envioId } = await enviarAoUsuario({
+            phone: primeiro.phone,
+            userId: primeiro.user_id ?? null,
+            texto: message,
+            origem: 'proativo:lembrete'
+        });
 
-        // Doses agrupadas NÃO gravam zapi_message_id (fica NULL) — ver briefing MH-032 complemento.
-        // A confirmação delas ocorre pelo fluxo [ref:] do principal.js, não pelo fast-path.
         for (const reminder of grupo) {
             const horarioAgendado = String(reminder.horario).substring(0, 5);
             const doseLog = await createDoseLog({
@@ -216,7 +224,8 @@ async function sendGroupedReminder(grupo) {
                 reminderSentAt: new Date().toISOString(),
                 // zapiMessageId omitido de propósito (default null)
                 horarioAgendado,
-                scheduleId: reminder.schedule_id
+                scheduleId: reminder.schedule_id,
+                funilEnvioId: envioId
             });
             await registrarEventoProativo({
                 userId: reminder.user_id,
@@ -303,7 +312,15 @@ async function handleGroupedFollowUp(grupo) {
         }
 
         const message = buildGroupedFollowUpMessage(tentativa, firstName, horario, grupo, quantidadePorItem);
-        await sendTextMessage(primeiro.phone, message);   // envia, mas não usamos o zaapId
+        // v44 §5.5 (MH-032): envio agrupado pelo funil; as doses do grupo apontam
+        // para o registro do envio logo abaixo.
+        const { envioId } = await enviarAoUsuario({
+            phone: primeiro.phone,
+            userId: primeiro.user_id ?? null,
+            texto: message,
+            origem: 'proativo:follow_up'
+        });
+        await vincularDosesAoEnvio(grupo.map(i => i.id), envioId);
 
         // Atualiza estado individualmente por dose (tentativas), mas NÃO grava zapi_message_id
         // (doses agrupadas não usam o fast-path — ver briefing MH-032 complemento).
@@ -362,7 +379,12 @@ async function sendReminder(reminder) {
         if (reminder.estoque_atual !== null && reminder.estoque_atual <= 0) {
             const firstName = reminder.user_name?.split(' ')[0] || 'você';
             const message = buildEstoqueZeradoMessage(firstName, reminder);
-            await sendTextMessage(reminder.phone, message);
+            const { envioId } = await enviarAoUsuario({
+                phone: reminder.phone,
+                userId: reminder.user_id ?? null,
+                texto: message,
+                origem: 'proativo:alerta_estoque_zerado'
+            });
 
             // Cria dose_log com status 'sem_estoque' para ativar deduplicação do scheduler
             // Sem isso, o stored procedure retorna o mesmo medicamento no próximo ciclo
@@ -373,7 +395,8 @@ async function sendReminder(reminder) {
                 reminderSentAt: new Date().toISOString(),
                 status: 'sem_estoque',
                 horarioAgendado,
-                scheduleId: reminder.schedule_id
+                scheduleId: reminder.schedule_id,
+                funilEnvioId: envioId
             });
             await registrarEventoProativo({
                 userId: reminder.user_id,
@@ -393,9 +416,15 @@ async function sendReminder(reminder) {
 
         const message = buildReminderMessage(firstName, reminder);
 
-        // BUG-029: capturar o ID da mensagem enviada pela Z-API
-        const zapiResult = await sendTextMessage(reminder.phone, message);
-        const zapiMessageId = zapiResult?.zapiMessageId || null;
+        // BUG-029: capturar o ID da mensagem enviada — agora via funil (v44 §5.5),
+        // que grava zaapId E messageId; zapi_message_id segue como legado até o T0.
+        const { envioId, zaapId, messageId } = await enviarAoUsuario({
+            phone: reminder.phone,
+            userId: reminder.user_id ?? null,
+            texto: message,
+            origem: 'proativo:lembrete'
+        });
+        const zapiMessageId = zaapId || messageId || null;
 
         const doseLog = await createDoseLog({
             medicationId: reminder.medication_id,
@@ -404,7 +433,8 @@ async function sendReminder(reminder) {
             reminderSentAt: new Date().toISOString(),
             zapiMessageId,
             horarioAgendado,
-            scheduleId: reminder.schedule_id
+            scheduleId: reminder.schedule_id,
+            funilEnvioId: envioId
         });
         await registrarEventoProativo({
             userId: reminder.user_id,

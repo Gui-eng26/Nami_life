@@ -29,7 +29,9 @@ async function turno(ctx, user, mensagem, extras = {}) {
         messageId: `arnes-${Date.now()}-${contadorTurno}`,
         referenceMessageId: extras.referenceMessageId || null
     });
-    return typeof resposta === 'string' ? resposta : (resposta ?? '');
+    // v44 §5.5: routeMessage devolve { texto, agente, agentLogId }.
+    if (resposta == null) return '';
+    return typeof resposta === 'string' ? resposta : (resposta.texto ?? '');
 }
 
 // Checagens de forma da Constituição (regras 8 e 9) — aplicadas a toda resposta.

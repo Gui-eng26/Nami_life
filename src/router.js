@@ -665,7 +665,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
 
             console.log(`✅ [FAST-PATH] Dose confirmada via referenceMessageId — ${user.phone} — ${nomeRemedio}`);
 
-            await logAgentInteraction({
+            const agentLogIdFastPath = await logAgentInteraction({
                 userId: user.id,
                 agent: 'fast_path_reference',
                 userMessage: message,
@@ -695,7 +695,11 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                 console.error('⚠️ Erro ao verificar alerta estoque (fast-path):', e.message);
             }
 
-            return `✅ Anotei! Dose do *${nomeRemedio}* confirmada, ${firstName}. Continue assim! 💪💊${alertaSufixo}`;
+            return {
+                texto: `✅ Anotei! Dose do *${nomeRemedio}* confirmada, ${firstName}. Continue assim! 💪💊${alertaSufixo}`,
+                agente: 'fast_path_reference',
+                agentLogId: agentLogIdFastPath
+            };
         }
     }
 
@@ -742,7 +746,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         if (r.contaExcluida) {
             // Usuário não existe mais — RETORNA ANTES do logAgentInteraction final
             // (inserir agent_logs com user_id apagado daria FK error).
-            return r.response;
+            return { texto: r.response, agente: 'exclusao_conta', agentLogId: null };
         }
         response = r.response;
 
@@ -1214,5 +1218,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         });
     }
 
-    return response;
+    // v44 §5.5: o roteador devolve texto + vínculo — quem ENVIA é só o funil
+    // (enviarAoUsuario), que grava origem e agent_log_id na mesma linha.
+    return { texto: response, agente: agentName, agentLogId };
 }
