@@ -14,6 +14,19 @@ export function normalizar(str) {
         .replace(/[̀-ͯ]/g, '');
 }
 
+// v44: um nome proposto pela porta "é outro medicamento" quando não bate com o
+// nome do cadastro em andamento (igualdade ou continência, normalizada — mesma
+// tolerância de encontrarMedicamento). Usado pelo runner (MH-83: medicamento
+// diferente = cadastro novo, nada do anterior vaza).
+export function medicamentoDiferente(medicamentosPropostos, nomeEmAndamento) {
+    if (!nomeEmAndamento || !medicamentosPropostos || medicamentosPropostos.length === 0) return false;
+    const atual = normalizar(nomeEmAndamento);
+    return !medicamentosPropostos.some(m => {
+        const proposto = normalizar(m);
+        return proposto === atual || proposto.includes(atual) || atual.includes(proposto);
+    });
+}
+
 export function encontrarMedicamento(texto, medications) {
     if (!texto) return null;
     const t = normalizar(texto);

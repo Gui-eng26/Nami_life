@@ -25,8 +25,8 @@ export const CAPACIDADES = [
     resumoUsuario: 'lembrar de tomar remédio no horário certo',
     limites: 'MESMOS horários todos os dias (nunca horários por dia da semana); ' +
       'formas comprimido/cápsula/líquido (gotas/ml)/unidade; estoque opcional ' +
-      '(contagem ou frascos); tratamento contínuo ou por X dias; um medicamento ' +
-      'por mensagem (vários de uma vez ainda não)'
+      '(contagem ou frascos); tratamento contínuo ou por X dias; VÁRIOS ' +
+      'medicamentos numa mensagem são aceitos (cada um com seus próprios horários)'
   },
   {
     agente: 'relatorios',
@@ -92,7 +92,6 @@ export const AINDA_NAO = [
   { chave: 'horarios_por_dia_da_semana', rotulo: 'horários diferentes por dia da semana' },
   { chave: 'dia_sim_dia_nao', rotulo: 'remédio em dias alternados (dia sim, dia não)' },
   { chave: 'uma_vez_por_semana', rotulo: 'remédio 1x por semana' },
-  { chave: 'multiplos_medicamentos', rotulo: 'vários medicamentos numa mensagem só (por enquanto, um por vez)' },
   { chave: 'alterar_dosagem', rotulo: 'alterar dosagem de um medicamento já cadastrado', escopo: 'configuracao' },
   { chave: 'alterar_nome', rotulo: 'alterar nome de um medicamento já cadastrado', escopo: 'configuracao' },
   { chave: 'alterar_duracao', rotulo: 'alterar tempo/duração de um tratamento já cadastrado', escopo: 'configuracao' },

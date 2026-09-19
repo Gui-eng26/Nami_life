@@ -15,8 +15,7 @@ import { handleRelatorios, extrairPeriodo } from './agentes/relatorios.js';
 import { handleConfiguracao } from './agentes/configuracao.js';
 import { handleExclusaoConta, confirmarIntencaoExclusaoConta } from './agentes/exclusaoConta.js';
 import { handleDataNascimento } from './agentes/data_nascimento.js';
-import { isCancelamento, pareceExclusaoConta, normalizar } from './nlp_helpers.js';
-import { extrairHorariosCitados } from './validadores/recorrencia.js';
+import { isCancelamento, pareceExclusaoConta, medicamentoDiferente } from './nlp_helpers.js';
 
 // ============================================================
 // IDEMPOTÊNCIA — descarta eventos duplicados da Z-API
@@ -299,122 +298,30 @@ async function despacharRelatorio({ user, message, image, historicoConversa,
 // mensagem original. Proibido contexto literal de cadastro fora daqui.
 // ============================================================
 
-// Um nome proposto pela porta "é outro medicamento" quando não bate com o nome
-// do cadastro em andamento (mesma tolerância de encontrarMedicamento: igualdade
-// ou continência, normalizada).
-function citaOutroMedicamento(medicamentosPropostos, nomeEmAndamento) {
-    if (!nomeEmAndamento || !medicamentosPropostos || medicamentosPropostos.length === 0) return false;
-    const atual = normalizar(nomeEmAndamento);
-    return !medicamentosPropostos.some(m => {
-        const proposto = normalizar(m);
-        return proposto === atual || proposto.includes(atual) || atual.includes(proposto);
-    });
-}
-
-// Fechamento do cadastro anterior pela verdade do banco (P56): ele JÁ existe e
-// gera lembretes; só o opcional (estoque) fica para depois — NULL, nunca 0 (P49).
-function montarFechamentoCadastroAnterior(nomeAnterior) {
-    return `Só fechando o anterior: o *${nomeAnterior}* já está cadastrado, e o estoque dele fica pra depois — quando quiser, é só me mandar a quantidade. 🌿`;
-}
-
 async function entrarNoCadastro({ user, message, image, state, camposExtraidos = null,
                                   historicoConversa, contextoProativo = null }) {
     const estadoAtual = state?.state || 'idle';
 
-    // v44 (replay manual 19/09, Guilherme): medicamento NOVO citado no meio de um
-    // cadastro em andamento é um cadastro NOVO, não resposta da coleta — repetir a
-    // pergunta pendente ignorava a mensagem inteira (regra 3). O anterior, já
-    // gravado, fecha pela verdade do banco; rascunho não gravado é abandonado pelo
-    // próprio pivô do usuário.
-    const nomeEmAndamento = (estadoAtual === 'adding_med') ? (state?.context?.nome || null) : null;
-    const trouxeOutroMedicamento = citaOutroMedicamento(camposExtraidos?.medicamentos, nomeEmAndamento);
-    let prefixoFechamentoAnterior = '';
-    if (trouxeOutroMedicamento) {
-        console.log(`💊 [ENTRADA-CADASTRO] Novo medicamento sobre cadastro em andamento (${nomeEmAndamento} → ${camposExtraidos.medicamentos.join(', ')}) — ${user.phone}`);
-        if (state?.context?.medication_id) {
-            prefixoFechamentoAnterior = montarFechamentoCadastroAnterior(nomeEmAndamento);
-        }
-    }
-
-    // Fluxo em andamento: o contexto coletado vale. Fora dele (ou num pivô para
-    // outro medicamento), começa do início mesclando qualquer rascunho preservado.
-    const contextoBase = (!trouxeOutroMedicamento && (estadoAtual === 'adding_med') && state?.context?.etapa)
+    // v44 M2 (MH-96/MH-83): multi-medicamento, pivô para outro medicamento e
+    // divisão da mensagem viraram comportamento do RUNNER — a entrada só mescla
+    // a mensagem rica preservada e repassa os campos da porta.
+    const contextoBase = ((estadoAtual === 'adding_med') && state?.context?.etapa)
         ? state.context
-        : trouxeOutroMedicamento
-            ? { etapa: 'cad_nome' }
-            : { etapa: 'cad_nome', ...(state?.context?.rascunho_cadastro || {}) };
+        : { etapa: 'cad_nome', ...(state?.context?.rascunho_cadastro || {}) };
 
     // P57: um aceite curto ("sim") depois de uma mensagem rica preservada entrega
     // ao cadastro a mensagem COM os dados, nunca o "sim".
     const mensagemRica = state?.context?.mensagem_rica || null;
-    let mensagemParaCadastro = (isAffirmativeSimple(message) && mensagemRica) ? mensagemRica : message;
-
-    // Vários medicamentos numa mensagem é AINDA NÃO FAZ até o M2 (inventário §2):
-    // honestidade + expectativa (regra 6), nada ignorado (regra 3) — reconhece
-    // todos, avisa que cadastra um por vez e começa pelo primeiro, aproveitando
-    // os horários compartilhados da mensagem. A proposta da porta só REDUZ a
-    // mensagem; os campos continuam passando pelos validadores do cadastro.
-    let prefixoMultiMed = '';
-    let horariosSemeados = null;
-    const medicamentosPropostos = camposExtraidos?.medicamentos || [];
-    if (medicamentosPropostos.length > 1) {
-        const lista = medicamentosPropostos.join(', ');
-        const horarios = camposExtraidos?.horarios || [];
-        prefixoMultiMed =
-            `Vi tudo o que você me mandou: ${lista}.\n\n` +
-            `Por enquanto eu cadastro um de cada vez, rapidinho — vamos começar pelo primeiro.`;
-
-        // v44 micro-entrega (caso A16 — Aline 31/08): quando cada medicamento tem o
-        // SEU horário na própria linha, o 1º cadastro recebe a linha original dele —
-        // juntar todos os horários da mensagem atribuiria a grade inteira ao 1º
-        // medicamento (gravação errada, regra 7). Horário "compartilhado" (linha
-        // solta, caso Thaielly) só entra quando a linha do medicamento não tem hora.
-        const primeiro = medicamentosPropostos[0];
-        const linhas = String(mensagemParaCadastro).split('\n');
-        const linhaDoPrimeiro = linhas.find(l => normalizar(l).includes(normalizar(primeiro)))
-            || linhas.find(l => normalizar(l).includes(normalizar(primeiro).split(/\s+/).pop()))
-            || null;
-        // Horários compartilhados entram normalizados como "às HH:MM" — o formato que
-        // o classificador de posologia trata como horário SEM ambiguidade (REGRA 1);
-        // "8h" solto no fim da linha oscilava entre horário e nada.
-        const horariosNormalizados = extrairHorariosCitados(horarios.join(' '));
-        const sufixoHorarios = horariosNormalizados.length > 0
-            ? `, às ${horariosNormalizados.join(' e às ')}`
-            : '';
-        if (linhaDoPrimeiro) {
-            const linhaTemHorario = extrairHorariosCitados(linhaDoPrimeiro).length > 0;
-            mensagemParaCadastro = linhaTemHorario
-                ? linhaDoPrimeiro.trim()
-                : `${linhaDoPrimeiro.trim()}${sufixoHorarios}`;
-            // Horários compartilhados são dado DETERMINÍSTICO (regex sobre o que a porta
-            // achou) — semeados direto no contexto do cadastro, sem depender de o
-            // extrator re-extraí-los da mensagem reduzida (caso A2: oscilava).
-            if (!linhaTemHorario && horariosNormalizados.length > 0) {
-                horariosSemeados = horariosNormalizados;
-            }
-        } else {
-            mensagemParaCadastro = `${primeiro}${sufixoHorarios}`;
-            if (horariosNormalizados.length > 0) horariosSemeados = horariosNormalizados;
-        }
-        console.log(`💊 [ENTRADA-CADASTRO] ${medicamentosPropostos.length} medicamentos na mensagem — começando por "${mensagemParaCadastro}"${horariosSemeados ? ` (horários semeados: ${horariosSemeados.join(', ')})` : ''} — ${user.phone}`);
-    }
+    const mensagemParaCadastro = (isAffirmativeSimple(message) && mensagemRica) ? mensagemRica : message;
 
     if (pareceLinhaDePosologia(message)) {
         console.log(`📎 [HEURÍSTICA] mensagem com cara de posologia — ${user.phone}`);
     }
 
-    const contextoCadastro = (horariosSemeados && horariosSemeados.length > 0)
-        ? { ...contextoBase, horarios: horariosSemeados }
-        : contextoBase;
-    const rCad = await despacharCadastro({
+    return despacharCadastro({
         user, message: mensagemParaCadastro, image, state, historicoConversa,
-        contextoProativo, context: contextoCadastro
+        contextoProativo, context: contextoBase, camposPorta: camposExtraidos
     });
-    const prefixos = [prefixoFechamentoAnterior, prefixoMultiMed].filter(Boolean).join('\n\n');
-    if (prefixos && typeof rCad.response === 'string') {
-        rCad.response = `${prefixos}\n\n${rCad.response}`;
-    }
-    return rCad;
 }
 
 // ============================================================
@@ -424,8 +331,8 @@ async function entrarNoCadastro({ user, message, image, state, camposExtraidos =
 // contexto mantido, pergunta pendente repetida. Nenhum dado coletado é descartado.
 // ============================================================
 async function despacharCadastro({ user, message, image, state, context, historicoConversa,
-                                   contextoProativo = null }) {
-    const resultado = await executarRunner({ schema: SCHEMA_CADASTRO, user, message, state, context, historicoConversa });
+                                   contextoProativo = null, camposPorta = null }) {
+    const resultado = await executarRunner({ schema: SCHEMA_CADASTRO, user, message, state, context, historicoConversa, camposPorta });
 
     if (!resultado?.escalarParaRoteador) {
         return { agentName: 'cadastro', response: resultado };
@@ -445,24 +352,20 @@ async function despacharCadastro({ user, message, image, state, context, histori
     if (proposta.intencao === 'cadastro') {
         // v44 (replay manual 19/09): 'cadastro' na reinterpretação tem DOIS sentidos.
         // Com um medicamento DIFERENTE do em andamento nos campos, é cadastro NOVO —
-        // repetir a pergunta pendente ignorava a mensagem (regra 3). Sem medicamento
-        // novo, a porta está concordando que o usuário não saiu do fluxo: repete a
-        // pergunta pendente sem descartar nada (comportamento original).
-        if (citaOutroMedicamento(proposta.campos?.medicamentos, context?.nome)) {
+        // o RUNNER fecha o anterior pela verdade do banco e recomeça (MH-83). Sem
+        // medicamento novo, a porta está concordando que o usuário não saiu do
+        // fluxo: repete a pergunta pendente sem descartar nada.
+        if (medicamentoDiferente(proposta.campos?.medicamentos, context?.nome)) {
             console.log(`💊 [ESCALADA-CADASTRO] Novo medicamento sobre cadastro em andamento (${context?.nome} → ${proposta.campos.medicamentos.join(', ')}) — ${user.phone}`);
             const respostaNovo = await executarRunner({
                 schema: SCHEMA_CADASTRO,
-                user, message, state: { state: 'idle', context: {} }, historicoConversa,
-                context: { etapa: 'cad_nome' }
+                user, message, state, historicoConversa,
+                context, camposPorta: proposta.campos
             });
             if (respostaNovo?.escalarParaRoteador) {
                 return { agentName: 'porta_degradada', response: reperguntaSegura(user), feedback: proposta.feedback };
             }
-            const prefixo = context?.medication_id ? montarFechamentoCadastroAnterior(context.nome) : '';
-            const response = (prefixo && typeof respostaNovo === 'string')
-                ? `${prefixo}\n\n${respostaNovo}`
-                : respostaNovo;
-            return { agentName: 'cadastro', response, feedback: proposta.feedback };
+            return { agentName: 'cadastro', response: respostaNovo, feedback: proposta.feedback };
         }
 
         console.log(`💊 [ESCALADA-CADASTRO] Porta confirmou cadastro — mantendo fluxo — ${user.phone}`);
@@ -531,7 +434,7 @@ async function despacharEscalada({ user, message, image, contextoPreservado, his
             response = await executarRunner({
                 schema: SCHEMA_CADASTRO,
                 user, message, state: idleState, historicoConversa,
-                context: { etapa: 'cad_nome' }
+                context: { etapa: 'cad_nome' }, camposPorta: proposta.campos
             });
         } else if (intencao === 'relatorios') {
             console.log(`📊 [ESCALADA] Roteando para relatorios (${subtipoRelatorio}) — ${user.phone}`);

@@ -17,6 +17,12 @@
 // 4. QUANDO DEVOLVER — contrato universal da porta: finalizou /
 //    ruído / dúvida / mudou de fluxo → devolve ao roteador.
 //
+// MH-96 (M2 §3): o schema aceita LISTA de tratamentos — a divisão em
+// candidatos (linhas, " e ", vírgulas) é mecanismo do runner+extrator
+// (UM mecanismo de preenchimento, nunca dois); a fila sobrevive a
+// desvio de fluxo; "medicamento diferente = cadastro novo" (MH-83:
+// nada do anterior vaza para o novo).
+//
 // O runner é a implementação de referência: M3 (configuração/
 // relatórios) e M4 (onboarding) o reutilizam. Ele é genérico sobre o
 // SCHEMA recebido; tudo que é texto do cadastro vive no schema.
@@ -36,7 +42,10 @@ import { detectarRecorrenciaNaoSuportada, extrairHorariosCitados } from './valid
 import { classificarIndeterminadoCadastro } from './validadores/falha.js';
 import { calcularAlertaEstoqueCadastro } from './validadores/estoque.js';
 import { extrairCadastroCompleto, mapearExtracaoParaCampos, aplicarExtracaoEmVazios } from './validadores/extratorCompleto.js';
-import { derivarFormaFarmaceutica } from './validadores/derivacoes.js';
+import { derivarFormaFarmaceutica, montarParesPosologia } from './validadores/derivacoes.js';
+import { classificarPosologia } from './validadores/posologia.js';
+import { dividirCandidatos, dividirNomeComposto, todosComHorario } from './validadores/multiMed.js';
+import { medicamentoDiferente } from './nlp_helpers.js';
 import {
     ACOES_DE_FALHA,
     renderizarPerguntaNome, renderizarPerguntaPosologia, renderizarPerguntaEstoque,
@@ -44,7 +53,11 @@ import {
     renderizarFechamentoEstoque, renderizarFechamentoCadastroJaGravado,
     renderizarCancelamentoSemGravacao, renderizarRecusaSemGravacao,
     renderizarDuplicataAtiva, renderizarDuplicataPausada, renderizarPropostaReencadastro,
-    renderizarReencadastroRecusado, renderizarDuplicataNaGravacao, renderizarBloqueioRecorrencia
+    renderizarReencadastroRecusado, renderizarDuplicataNaGravacao, renderizarBloqueioRecorrencia,
+    renderizarPropostaLote, renderizarAberturaFila, renderizarPropostaDivisaoNome,
+    renderizarTransicaoFila, renderizarFechamentoLote, renderizarRepeticaoPropostaLote,
+    renderizarFechamentoAnterior, renderizarConviteEstoqueLote, renderizarDeclarativaCurta,
+    renderizarDuplicataCurta
 } from './schemas/cadastro.js';
 
 // Cancelamento determinístico — o LLM não decide transições.
@@ -56,6 +69,21 @@ const TERMOS_CANCELAMENTO = [
 function ehCancelamento(message) {
     const msg = String(message).toLowerCase().trim();
     return TERMOS_CANCELAMENTO.some(t => msg === t || msg.startsWith(t + ' ') || msg.startsWith(t + ','));
+}
+
+function ehAfirmativoSimples(message) {
+    const msg = String(message).toLowerCase().trim();
+    return ['sim', 's', 'ok', 'pode', 'pode ser', 'claro', 'quero', 'isso', 'beleza', 'bora', 'vamos']
+        .some(t => msg === t || msg.startsWith(t + ' ') || msg.startsWith(t + ','));
+}
+
+function ehNegativoSimples(message) {
+    const msg = String(message).toLowerCase().trim();
+    return ['não', 'nao', 'n'].some(t => msg === t || msg.startsWith(t + ' ') || msg.startsWith(t + ','));
+}
+
+function juntarPartes(...partes) {
+    return partes.flat().filter(Boolean).join('\n\n');
 }
 
 // ------------------------------------------------------------
@@ -117,7 +145,7 @@ function montarPerguntaPendente({ pend, campos, userName, resultado = null, moti
 // ------------------------------------------------------------
 // 3. GRAVAÇÃO — ponto único. Grava medication + schedules como
 // unidade (invariante: todo ativo tem ao menos um schedule ativo) e
-// devolve a mensagem pós-escrita (declarativa + resumo do banco).
+// devolve o registro para leitura pós-escrita.
 // ------------------------------------------------------------
 
 async function gravarTratamento(campos, user) {
@@ -174,6 +202,156 @@ async function lerMedicamentoGravado(medicationId) {
     return { med, pares };
 }
 
+// Gravação em LOTE (MH-96): N tratamentos da mesma mensagem, cada um pelo
+// MESMO ponto único de gravação. Fechamento 100% pós-escrita.
+async function gravarLote({ itens, user, sujeito }) {
+    const medicamentosAtivosAntes = await getUserMedications(user.id);
+    const primeiroMedicamento = medicamentosAtivosAntes.length === 0;
+
+    const gravados = [];
+    const duplicatas = [];
+    for (const item of itens) {
+        const resultado = await gravarTratamento({
+            sujeito,
+            nome: item.nome,
+            dosagem: item.dosagem ?? null,
+            forma_explicita: item.formaExplicita ?? null,
+            pares_posologia: item.pares,
+            unidade_dose: 'unidade',
+            unidade_estoque: 'unidade',
+            gotas_por_ml: null
+        }, user);
+        if (resultado.duplicata) duplicatas.push(resultado.duplicata);
+        else gravados.push(await lerMedicamentoGravado(resultado.med.id));
+    }
+    console.log(`✅ [RUNNER] Lote gravado: ${gravados.length} tratamento(s), ${duplicatas.length} duplicata(s) — ${user.phone}`);
+    return { gravados, duplicatas, primeiroMedicamento };
+}
+
+// Campos de um candidato da fila quando NÃO há mensagem nova a validar
+// (transição de fila, lote recusado) — dados determinísticos da divisão.
+const FORMA_EXPLICITA_LOTE = { comprimido: 'comprimido', capsula: 'capsula', gota: 'gotas' };
+
+function montarCamposDoCandidato({ sujeito, candidato, fila }) {
+    const campos = { sujeito, fila };
+    campos.nome = candidato.nome;
+    if (candidato.dosagem) campos.dosagem = candidato.dosagem;
+    if (candidato.grupo !== null && candidato.grupo !== undefined) campos.grupo = candidato.grupo;
+
+    const horarios = candidato.horarios || [];
+    if (horarios.length > 0 && candidato.quantidade) {
+        campos.horarios = horarios;
+        campos.pares_posologia = montarParesPosologia(horarios, candidato.quantidade);
+        campos.unidade_dose = 'unidade';
+        campos.unidade_estoque = 'unidade';
+        campos.gotas_por_ml = null;
+        campos.forma_explicita = FORMA_EXPLICITA_LOTE[candidato.formaRotulo] ?? null;
+    } else if (horarios.length > 0) {
+        campos.horarios = horarios;
+    } else if (candidato.quantidade) {
+        campos.quantidade_pendente = candidato.quantidade;
+        campos.unidade_dose_pendente = 'unidade';
+        campos.forma_explicita_pendente = FORMA_EXPLICITA_LOTE[candidato.formaRotulo] ?? null;
+    }
+    return campos;
+}
+
+// Avança a fila após uma gravação: grava em cadeia os candidatos já completos
+// e para no primeiro incompleto (transição com a pergunta dele). Fila vazia →
+// convite de estoque agregado e fechamento.
+async function avancarFila({ schema, user, sujeito, fila, partesIniciais }) {
+    let resto = [...fila];
+    const partes = [...partesIniciais];
+
+    while (resto.length > 0) {
+        const candidato = resto[0];
+        const camposC = montarCamposDoCandidato({ sujeito, candidato, fila: resto.slice(1) });
+        const pendC = proximaPendencia(schema, camposC);
+
+        if (pendC.acao === 'gravar') {
+            const r = await gravarTratamento(camposC, user);
+            if (r.duplicata) {
+                partes.push(renderizarDuplicataCurta(r.duplicata.nome));
+            } else {
+                const { med, pares } = await lerMedicamentoGravado(r.med.id);
+                partes.push(renderizarDeclarativaCurta(med, pares));
+            }
+            resto = resto.slice(1);
+            continue;
+        }
+
+        await saveConversationState(user.id, {
+            state: schema.estadoConversa,
+            context: { ...camposC, etapa: pendC.etapa }
+        });
+        partes.push(renderizarTransicaoFila({ proximo: candidato }));
+        return partes.join('\n\n');
+    }
+
+    await saveConversationState(user.id, { state: 'idle', context: {} });
+    partes.push(renderizarConviteEstoqueLote());
+    return partes.join('\n\n');
+}
+
+// Confirmação do LOTE proposto (MH-96): "sim" grava todos; quantidade dita
+// aqui vale para os itens sem quantidade própria; "não" vira fila um-a-um;
+// desvio segue o contrato universal (a fila/lote SOBREVIVE ao desvio).
+async function tratarConfirmacaoLote({ schema, user, message, campos, historicoConversa }) {
+    const lote = campos.lote;
+
+    const gravarComQuantidade = async (quantidadePadrao) => {
+        const itens = lote.map(c => ({
+            nome: c.nome,
+            dosagem: c.dosagem,
+            formaExplicita: FORMA_EXPLICITA_LOTE[c.formaRotulo] ?? null,
+            pares: montarParesPosologia(c.horarios, c.quantidade ?? quantidadePadrao ?? 1)
+        }));
+        const resultado = await gravarLote({ itens, user, sujeito: campos.sujeito });
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        return renderizarFechamentoLote(resultado);
+    };
+
+    if (ehAfirmativoSimples(message)) return gravarComQuantidade(1);
+
+    if (ehNegativoSimples(message) || ehCancelamento(message)) {
+        const [primeiro, ...resto] = lote;
+        const camposFila = montarCamposDoCandidato({ sujeito: campos.sujeito, candidato: primeiro, fila: resto });
+        const pend = proximaPendencia(schema, camposFila);
+        if (pend.acao === 'perguntar') {
+            await saveConversationState(user.id, {
+                state: schema.estadoConversa,
+                context: { ...camposFila, etapa: pend.etapa }
+            });
+            return `Sem problemas — vamos um de cada vez então. 🌿\n\n${renderizarTransicaoFila({ proximo: primeiro })}`;
+        }
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        return renderizarRecusaSemGravacao();
+    }
+
+    // A resposta pode ser a quantidade que faltava ("1 de cada", "2 comprimidos").
+    const classificacao = await classificarPosologia({
+        message,
+        campoEsperado: 'quantidade',
+        nomeMedicamento: lote.map(c => c.nome).join(', '),
+        horariosJaColetados: [],
+        historicoConversa
+    });
+    if (classificacao.categoria === 'quantidade_apenas' && classificacao.quantidadeUnica) {
+        return gravarComQuantidade(classificacao.quantidadeUnica);
+    }
+
+    const motivo = await classificarIndeterminadoCadastro({
+        message, etapa: 'cad_lote_confirmar', nomeMedicamento: lote[0]?.nome, historicoConversa
+    });
+    if (motivo === 'nova_intencao') return { escalarParaRoteador: true };
+    if (motivo === 'recusa') {
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        return renderizarRecusaSemGravacao();
+    }
+    const prefixo = motivo === 'duvida' ? `${renderizarPrefacioDuvida()}\n\n` : '';
+    return `${prefixo}${renderizarRepeticaoPropostaLote(lote)}`;
+}
+
 // ------------------------------------------------------------
 // Fechamentos pela verdade do banco (P56)
 // ------------------------------------------------------------
@@ -198,11 +376,13 @@ async function fecharComCadastroJaGravado(user, campos) {
 // ------------------------------------------------------------
 // HANDLER DO RUNNER — chamado pelo roteador no lugar do antigo
 // handleCadastro. `context` é o estado plano do tratamento corrente
-// (campos coletados + etapa informacional).
+// (campos coletados + fila + etapa informacional). `camposPorta` são
+// os campos que a porta extraiu desta mensagem (proposta, nunca
+// decisão — tudo passa pelos validadores).
 // ------------------------------------------------------------
 
-export async function executarRunner({ schema, user, message, state, context, historicoConversa = [] }) {
-    const campos = { ...(context || {}) };
+export async function executarRunner({ schema, user, message, state, context, historicoConversa = [], camposPorta = null }) {
+    let campos = { ...(context || {}) };
     if (!campos.sujeito) campos.sujeito = schema.sujeito?.padrao || 'usuario';
     const etapaEntrada = context?.etapa || 'cad_nome';
     console.log(`💊 Runner (${schema.nome}) — etapa de entrada: ${etapaEntrada} — ${user.phone}`);
@@ -239,6 +419,81 @@ export async function executarRunner({ schema, user, message, state, context, hi
         return renderizarCancelamentoSemGravacao();
     }
 
+    // Confirmação de lote pendente (MH-96).
+    if (etapaEntrada === 'cad_lote_confirmar' && Array.isArray(campos?.lote) && campos.lote.length > 0) {
+        return await tratarConfirmacaoLote({ schema, user, message, campos, historicoConversa });
+    }
+
+    const prefixos = [];
+    let mensagem = message;
+
+    // MH-83 (M2 §2.4): medicamento DIFERENTE citado no meio de um cadastro é um
+    // cadastro NOVO — o anterior (se gravado) fecha pela verdade do banco e
+    // NADA dele vaza para o novo.
+    const propostos = camposPorta?.medicamentos || [];
+    if (campos?.nome && propostos.length > 0 && medicamentoDiferente(propostos, campos.nome)) {
+        console.log(`💊 [RUNNER] Novo medicamento sobre cadastro em andamento (${campos.nome} → ${propostos.join(', ')}) — ${user.phone}`);
+        if (campos.medication_id) prefixos.push(renderizarFechamentoAnterior(campos.nome));
+        campos = { sujeito: campos.sujeito };
+    }
+
+    // MH-96 (M2 §3): N candidatos na mesma mensagem — divisão determinística
+    // (linhas, " e ", vírgulas) a partir dos nomes propostos pela porta.
+    if (!campos?.nome && !(campos?.fila?.length) && propostos.length > 1) {
+        const { candidatos } = dividirCandidatos({
+            message: mensagem,
+            medicamentosPropostos: propostos,
+            horariosPorta: camposPorta?.horarios || []
+        });
+
+        if (todosComHorario(candidatos)) {
+            // LOTE: todos já têm horário — proposta agregada, UMA confirmação.
+            console.log(`💊 [RUNNER] Lote proposto: ${candidatos.length} candidatos com horário — ${user.phone}`);
+            await saveConversationState(user.id, {
+                state: schema.estadoConversa,
+                context: { sujeito: campos.sujeito, lote: candidatos, etapa: 'cad_lote_confirmar' }
+            });
+            return juntarPartes(prefixos, renderizarPropostaLote(candidatos));
+        }
+
+        const [primeiro, ...resto] = candidatos;
+        const mesmaLinha = resto.length > 0 && resto.every(c => c.grupo !== null && c.grupo === primeiro.grupo);
+
+        if (mesmaLinha) {
+            // Nome composto que a porta já dividiu (A19): proposta de divisão +
+            // posologia compartilhada do grupo, numa pergunta só.
+            console.log(`💊 [RUNNER] Nome composto dividido: ${candidatos.map(c => c.nome).join(' | ')} — ${user.phone}`);
+            const camposGrupo = montarCamposDoCandidato({ sujeito: campos.sujeito, candidato: primeiro, fila: resto });
+            await saveConversationState(user.id, {
+                state: schema.estadoConversa,
+                context: { ...camposGrupo, etapa: 'cad_horarios' }
+            });
+            return juntarPartes(prefixos, renderizarPropostaDivisaoNome(candidatos.map(c => c.nome)));
+        }
+
+        // FILA: começa pelo primeiro sem perder os demais (P57). A mensagem se
+        // reduz à LINHA do primeiro (o mecanismo do M1, agora do runner) e o
+        // fluxo normal segue a partir dela.
+        console.log(`💊 [RUNNER] Fila multi-medicamento: começando por ${primeiro.nome}, ${resto.length} na fila — ${user.phone}`);
+        prefixos.push(renderizarAberturaFila(candidatos));
+        campos = {
+            sujeito: campos.sujeito,
+            fila: resto,
+            ...(primeiro.horariosCompartilhados && primeiro.horarios.length > 0 ? { horarios: primeiro.horarios } : {})
+        };
+        mensagem = primeiro.linha || primeiro.nome;
+    }
+
+    const resposta = await processarTurno({
+        schema, user, mensagem, campos, historicoConversa, firstName
+    });
+    if (typeof resposta === 'string') return juntarPartes(prefixos, resposta);
+    return resposta;
+}
+
+// Corpo do turno: pendência → validador → camada 2 → absorção → recorrência →
+// duplicata → gravação/fechamento → pergunta seguinte.
+async function processarTurno({ schema, user, mensagem, campos, historicoConversa, firstName }) {
     // 1. O QUE FALTA — pendência corrente.
     const pend = proximaPendencia(schema, campos);
 
@@ -246,12 +501,12 @@ export async function executarRunner({ schema, user, message, state, context, hi
     let resultado = { acao: 'estado_pronto', updates: {} };
     let motivoFalha = null;
     if (pend.acao === 'perguntar') {
-        resultado = await pend.campo.validador({ message, campos, historicoConversa });
+        resultado = await pend.campo.validador({ message: mensagem, campos, historicoConversa });
 
         // 4. QUANDO DEVOLVER — contrato universal (camada 2 só na falha da camada 1).
         if (ACOES_DE_FALHA.has(resultado.acao)) {
             const motivo = await classificarIndeterminadoCadastro({
-                message,
+                message: mensagem,
                 etapa: pend.etapa,
                 nomeMedicamento: campos?.nome,
                 historicoConversa
@@ -281,14 +536,14 @@ export async function executarRunner({ schema, user, message, state, context, hi
     // extrator só preenche vazio e NUNCA roda por cima de uma falha do
     // especialista (a recusa dele também é decisão).
     if (!motivoFalha && pend.acao === 'perguntar' && pend.campo.nome === 'posologia') {
-        const sugereEstoque = /\btenho\b|\bem casa\b|\bestoque\b|\bcaixa\b|\bfrascos?\b|\bsobra\w*\b|\brestam?\b/i.test(message)
+        const sugereEstoque = /\btenho\b|\bem casa\b|\bestoque\b|\bcaixa\b|\bfrascos?\b|\bsobra\w*\b|\brestam?\b/i.test(mensagem)
             && !campos?.estoque_perguntado
             && (campos?.estoque_resolvido === undefined || campos?.estoque_resolvido === null);
-        const sugereTratamento = /\b(por|durante)\s+(\d+|uma?|duas?)\s+(dias?|semanas?)\b|\buso\s+cont[íi]nuo\b/i.test(message)
+        const sugereTratamento = /\b(por|durante)\s+(\d+|uma?|duas?)\s+(dias?|semanas?)\b|\buso\s+cont[íi]nuo\b/i.test(mensagem)
             && !campos?.tipo_tratamento;
         if (sugereEstoque || sugereTratamento) {
             try {
-                const completo = await extrairCadastroCompleto({ message, historicoConversa });
+                const completo = await extrairCadastroCompleto({ message: mensagem, historicoConversa });
                 const mapeados = mapearExtracaoParaCampos({ ...completo, nome: campos?.nome || completo.nome });
                 const CAMPOS_RESGATAVEIS = [
                     'quantidade_pendente', 'unidade_dose_pendente', 'forma_explicita_pendente',
@@ -316,8 +571,8 @@ export async function executarRunner({ schema, user, message, state, context, hi
     const mensagemTrouxeHorarios =
         (Array.isArray(resultado.updates?.horarios) && resultado.updates.horarios.length > 0) ||
         (Array.isArray(resultado.updates?.pares_posologia) && resultado.updates.pares_posologia.length > 0);
-    const recorrencia = detectarRecorrenciaNaoSuportada(message);
-    const horariosNaMensagem = extrairHorariosCitados(message);
+    const recorrencia = detectarRecorrenciaNaoSuportada(mensagem);
+    const horariosNaMensagem = extrairHorariosCitados(mensagem);
 
     if (recorrencia.detectado && (mensagemTrouxeHorarios || horariosNaMensagem.length > 0)) {
         const { horarios, pares_posologia, intervalo_horas, horario_inicio, ...camposPreservados } = camposNovos;
@@ -339,9 +594,30 @@ export async function executarRunner({ schema, user, message, state, context, hi
         return renderizarBloqueioRecorrencia(horariosNaMensagem);
     }
 
+    // Nome composto por " e " coletado como um só (A19, caminho sem divisão da
+    // porta): propõe a divisão em dois — nunca grava composto em silêncio.
+    const nomeRecemColetado = !campos?.nome && !!camposNovos.nome;
+    if (nomeRecemColetado && !(camposNovos.fila?.length)) {
+        const partesNome = dividirNomeComposto(camposNovos.nome);
+        if (partesNome) {
+            console.log(`💊 [RUNNER] Nome composto dividido na coleta: ${partesNome.join(' | ')} — ${user.phone}`);
+            const candidatos = partesNome.map(n => ({ nome: n, linha: null, grupo: 'composto', horarios: [], dosagem: null, quantidade: null }));
+            const camposGrupo = {
+                ...camposNovos,
+                nome: candidatos[0].nome,
+                grupo: 'composto',
+                fila: [candidatos[1]]
+            };
+            await saveConversationState(user.id, {
+                state: schema.estadoConversa,
+                context: { ...camposGrupo, etapa: 'cad_horarios' }
+            });
+            return renderizarPropostaDivisaoNome(partesNome);
+        }
+    }
+
     // Verificação antecipada de medicamento existente — o gatilho é o FATO "o
     // nome acabou de ser coletado", não a posição na máquina.
-    const nomeRecemColetado = !campos?.nome && !!camposNovos.nome;
     if (nomeRecemColetado) {
         const existente = await verificarMedicamentoExistente(user.id, camposNovos.nome);
 
@@ -416,6 +692,28 @@ export async function executarRunner({ schema, user, message, state, context, hi
     const pendNova = proximaPendencia(schema, camposNovos);
 
     if (pendNova.acao === 'gravar') {
+        // Grupo de posologia compartilhada (nome composto, A19): o corrente e os
+        // membros do grupo gravam JUNTOS, com a mesma posologia.
+        const membrosDoGrupo = (camposNovos.grupo !== undefined && camposNovos.grupo !== null)
+            ? (camposNovos.fila || []).filter(f => f.grupo === camposNovos.grupo)
+            : [];
+        if (membrosDoGrupo.length > 0) {
+            const itens = [
+                { nome: camposNovos.nome, dosagem: camposNovos.dosagem ?? null, formaExplicita: camposNovos.forma_explicita ?? null, pares: camposNovos.pares_posologia },
+                ...membrosDoGrupo.map(f => ({ nome: f.nome, dosagem: f.dosagem ?? null, formaExplicita: null, pares: camposNovos.pares_posologia }))
+            ];
+            const resultadoLote = await gravarLote({ itens, user, sujeito: camposNovos.sujeito });
+            const filaRestante = (camposNovos.fila || []).filter(f => !membrosDoGrupo.includes(f));
+            if (filaRestante.length > 0) {
+                return await avancarFila({
+                    schema, user, sujeito: camposNovos.sujeito, fila: filaRestante,
+                    partesIniciais: [renderizarFechamentoLote({ ...resultadoLote, primeiroMedicamento: false })]
+                });
+            }
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return renderizarFechamentoLote(resultadoLote);
+        }
+
         const medicamentosAtivosAntes = await getUserMedications(user.id);
         const primeiroMedicamento = medicamentosAtivosAntes.length === 0;
 
@@ -444,6 +742,15 @@ export async function executarRunner({ schema, user, message, state, context, hi
         const { med: medGravado, pares } = await lerMedicamentoGravado(resultadoGravacao.med.id);
         const declarativa = renderizarDeclarativa(medGravado, user.name);
         const resumo = renderizarResumoDoMedicamento(medGravado, pares);
+
+        // Fila pendente (MH-96): o próximo da fila assume — o convite de estoque
+        // fica para o fim da fila (agregado).
+        if ((camposNovos.fila || []).length > 0) {
+            return await avancarFila({
+                schema, user, sujeito: camposNovos.sujeito, fila: camposNovos.fila,
+                partesIniciais: [`${declarativa}\n\n${resumo}`]
+            });
+        }
 
         const pendPosGravacao = proximaPendencia(schema, camposComMedId);
         if (pendPosGravacao.acao === 'perguntar' && pendPosGravacao.campo.nome === 'estoque') {
@@ -488,7 +795,7 @@ export async function executarRunner({ schema, user, message, state, context, hi
         resultado,
         motivoFalha,
         nomeRecemColetado,
-        mensagemUsuario: message
+        mensagemUsuario: mensagem
     });
 }
 
@@ -500,6 +807,9 @@ export async function executarRunner({ schema, user, message, state, context, hi
 
 export async function repetirPergunta({ schema, context, userName }) {
     const campos = { ...(context || {}) };
+    if (Array.isArray(campos.lote) && campos.lote.length > 0) {
+        return renderizarRepeticaoPropostaLote(campos.lote);
+    }
     const pend = proximaPendencia(schema, campos);
     if (pend.acao !== 'perguntar') {
         return renderizarPerguntaNome({ userName });

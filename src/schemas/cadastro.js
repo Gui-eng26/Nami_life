@@ -410,6 +410,108 @@ export function renderizarDuplicataNaGravacao(med) {
 }
 
 // ------------------------------------------------------------
+// MULTI-MEDICAMENTO (MH-96, M2 §3) — proposta de lote, fila e
+// fechamentos agregados. Tudo lido/confirmado pela pessoa; a
+// gravação só acontece com o have-to-have completo de cada um.
+// ------------------------------------------------------------
+
+function linhaDoCandidatoNaProposta(c) {
+    const nomeComDosagem = c.dosagem ? `${c.nome} ${c.dosagem}` : c.nome;
+    const qtd = c.quantidade ? `${c.quantidade} ${pluralizarRotulo(c.formaRotulo || 'unidade', c.quantidade)} ` : '';
+    return `• ${nomeComDosagem} — ${qtd}às ${c.horarios.join(' e às ')}`;
+}
+
+// Proposta agregada (casos A2/A16): todos os itens já têm horário; a quantidade
+// que faltar é proposta EXPLICITAMENTE como 1 unidade — confirmação da pessoa,
+// nunca suposição gravada em silêncio (regra 7).
+export function renderizarPropostaLote(candidatos) {
+    const linhas = candidatos.map(linhaDoCandidatoNaProposta).join('\n');
+    const algumSemQuantidade = candidatos.some(c => !c.quantidade);
+    const notaQuantidade = algumSemQuantidade
+        ? `Onde você não me disse a quantidade, deixo *1 unidade* por vez — depois é só me corrigir se for diferente.\n\n`
+        : '';
+    return `Vi tudo o que você me mandou! Pelo que entendi:\n\n${linhas}\n\n`
+        + notaQuantidade
+        + `Posso cadastrar ${candidatos.length === 2 ? 'os dois' : `os ${candidatos.length}`} assim?`;
+}
+
+// Abertura da fila (caso A17): reconhece TODOS de imediato (regra 3) e começa
+// pelo primeiro sem perder os demais.
+export function renderizarAberturaFila(candidatos) {
+    const lista = candidatos.map(c => c.nome).join(', ');
+    return `Vi tudo o que você me mandou: ${lista}.\n\nVou cadastrar um por um, rapidinho — começando por ${candidatos[0].nome}.`;
+}
+
+// Divisão de nome composto (caso A19 — "Regenesis e ofolato D"): dois produtos
+// propostos e confirmáveis; a posologia respondida vale para os dois.
+export function renderizarPropostaDivisaoNome(nomes) {
+    return `Pelo que entendi são *dois* produtos: ${nomes.join(' e ')} — vou cadastrar os dois. Se for um produto só, me avisa! 😊\n\n`
+        + `Me conta: quanto você toma ou usa de cada um por vez, e em quais horários?\n`
+        + `Por exemplo: 1 comprimido às 12h`;
+}
+
+// Transição da fila: o anterior está pronto (pós-escrita), o próximo começa.
+export function renderizarTransicaoFila({ proximo }) {
+    const nomeComDosagem = proximo.dosagem ? `${proximo.nome} ${proximo.dosagem}` : proximo.nome;
+    if ((proximo.horarios || []).length > 0) {
+        return `Agora o ${nomeComDosagem} (às ${proximo.horarios.join(' e às ')}) — quanto você toma ou usa em cada horário?\n`
+            + `Por exemplo: 1 comprimido, ou 20 gotas`;
+    }
+    return `Agora o ${nomeComDosagem} — me conta: quanto você toma ou usa por vez, e em quais horários?\n`
+        + `Por exemplo: 1 comprimido às 22h`;
+}
+
+// Fechamento do lote — 100% pós-escrita (P56): cada linha vem do registro
+// gravado e seus schedules ativos.
+export function renderizarFechamentoLote({ gravados, duplicatas = [], primeiroMedicamento = false }) {
+    const linhas = gravados.map(({ med, pares }) => {
+        const horarios = pares.map(p => p.horario).join(' e às ');
+        return `• *${med.nome}* — às ${horarios}`;
+    }).join('\n');
+
+    const partes = [];
+    partes.push(`Prontinho! ${gravados.length === 2 ? 'Os dois estão' : `Os ${gravados.length} estão`} cadastrados:\n\n${linhas}\n\nVou te lembrar nos horários certos de cada um.`);
+
+    if (duplicatas.length > 0) {
+        const nomes = duplicatas.map(d => `*${d.nome}*`).join(', ');
+        partes.push(`${nomes} já ${duplicatas.length === 1 ? 'estava cadastrado' : 'estavam cadastrados'} — mantive como estava.`);
+    }
+
+    partes.push(renderizarConviteEstoqueLote());
+
+    if (primeiroMedicamento) {
+        partes.push('Ah, e uma coisinha: eu ainda estou em desenvolvimento, sendo melhorada com carinho a cada dia — se eu escorregar em algo, me avisa? 😊');
+    }
+    return partes.join('\n\n');
+}
+
+// Declarativa curta de um item gravado em cadeia na fila (pós-escrita).
+export function renderizarDeclarativaCurta(med, pares) {
+    const horarios = pares.map(p => p.horario).join(' e às ');
+    return `*${med.nome}* também cadastrado — vou te lembrar às ${horarios}.`;
+}
+
+export function renderizarDuplicataCurta(nome) {
+    return `O *${nome}* já estava cadastrado — mantive como estava.`;
+}
+
+// Convite de estoque agregado no fim da fila/lote (leve, com porta de saída).
+export function renderizarConviteEstoqueLote() {
+    return `📦 *Estoque:* se você souber quantos tem em casa de cada um, é só me falar — eu te aviso quando estiver acabando.\nSe não souber agora, tudo bem também. 🌿`;
+}
+
+// Repetição da proposta de lote (falha da camada 1 na confirmação).
+export function renderizarRepeticaoPropostaLote(candidatos) {
+    return `Só me confirma uma coisa 😊\n\n${renderizarPropostaLote(candidatos)}`;
+}
+
+// Fechamento do cadastro ANTERIOR quando um medicamento diferente chega no meio
+// (MH-83) — pela verdade do banco: ele JÁ existe e gera lembretes.
+export function renderizarFechamentoAnterior(nomeAnterior) {
+    return `Só fechando o anterior: o *${nomeAnterior}* já está cadastrado, e o estoque dele fica pra depois — quando quiser, é só me mandar a quantidade. 🌿`;
+}
+
+// ------------------------------------------------------------
 // RECORRÊNCIA NÃO SUPORTADA (validador v44 §5.7, evidência A3) —
 // honestidade de limite + oferta do subconjunto representável.
 // ------------------------------------------------------------
