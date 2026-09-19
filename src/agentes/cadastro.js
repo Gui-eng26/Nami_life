@@ -361,12 +361,13 @@ function renderizarPerguntaEstoque(etapa, context, firstName = null) {
         // v43 Bloco C Adendo 1 (seção 6): explica o benefício na mesma frase e usa o
         // rótulo da forma farmacêutica — nunca "unidades" genérico.
         // v44 (replay 19/09, Constituição regra 1): estoque é opcional — o pedido é
-        // CONVITE, nunca ordem ("me fala..."), e carrega a porta de saída na própria
-        // mensagem.
+        // CONVITE, nunca ordem, com a porta de saída na própria mensagem. Formato
+        // leve (ajuste de copy 19/09): destaque *Estoque:* com 📦, duas linhas curtas,
+        // sem repetir nome do usuário/remédio (o resumo logo acima já dá o contexto).
         {
             const forma = derivarFormaFarmaceutica(context?.forma_explicita, context?.forma_confirmada, context?.unidade_dose);
             const rotulo = pluralizarRotulo(rotuloDaDose(context?.unidade_dose, forma), 2);
-            return `${firstName ? `${firstName}, se` : 'Se'} você souber e já quiser cadastrar o estoque do ${nome}, é só me falar quantos ${rotulo} tem em casa — eu anoto e te aviso quando estiver acabando, pra você comprar antes de ficar sem. Se não souber agora, tudo bem também.`;
+            return `📦 *Estoque:* se você souber quantos ${rotulo} tem em casa, é só me falar — eu te aviso quando estiver acabando.\nSe não souber agora, tudo bem também. 🌿`;
         }
     }
 
