@@ -416,15 +416,17 @@ async function sendReminder(reminder) {
 
         const message = buildReminderMessage(firstName, reminder);
 
-        // BUG-029: capturar o ID da mensagem enviada — agora via funil (v44 §5.5),
-        // que grava zaapId E messageId; zapi_message_id segue como legado até o T0.
+        // BUG-029: capturar o ID da mensagem enviada — agora via funil (v44 §5.5).
+        // T0 CONCLUÍDO (19/09, Guilherme no staging): o referenceMessageId da citação
+        // é o messageId do envio, NUNCA o zaapId — por isso o legado prefere messageId
+        // (gravar o zaapId primeiro era a causa raiz do BUG-029 nunca casar).
         const { envioId, zaapId, messageId } = await enviarAoUsuario({
             phone: reminder.phone,
             userId: reminder.user_id ?? null,
             texto: message,
             origem: 'proativo:lembrete'
         });
-        const zapiMessageId = zaapId || messageId || null;
+        const zapiMessageId = messageId || zaapId || null;
 
         const doseLog = await createDoseLog({
             medicationId: reminder.medication_id,

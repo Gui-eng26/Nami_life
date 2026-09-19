@@ -140,15 +140,15 @@ export async function handleFollowUp({ doseLog, reminder }) {
             }
 
             const message = buildFollowUpMessage(tentativa, reminder, quantidade);
-            // v44 §5.5: envio pelo funil, que grava zaapId E messageId (T0 decide qual
-            // vale para citação); zapi_message_id segue como legado do fast-path.
+            // v44 §5.5: envio pelo funil. T0 CONCLUÍDO (19/09): a citação referencia o
+            // messageId, nunca o zaapId — o legado zapi_message_id prefere messageId.
             const { envioId, zaapId, messageId } = await enviarAoUsuario({
                 phone: reminder.phone,
                 userId: reminder.user_id ?? null,
                 texto: message,
                 origem: 'proativo:follow_up'
             });
-            const zapiMessageId = zaapId || messageId || null;
+            const zapiMessageId = messageId || zaapId || null;
 
             await updateDoseLogTentativa(doseLog.id, tentativa);
 

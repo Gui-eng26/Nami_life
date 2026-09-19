@@ -30,8 +30,10 @@ export function configurarTransporteParaTestes(fn) {
 export async function enviarAoUsuario({ phone, userId = null, texto, origem, agentLogId = null }) {
     const resultado = await transporte(phone, texto);
 
-    // T0 (briefing §4): até o teste de compatibilidade decidir qual id o webhook
-    // devolve em referenceMessageId, gravamos AMBOS — zaapId e messageId.
+    // T0 CONCLUÍDO (19/09/2026, teste real no staging): o referenceMessageId do
+    // webhook de citação é o messageId (6275FA7887596B3661E9 == message_id do envio;
+    // o zaapId 01A0BA36... não bate). Seguimos gravando AMBOS por auditoria — a
+    // resolução (getEnvioFunilPorProviderId) compara contra os dois por robustez.
     const zaapId = resultado?.zaapId ?? null;
     const messageId = resultado?.messageId ?? null;
 
