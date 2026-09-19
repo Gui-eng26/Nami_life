@@ -300,6 +300,35 @@ function renderizarResumo(context, estoqueFinal) {
         + `📦 Estoque: ${renderizarLinhaEstoque(context, estoqueFinal)}`;
 }
 
+// v44 (decisão de produto, replay 19/09): o RESUMO migrou para logo após a
+// gravação — a coleta de estoque nem sempre chega, e o resumo não podia depender
+// dela. Depois do estoque vem só este fechamento curto, com o número lido
+// PÓS-ESCRITA do banco (autoria única, §5.7) — e sem etapa de confirmação:
+// correção depois do fechamento entra pela porta (configuração/estoque).
+function montarFechamentoEstoque({ med, alerta, primeiroMedicamento, firstName }) {
+    const linhas = [];
+
+    if (med.estoque_atual !== null && med.estoque_atual !== undefined) {
+        const unidadeLabel = med.unidade_estoque === 'ml'
+            ? 'ml'
+            : pluralizarRotulo(rotuloDaDose(med.unidade_dose, med.forma_farmaceutica), Number(med.estoque_atual));
+        const sufixoEstimativa = med.estoque_estimado ? ' (estimativa)' : '';
+        linhas.push(`📦 Anotado: *${med.estoque_atual}* ${unidadeLabel} de ${med.nome} no estoque${sufixoEstimativa}.`);
+        if (alerta?.dias_restantes !== undefined && alerta?.dias_restantes !== null) {
+            linhas.push(`⚠️ Esse estoque dura aproximadamente *${alerta.dias_restantes}* ${Number(alerta.dias_restantes) === 1 ? 'dia' : 'dias'} — bom já planejar a recompra! 💊`);
+        } else {
+            linhas.push('Quando estiver acabando, eu te aviso pra você comprar antes de ficar sem. 🌿');
+        }
+    } else {
+        linhas.push(`Tudo bem${firstName ? `, ${firstName}` : ''}! O estoque fica pra depois — quando souber, é só me mandar a quantidade. 🌿`);
+    }
+
+    if (primeiroMedicamento) {
+        linhas.push('Ah, e uma coisinha: eu ainda estou em desenvolvimento, sendo melhorada com carinho a cada dia — se eu escorregar em algo, me avisa? 😊');
+    }
+    return linhas.join('\n\n');
+}
+
 // Correção #1 (v36 #2, seção 1): a pergunta das três etapas de estoque é dado de
 // saúde renderizado em código, função pura sem LLM — mesmo padrão de renderizarResumo
 // acima. A causa raiz que este briefing ataca (seção 0): buildSystemPrompt montava
@@ -2911,13 +2940,24 @@ function montarBlocoEtapa(etapaDaPergunta, context, nome) {
                 return `Pergunte apenas: "Qual o horário da primeira dose do dia?"`;
             }
             if (context?.acaoPosologia === 'indeterminado') {
-                return `Desculpe, não peguei direito 😊 Pergunte de novo em quais *HORÁRIOS* a
-pessoa toma ou usa o ${nome}. Não cite nenhum horário ou quantidade — nem os que apareceram antes
-na conversa. Qualquer explicação vem ANTES; a pergunta fica sozinha na última linha (regra 8).`;
+                return `Desculpe, não peguei direito 😊 Pergunte de novo a posologia do ${nome} —
+quanto por vez e em quais horários. Não cite nenhum horário ou quantidade — nem os que apareceram
+antes na conversa. Qualquer explicação vem ANTES; a pergunta fica sozinha na última linha (regra 8).`;
             }
-            return `Pergunte em quais *HORÁRIOS* a pessoa toma ou usa o ${nome}. Ex: "Agora vamos
-à *FORMA DE USO*. Em quais *HORÁRIOS* você toma ou usa o ${nome}?"
-Nada depois da pergunta — ela fica sozinha na última linha (regra 8).`;
+            if (context?.quantidade_pendente !== null && context?.quantidade_pendente !== undefined) {
+                return `A quantidade por vez JÁ foi dita e está anotada — falta só o horário.
+Pergunte apenas em quais *HORÁRIOS* a pessoa toma ou usa o ${nome}, sem repetir a quantidade.
+A pergunta fica sozinha na última linha (regra 8).`;
+            }
+            // v44 (decisão de produto, replay 19/09): pede a POSOLOGIA COMPLETA numa
+            // pergunta só — quantidade E horários. O público pediu agilidade: o formato
+            // composto vem primeiro, e o código coleta os pedaços que faltarem.
+            return `Pergunte a posologia do ${nome} numa pergunta só: QUANTO a pessoa toma por vez
+E em quais HORÁRIOS. Um exemplo curto vem ANTES da pergunta (como "1 comprimido às 8h e às 20h");
+a pergunta fica sozinha na última linha (regra 8). Ex:
+"Pode me mandar tudo junto — por exemplo: 1 comprimido às 8h e às 20h.
+
+Quanto de ${nome} você toma por vez, e em quais horários?"`;
 
         case 'cad_quantidade_por_dose':
             if (context?.mencionaConcentracao) {
@@ -2928,15 +2968,25 @@ preciso saber agora é *QUANTO* você toma de cada vez — por exemplo, 1 compri
             }
             if (context?.acaoPosologia === 'indeterminado') {
                 return `Desculpe, não peguei direito 😊 Pergunte de novo *QUANTO* de ${nome} a
-pessoa toma ou usa em cada horário. Não cite horários nem quantidades — nem os que apareceram
-antes na conversa. Exemplos e explicações vêm ANTES; a pergunta fica sozinha na última linha
-(regra 8).`;
+pessoa toma ou usa em cada horário. Não cite quantidades que apareceram antes na conversa.
+Exemplos e explicações vêm ANTES; a pergunta fica sozinha na última linha (regra 8).`;
             }
-            return `Pergunte *QUANTO* de ${nome} a pessoa toma ou usa em cada horário. Ex: "Ainda
-sobre a *FORMA DE USO* — pode ser em comprimidos, cápsulas, gotas ou ml.
+            // v44 (decisão de produto, replay 19/09): os horários JÁ vieram — a pergunta
+            // da quantidade cita esses horários para ficar concreta ("quantos você toma
+            // às 07:00 e às 19:00?"), em vez de uma pergunta genérica de etapa.
+            {
+                const horariosColetados = (context?.horarios || [])
+                    .map(h => String(h).slice(0, 5))
+                    .join(' e às ');
+                const referenciaHorarios = horariosColetados ? ` às ${horariosColetados}` : ' em cada horário';
+                return `Os horários já foram ditos e estão anotados${horariosColetados ? ` (${horariosColetados})` : ''} —
+falta só a quantidade. Pergunte *QUANTO* de ${nome} a pessoa toma ou usa${referenciaHorarios},
+citando os horários EXATAMENTE como estão acima. Pode ser em comprimidos, cápsulas, gotas ou ml —
+essa explicação vem ANTES; a pergunta fica sozinha na última linha (regra 8). Ex:
+"Pode ser em comprimidos, cápsulas, gotas ou ml.
 
-*QUANTO* de ${nome} você toma ou usa em cada horário?"
-Exemplos vêm ANTES; nada depois da pergunta — ela fica sozinha na última linha (regra 8).`;
+Quanto de ${nome} você toma${referenciaHorarios}?"`;
+            }
 
         case 'cad_confirma_forma':
             return `A mensagem deve ser EXATAMENTE: "${nome}, só confirmando: ${context?.blocoConfirmaForma || ''}?" — não altere nada desse trecho, é dado de saúde renderizado em código.`;
@@ -3298,6 +3348,22 @@ export async function handleCadastro({ user, message, state, context, historicoC
     // não existe mais caminho pelo qual o LLM escreva no contexto persistido.
     const novoContext = { ...(context || {}), ...decisao.contextUpdates };
 
+    // v44 (decisão de produto, replay 19/09): estoque respondido — com valor ou
+    // "não sei" — FECHA o cadastro com o fechamento curto e determinístico. O
+    // resumo já foi mostrado na gravação; a etapa de confirmação saiu do fluxo
+    // principal (correção depois disso entra pela porta: configuração/estoque).
+    if (decisao?.acao === 'estoque_resolvido' || decisao?.acao === 'estoque_nao_informado') {
+        const medFechamento = await getMedicationComSchedulesAtivos(context.medication_id);
+        const fechamento = montarFechamentoEstoque({
+            med: medFechamento,
+            alerta: decisao.contextUpdates?.alerta_estoque_baixo || null,
+            primeiroMedicamento: !!context?.primeiroMedicamento,
+            firstName: user.name ? user.name.split(' ')[0] : null
+        });
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        return fechamento;
+    }
+
     // TRABALHO 2: verificação antecipada de medicamento existente. O gatilho é o FATO
     // "o nome acabou de ser coletado", não a posição na máquina de estados (seção 6.6
     // do briefing) — robusto a novas etapas inseridas antes de cad_dosagem no futuro.
@@ -3410,22 +3476,33 @@ export async function handleCadastro({ user, message, state, context, historicoC
         };
         const proximaEtapaReal = primeiraEtapaFaltante(contextComMedId);
 
-        const contextParaPromptGravar = { medicamentoRecemGravado: resultado.med.nome };
-        const contextResolvidoGravar = await garantirResumo(
-            proximaEtapaReal,
-            contextComMedId,
-            await garantirBlocoConfirmaForma(proximaEtapaReal, contextComMedId, contextParaPromptGravar)
-        );
-        const systemPromptGravar = buildSystemPrompt(
-            proximaEtapaReal, { ...contextComMedId, ...contextResolvidoGravar }, user.name, historicoConversa
-        );
-        const claudeResponseGravar = await callClaude({ systemPrompt: systemPromptGravar, message: '' });
+        // v44 (decisão de produto, replay 19/09): a mensagem pós-gravação é 100%
+        // determinística — declaração (regra 2) + RESUMO lido do banco (P56) + a
+        // pergunta de estoque (código). O resumo vinha só depois do estoque, mas o
+        // estoque nem sempre chega; sem estoque informado, o resumo sai sem a linha 📦.
+        const firstName = user.name ? user.name.split(' ')[0] : null;
+        const declarativa = `*${resultado.med.nome}* cadastrado${firstName ? `, ${firstName}` : ''}! Vou te lembrar nos horários certos. 💊`;
+        const { resumo, med: medGravado } = await montarResumoDoBanco(resultado.med.id);
 
-        await saveConversationState(user.id, {
-            state: 'adding_med',
-            context: { ...contextComMedId, etapa: proximaEtapaReal }
+        if (proximaEtapaReal.startsWith('cad_estoque')) {
+            const pergunta = renderizarPerguntaEstoque(proximaEtapaReal, contextComMedId);
+            await saveConversationState(user.id, {
+                state: 'adding_med',
+                context: { ...contextComMedId, etapa: proximaEtapaReal }
+            });
+            return `${declarativa}\n\n${resumo}\n\n${pergunta}`;
+        }
+
+        // Estoque já veio na mesma mensagem (MH-80) — nada mais a coletar:
+        // fechamento curto, sem etapa de confirmação.
+        const fechamento = montarFechamentoEstoque({
+            med: medGravado,
+            alerta: contextComMedId.alerta_estoque_baixo || null,
+            primeiroMedicamento,
+            firstName
         });
-        return claudeResponseGravar.message;
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        return `${declarativa}\n\n${resumo}\n\n${fechamento}`;
     }
 
     const contextResolvido = { ...(context || {}), ...decisao.contextUpdates, ...(decisao.contextParaPrompt || {}) };

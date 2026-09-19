@@ -392,5 +392,33 @@ export const CASOS = [
             checks.push({ nome: 'coleta segue no cadastro novo (estado adding_med)', ...(await estadoDaConversa(ctx.db, user.id, 'adding_med')) });
             return checks;
         }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A12',
+        marco: 'M1',
+        titulo: 'Quantidades diferentes por horário ("1 cp às 7 e 2 cps às 18h") — o schema já representa',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Guilherme', onboarded: true, estado: 'post_onboarding' });
+
+            const r1 = await turno(ctx, user, 'Enalapril 10mg, 1 comprimido às 7h e 2 comprimidos às 18h');
+            checagensDeForma(checks, 'turno 1', r1);
+            checks.push({ nome: 'turno 1: não repergunta horários nem quantidade', ...naoContem(r1, /quais .{0,12}hor[áa]rios|quanto de enalapril/i, 'repergunta de posologia') });
+
+            const meds = await medicamentos(ctx.db, user.id, { nomeIlike: 'Enalapril%' });
+            const schedules = (meds[0]?.schedules || []).filter(s => s.ativo)
+                .map(s => ({ horario: String(s.horario).slice(0, 5), quantidade: Number(s.quantidade_por_dose) }))
+                .sort((a, b) => a.horario.localeCompare(b.horario));
+            checks.push({
+                nome: 'turno 1: gravado 07:00 com 1 e 18:00 com 2 (quantidade POR horário)',
+                ok: meds.length === 1 && schedules.length === 2
+                    && schedules[0].horario === '07:00' && schedules[0].quantidade === 1
+                    && schedules[1].horario === '18:00' && schedules[1].quantidade === 2,
+                detalhe: `schedules: ${JSON.stringify(schedules)}`
+            });
+            return checks;
+        }
     }
 ];
