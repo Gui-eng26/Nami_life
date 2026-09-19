@@ -2574,6 +2574,13 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
 
         const c = await extrairCampoSimples({ campo: 'nome', message, historicoConversa });
         if (c.categoria === 'valor') {
+            // v44 (caso Caltrat, 19/09 — regra 7): dosagem pura NUNCA é aceita como nome
+            // de medicamento — no staging, "1000mg" virou o nome do registro. Gravação
+            // errada em silêncio é a pior saída; repergunta o nome.
+            if (/^[\d.,\s]+\s*(mg|mcg|g|ml|%|ui|u)(\/ml)?s?\.?$/i.test(String(c.valor).trim())) {
+                console.warn(`💊 [CADASTRO] Valor com cara de dosagem recusado como nome: "${c.valor}"`);
+                return { proximaEtapa: 'cad_nome', contextUpdates: {}, acao: 'indeterminado' };
+            }
             // v43 Bloco C (Parte 4): medication_id já presente = isto é uma CORREÇÃO vinda
             // de cad_confirmacao ("corrige nome"), não a coleta inicial — o registro já
             // existe, então a correção escreve nele direto (P56/P57) e volta pro resumo.
@@ -2656,6 +2663,34 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
         if (decisao.proximaEtapa === 'cad_confirma_forma') {
             const contextFinal = { ...context, ...decisao.contextUpdates };
             contextParaPrompt.blocoConfirmaForma = await prepararContextoConfirmaForma(contextFinal, decisao.contextUpdates, context?.nome);
+        }
+
+        // v44 (caso Caltrat, 19/09 — P57): a resposta de posologia pode trazer o estoque
+        // junto ("1cp às 10h, tenho 40cps dele"), que classificarPosologia não enxerga e
+        // era descartado. classificarPosologia continua sendo a ÚNICA autoridade da
+        // posologia; o extrator completo roda aqui só como RESGATE dos campos de
+        // estoque — nunca decide etapa nem sobrescreve o que a camada especializada já
+        // decidiu (mesma cautela documentada em tentarExtracaoRicaParcial).
+        const sugereEstoque = /\btenho\b|\bem casa\b|\bestoque\b|\bcaixa\b|\bfrascos?\b|\bsobra\w*\b|\brestam?\b/i.test(message);
+        if (sugereEstoque && !ACOES_DE_FALHA.has(decisao.acao)
+            && !context?.estoque_perguntado
+            && (context?.estoque_resolvido === undefined || context?.estoque_resolvido === null)) {
+            try {
+                const completo = await extrairCadastroCompleto({ message, historicoConversa });
+                const salto = montarSaltoCadastroCompleto({ ...completo, nome: context?.nome || completo.nome });
+                const CAMPOS_ESTOQUE = ['estoque_resolvido', 'estoque_motivo', 'estoque_estimado',
+                    'status_frasco', 'volume_frasco', 'frascos', 'estoque_fracao_pendente'];
+                for (const campo of CAMPOS_ESTOQUE) {
+                    if (salto.contextUpdates[campo] !== undefined && decisao.contextUpdates[campo] === undefined) {
+                        decisao.contextUpdates[campo] = salto.contextUpdates[campo];
+                    }
+                }
+                if (decisao.contextUpdates.estoque_resolvido !== undefined && decisao.contextUpdates.estoque_resolvido !== null) {
+                    console.log(`📦 [CADASTRO] Estoque resgatado da mensagem de posologia: ${decisao.contextUpdates.estoque_resolvido}`);
+                }
+            } catch (e) {
+                console.error('⚠️ Resgate de estoque na mensagem de posologia falhou (fluxo segue sem ele):', e.message);
+            }
         }
 
         // MH-073 Parte B.1: propaga acao no nível de topo (não só dentro de

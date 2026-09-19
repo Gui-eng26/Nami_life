@@ -420,5 +420,50 @@ export const CASOS = [
             });
             return checks;
         }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A13',
+        marco: 'M1',
+        titulo: 'Caltrat 19/09 (staging) — estoque junto da resposta de posologia (P57)',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Guilherme', onboarded: true, estado: 'post_onboarding' });
+
+            const r1 = await turno(ctx, user, 'Caltrat D');
+            checagensDeForma(checks, 'turno 1', r1);
+            checks.push({ nome: 'turno 1: pergunta a posologia composta, sem etapa de dosagem', ...naoContem(r1, /\*?dosagem\*?/i, 'pergunta de dosagem') });
+
+            const r2 = await turno(ctx, user, '1cp as 10h, eu tenho 40cps dele');
+            checagensDeForma(checks, 'turno 2', r2);
+            const meds = await medicamentos(ctx.db, user.id, { nomeIlike: 'Caltrat%' });
+            const horarios = (meds[0]?.schedules || []).filter(s => s.ativo).map(s => String(s.horario).slice(0, 5));
+            checks.push({ nome: 'turno 2: medicamento gravado com o NOME certo e schedule 10:00', ok: meds.length === 1 && horarios.length === 1 && horarios[0] === '10:00', detalhe: `${meds.length} linha(s); horários: ${horarios.join(', ') || 'nenhum'}` });
+            checks.push({ nome: 'turno 2: estoque da mensagem aproveitado (40, sem repergunta) — P57', ok: Number(meds[0]?.estoque_atual) === 40, detalhe: `estoque_atual: ${meds[0]?.estoque_atual}` });
+            checks.push({ nome: 'turno 2: não pede o estoque que já foi dito', ...naoContem(r2, /quiser cadastrar o estoque|quantos comprimidos tem em casa/i, 'convite de estoque redundante') });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A14',
+        marco: 'M1',
+        titulo: 'Dosagem pura nunca vira nome de medicamento (regra 7 — "1000mg" virou nome no staging)',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({
+                nome: 'Guilherme', onboarded: true,
+                estado: 'adding_med', contexto: { etapa: 'cad_nome' }
+            });
+
+            const r1 = await turno(ctx, user, '1000mg');
+            checagensDeForma(checks, 'turno 1', r1);
+            const meds = await medicamentos(ctx.db, user.id);
+            checks.push({ nome: 'nenhum medicamento chamado "1000mg" gravado', ok: !meds.some(m => /^\s*[\d.,]+\s*(mg|ml|g)\s*$/i.test(m.nome)), detalhe: `medicamentos: ${meds.map(m => m.nome).join(', ') || 'nenhum'}` });
+            checks.push({ nome: 'resposta repergunta o NOME do medicamento', ...contem(r1, /nome/i, 'repergunta do nome') });
+            return checks;
+        }
     }
 ];
