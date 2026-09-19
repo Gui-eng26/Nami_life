@@ -16,6 +16,7 @@ import {
 } from '../database.js';
 import { degradar } from '../observabilidade.js';
 import { GUIA_COMPOSICAO } from '../templates/composicao.js';
+import { detectarRecorrenciaNaoSuportada, extrairHorariosCitados } from '../validadores/recorrencia.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -3195,6 +3196,49 @@ export async function handleCadastro({ user, message, state, context, historicoC
         console.log(`💊 [CADASTRO] Recusa explícita — encerrando cadastro — ${user.phone}`);
         await saveConversationState(user.id, { state: 'idle', context: {} });
         return `Tudo bem, parei o cadastro por aqui 🌿 Se quiser retomar depois, é só me chamar!`;
+    }
+
+    // ========================================================
+    // VALIDADOR DE RECORRÊNCIA (v44 §5.7, evidência A3 — Manô 18/09)
+    // Padrão de dia-da-semana/frequência que o sistema não representa NUNCA vira
+    // gravação silenciosa de horários diários (regra 7). Os horários desta mensagem
+    // são bloqueados; todo o resto que ela trouxe (nome, dosagem, quantidade) é
+    // preservado (P57); a resposta é honestidade de limite + oferta do subconjunto
+    // representável — só grava com o consentimento do turno seguinte.
+    // ========================================================
+    const updHorarios = decisao?.contextUpdates || {};
+    const mensagemTrouxeHorarios =
+        (Array.isArray(updHorarios.horarios) && updHorarios.horarios.length > 0) ||
+        (Array.isArray(updHorarios.pares_posologia) && updHorarios.pares_posologia.length > 0);
+    const recorrencia = detectarRecorrenciaNaoSuportada(message);
+
+    if (recorrencia.detectado && mensagemTrouxeHorarios) {
+        const { horarios, pares_posologia, intervalo_horas, horario_inicio, ...updatesPreservados } = updHorarios;
+
+        // Quantidade embutida nos pares bloqueados sobrevive como pendente —
+        // mesma mecânica que decidirCadHorarios já usa (quantidade_pendente).
+        const quantidades = [...new Set((pares_posologia || []).map(p => Number(p.quantidade)).filter(Boolean))];
+        if (quantidades.length === 1 && updatesPreservados.quantidade_pendente == null) {
+            updatesPreservados.quantidade_pendente = quantidades[0];
+            updatesPreservados.unidade_dose_pendente = updatesPreservados.unidade_dose || null;
+            updatesPreservados.forma_explicita_pendente = updatesPreservados.forma_explicita || null;
+        }
+
+        const contextoBloqueado = { ...(context || {}), ...updatesPreservados, etapa: 'cad_horarios' };
+        await saveConversationState(user.id, { state: 'adding_med', context: contextoBloqueado });
+
+        const citados = extrairHorariosCitados(message);
+        const oferta = citados.length > 0
+            ? `Qual desses horários você quer usar todos os dias — ${citados.join(' ou ')}?`
+            : 'Qual horário você quer usar todos os dias?';
+
+        console.log(`🧱 [VALIDADOR] Recorrência não suportada (${recorrencia.padroes.join(', ')}) — horários bloqueados — ${user.phone}`);
+        return (
+            `Por enquanto eu ainda não consigo variar os horários por dia da semana — ` +
+            `só consigo te lembrar nos *mesmos horários todos os dias*. É algo que está chegando! 😊\n\n` +
+            `Se estiver bom pra você, a gente já deixa um horário fixo por enquanto.\n\n` +
+            oferta
+        );
     }
 
     const proximaEtapa = decisao.proximaEtapa;

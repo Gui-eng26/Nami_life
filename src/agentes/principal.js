@@ -22,47 +22,15 @@ import {
     confirmarDoseRetroativa,
     reverterConfirmacao
 } from '../database.js';
-import { buildAlertaEstoquePosConfirmacao, buildConviteEstoqueNaoCadastrado } from '../templates/estoqueTemplates.js';
+// v44 §5.7: nenhum template de estoque vive mais aqui — autor único é
+// src/templates/estoqueTemplates.js (P30), montado de leitura pós-escrita.
+import {
+    buildAlertaEstoquePosConfirmacao, buildConviteEstoqueNaoCadastrado,
+    buildAlertaEstoquePosAjuste, buildEstoqueAtualizadoMessage
+} from '../templates/estoqueTemplates.js';
 import { degradar } from '../observabilidade.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-// Alerta pós-ajuste manual de estoque (MH-042) — reaproveita o mesmo limiar
-// crítico/baixo/ok já usado em relatorioEstoque, sem criar um segundo mecanismo.
-function buildAlertaEstoqueAjusteMessage(info) {
-    const { medNome, estoqueAtual, status } = info;
-
-    if (status === 'critico') {
-        return (
-            `\n\n🚨 *Atenção:* o estoque do *${medNome}* está zerado. ` +
-            `Providencie a recompra assim que possível! 💊`
-        );
-    }
-    if (status === 'baixo') {
-        return (
-            `\n\n⚠️ *Lembrete de estoque:* o *${medNome}* está com *${estoqueAtual}* ${estoqueAtual === 1 ? 'unidade' : 'unidades'} — ` +
-            `hora de planejar a recompra! 💊`
-        );
-    }
-    return '';
-}
-
-// Informativo determinístico pós-ajuste manual de estoque (complemento MH-042) — o único
-// número de estoque comunicado ao usuário depois de UPDATE_STOCK vem daqui, nunca do texto
-// gerado pelo LLM. Responsabilidade única: não decide alerta de limiar (isso continua em
-// buildAlertaEstoqueAjusteMessage, chamada separadamente).
-function buildEstoqueAtualizadoMessage({ medNome, estoqueAnterior, estoqueNovo, deltaAplicado, quantidadeSolicitada }) {
-    let msg = `\n\n📦 Estoque atualizado! Seu novo estoque de *${medNome}* é *${estoqueNovo}* ${estoqueNovo === 1 ? 'unidade' : 'unidades'}.`;
-
-    // Se o que foi de fato aplicado é menor (em módulo) do que o solicitado, o clamp em 0 entrou em ação —
-    // só é detectável comparando o delta pedido com o delta realmente aplicado.
-    if (quantidadeSolicitada != null && Math.abs(deltaAplicado) < quantidadeSolicitada) {
-        msg += ` (Você tinha ${estoqueAnterior} — como o estoque não pode ficar negativo, o ajuste foi ` +
-               `limitado a ${estoqueAnterior}, não aos ${quantidadeSolicitada} informados.)`;
-    }
-
-    return msg;
-}
 
 export async function handlePrincipal({ user, message, image, historicoConversa = [], intencaoNaoSuportada = false }) {
     const state = await getConversationState(user.id);
@@ -220,9 +188,15 @@ Medicamentos cadastrados: ${medications.length === 0
 
             // v43 Bloco C Adendo 1 (P49): "não informado" nunca vira "estoque: null"
             // no prompt — o LLM levaria isso ao pé da letra.
+            // v44 §5.7: com dose pendente deste medicamento, o número PRÉ-débito é
+            // neutralizado — era ele que a LLM copiava para o texto, contradizendo o
+            // bloco pós-débito do template (evidência A5: Eloísa/Wellington/Flávia).
+            const temDosePendenteDesteMed = dosesPendentes.some(d => d.medication_id === m.id);
             const estoqueTexto = (m.estoque_atual === null || m.estoque_atual === undefined)
                 ? 'estoque: não informado'
-                : `estoque: ${m.estoque_atual}`;
+                : temDosePendenteDesteMed
+                    ? 'estoque: registrado (número comunicado pelo sistema após a confirmação — não cite)'
+                    : `estoque: ${m.estoque_atual}`;
 
             return `[id:${m.id}] ${m.nome} (${m.dosagem}, ${estoqueTexto}, horários: ${horarios}, ${proximaDoseStr}, ${tratamentoInfo})`;
         }).join(' | ')
@@ -500,7 +474,7 @@ async function processAction(action, user) {
                         quantidadeSolicitada: action.modo === 'set' ? null : action.quantidade
                     });
                     // Passo 2 — alerta de limiar, função existente e intocada
-                    textoFinal += buildAlertaEstoqueAjusteMessage(statusInfo);
+                    textoFinal += buildAlertaEstoquePosAjuste(statusInfo);
                 }
             } catch (e) {
                 console.error('⚠️ Erro ao montar mensagem de estoque atualizado:', e.message);

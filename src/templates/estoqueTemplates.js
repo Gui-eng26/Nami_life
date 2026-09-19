@@ -70,6 +70,43 @@ export function buildAlertaEstoqueNaoInformado(firstName, info) {
     );
 }
 
+// v44 §5.7 — movidos de principal.js para cá: autor único de texto de estoque é
+// este módulo (P30). Alerta de limiar pós-ajuste manual (MH-042) — mesmo
+// crítico/baixo/ok de relatorioEstoque, sem segundo mecanismo.
+export function buildAlertaEstoquePosAjuste(info) {
+    const { medNome, estoqueAtual, status } = info;
+
+    if (status === 'critico') {
+        return (
+            `\n\n🚨 *Atenção:* o estoque do *${medNome}* está zerado. ` +
+            `Providencie a recompra assim que possível! 💊`
+        );
+    }
+    if (status === 'baixo') {
+        return (
+            `\n\n⚠️ *Lembrete de estoque:* o *${medNome}* está com *${estoqueAtual}* ${estoqueAtual === 1 ? 'unidade' : 'unidades'} — ` +
+            `hora de planejar a recompra! 💊`
+        );
+    }
+    return '';
+}
+
+// v44 §5.7 — movido de principal.js. Informativo determinístico pós-ajuste manual
+// de estoque (complemento MH-042): o único número comunicado depois de UPDATE_STOCK
+// vem daqui, montado da leitura pós-escrita, nunca do texto do LLM.
+export function buildEstoqueAtualizadoMessage({ medNome, estoqueAnterior, estoqueNovo, deltaAplicado, quantidadeSolicitada }) {
+    let msg = `\n\n📦 Estoque atualizado! Seu novo estoque de *${medNome}* é *${estoqueNovo}* ${estoqueNovo === 1 ? 'unidade' : 'unidades'}.`;
+
+    // Se o que foi de fato aplicado é menor (em módulo) do que o solicitado, o clamp em 0 entrou em ação —
+    // só é detectável comparando o delta pedido com o delta realmente aplicado.
+    if (quantidadeSolicitada != null && Math.abs(deltaAplicado) < quantidadeSolicitada) {
+        msg += ` (Você tinha ${estoqueAnterior} — como o estoque não pode ficar negativo, o ajuste foi ` +
+               `limitado a ${estoqueAnterior}, não aos ${quantidadeSolicitada} informados.)`;
+    }
+
+    return msg;
+}
+
 // v43 Bloco C Adendo 1 (seção 2) — estoque nunca informado (MH-094 / P49). NÃO é
 // alerta de falta: a Nami não sabe quanto existe, então não afirma nada sobre a
 // quantidade. É um convite a completar o cadastro, com o benefício explícito.
