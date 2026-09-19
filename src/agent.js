@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { getOrCreateUser, getConversationState, logAgentInteraction } from './database.js';
+import { respostaHonestaAindaNao } from './inventario.js';
 import { enviarAoUsuario } from './funil.js';
 import { routeMessage } from './router.js';
 import { registrarEvento, tituloEstavel } from './observabilidade.js';
@@ -9,9 +10,7 @@ import { registrarEvento, tituloEstavel } from './observabilidade.js';
 // Constituição regra 6), é registrada em agent_logs e sai pelo funil.
 async function recusarAudio(user, phone) {
     const state = await getConversationState(user.id);
-    const texto =
-        'Ainda não consigo ouvir áudios — é uma das coisas que estou aprendendo a fazer. 😊\n\n' +
-        'Pode me escrever o que você disse?';
+    const texto = `${respostaHonestaAindaNao('audio')}\n\nPode me escrever o que você disse?`;
 
     const agentLogId = await logAgentInteraction({
         userId: user.id,

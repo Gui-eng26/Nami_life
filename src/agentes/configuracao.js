@@ -14,12 +14,14 @@ import {
 } from '../database.js';
 import { isCancelamento, encontrarMedicamento, normalizar } from '../nlp_helpers.js';
 import { degradar } from '../observabilidade.js';
-import { NAO_SUPORTADO } from '../inventario.js';
+import { AINDA_NAO } from '../inventario.js';
 
-// Os três primeiros itens do inventário único (tratamento/dosagem/nome do medicamento) são
-// os únicos que fazem sentido como pedido "sobre configuração" — os demais (sintomas, médico,
-// exportação) não têm relação com horários/pausas e nunca seriam classificados aqui.
-const NAO_SUPORTADO_CONFIGURACAO = NAO_SUPORTADO.slice(0, 3);
+// v44 §5.9: a fatia relevante para este agente deixou de ser posicional
+// (slice(0, 3)) e passou a ser declarada no próprio inventário (escopo:
+// 'configuracao') — dosagem/nome/duração de medicamento já cadastrado.
+const NAO_SUPORTADO_CONFIGURACAO = AINDA_NAO
+    .filter(i => i.escopo === 'configuracao')
+    .map(i => i.rotulo);
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 

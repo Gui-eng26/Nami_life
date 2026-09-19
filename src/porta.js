@@ -20,7 +20,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import 'dotenv/config';
-import { CAPACIDADES, NAO_SUPORTADO } from './inventario.js';
+import { CAPACIDADES, NAO_SUPORTADO, NUNCA } from './inventario.js';
 import { degradar } from './observabilidade.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -99,6 +99,10 @@ ${agentesTexto}
 
 O QUE A NAMI AINDA NÃO FAZ (proponha "nao_suportado" — a Nami NUNCA confirma o que não está no FAZ):
 ${naoSuportadoTexto}
+
+O QUE A NAMI NUNCA FARÁ (fronteira de segurança — proponha "principal", que responde
+redirecionando a médico/farmacêutico, sem prometer que "está chegando"):
+${NUNCA.map(item => `- ${item.rotulo}`).join('\n')}
 
 SUBTIPOS DE RELATÓRIO (obrigatório escolher um quando intencao=relatorios):
 ${subtipoRelatoriosTexto}

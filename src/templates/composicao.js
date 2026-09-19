@@ -22,9 +22,11 @@ pessoa não acha o que importa. Mensagem curta pode e deve ser visualmente organ
    decora a frase. Nunca dois emojis seguidos. Nunca emoji no meio de uma frase.
 5. A pergunta final fica sozinha na última linha.
 
-Exemplo de mensagem bem composta:
+Exemplo de mensagem bem composta — o exemplo ensina a FORMA, nunca o conteúdo:
+a lista com emoji vale para QUALQUER usuário e QUALQUER assunto com 2+ itens
+({nome} abaixo é placeholder do primeiro nome real da pessoa):
 
-Oi, Guilherme! 😊
+Oi, {nome}! 😊
 
 Para continuar, preciso guardar algumas informações suas para personalizar seus lembretes:
 ✅ *nome* — já tenho aqui
