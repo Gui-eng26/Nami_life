@@ -305,15 +305,19 @@ function renderizarResumo(context, estoqueFinal) {
 // dela. Depois do estoque vem só este fechamento curto, com o número lido
 // PÓS-ESCRITA do banco (autoria única, §5.7) — e sem etapa de confirmação:
 // correção depois do fechamento entra pela porta (configuração/estoque).
-function montarFechamentoEstoque({ med, alerta, primeiroMedicamento, firstName }) {
+function montarFechamentoEstoque({ med, alerta, primeiroMedicamento, firstName, resumoJaMostraEstoque = false }) {
     const linhas = [];
 
     if (med.estoque_atual !== null && med.estoque_atual !== undefined) {
-        const unidadeLabel = med.unidade_estoque === 'ml'
-            ? 'ml'
-            : pluralizarRotulo(rotuloDaDose(med.unidade_dose, med.forma_farmaceutica), Number(med.estoque_atual));
-        const sufixoEstimativa = med.estoque_estimado ? ' (estimativa)' : '';
-        linhas.push(`📦 Anotado: *${med.estoque_atual}* ${unidadeLabel} de ${med.nome} no estoque${sufixoEstimativa}.`);
+        // Quando o resumo na MESMA mensagem já traz a linha 📦 Estoque (estoque veio
+        // junto do cadastro — caso Sustrat 19/09), não repetimos o número aqui.
+        if (!resumoJaMostraEstoque) {
+            const unidadeLabel = med.unidade_estoque === 'ml'
+                ? 'ml'
+                : pluralizarRotulo(rotuloDaDose(med.unidade_dose, med.forma_farmaceutica), Number(med.estoque_atual));
+            const sufixoEstimativa = med.estoque_estimado ? ' (estimativa)' : '';
+            linhas.push(`📦 Anotado: *${med.estoque_atual}* ${unidadeLabel} de ${med.nome} no estoque${sufixoEstimativa}.`);
+        }
         if (alerta?.dias_restantes !== undefined && alerta?.dias_restantes !== null) {
             linhas.push(`⚠️ Esse estoque dura aproximadamente *${alerta.dias_restantes}* ${Number(alerta.dias_restantes) === 1 ? 'dia' : 'dias'} — bom já planejar a recompra! 💊`);
         } else {
@@ -2955,12 +2959,16 @@ A pergunta fica sozinha na última linha (regra 8).`;
             // v44 (decisão de produto, replay 19/09): pede a POSOLOGIA COMPLETA numa
             // pergunta só — quantidade E horários. O público pediu agilidade: o formato
             // composto vem primeiro, e o código coleta os pedaços que faltarem.
+            // Emenda da regra 8 (Cardilol, 19/09): o exemplo que ILUSTRA a pergunta pode
+            // vir depois dela — e o tom continua sendo o da Nami, nunca seco.
             return `Pergunte a posologia do ${nome} numa pergunta só: QUANTO a pessoa toma por vez
-E em quais HORÁRIOS. Um exemplo curto vem ANTES da pergunta (como "1 comprimido às 8h e às 20h");
-a pergunta fica sozinha na última linha (regra 8). Ex:
-"Pode me mandar tudo junto — por exemplo: 1 comprimido às 8h e às 20h.
+E em quais HORÁRIOS — com o tom caloroso de sempre (pode abrir com meia frase acolhedora).
+Depois da pergunta, encerre com UM exemplo curto que ilustre a resposta, em linha própria
+começando com "Por exemplo:". Nada além do exemplo depois da pergunta. Ex:
+"Agora me conta como você toma o ${nome} 😊
 
-Quanto de ${nome} você toma por vez, e em quais horários?"`;
+Quanto você toma por vez, e em quais horários?
+Por exemplo: 1 comprimido às 8h e às 20h"`;
 
         case 'cad_quantidade_por_dose':
             if (context?.mencionaConcentracao) {
@@ -2977,6 +2985,7 @@ Exemplos e explicações vêm ANTES; a pergunta fica sozinha na última linha (r
             // v44 (decisão de produto, replay 19/09): os horários JÁ vieram — a pergunta
             // da quantidade cita esses horários para ficar concreta ("quantos você toma
             // às 07:00 e às 19:00?"), em vez de uma pergunta genérica de etapa.
+            // Emenda da regra 8 (Cardilol): exemplo que ilustra a pergunta pode vir depois.
             {
                 const horariosColetados = (context?.horarios || [])
                     .map(h => String(h).slice(0, 5))
@@ -2984,11 +2993,9 @@ Exemplos e explicações vêm ANTES; a pergunta fica sozinha na última linha (r
                 const referenciaHorarios = horariosColetados ? ` às ${horariosColetados}` : ' em cada horário';
                 return `Os horários já foram ditos e estão anotados${horariosColetados ? ` (${horariosColetados})` : ''} —
 falta só a quantidade. Pergunte *QUANTO* de ${nome} a pessoa toma ou usa${referenciaHorarios},
-citando os horários EXATAMENTE como estão acima. Pode ser em comprimidos, cápsulas, gotas ou ml —
-essa explicação vem ANTES; a pergunta fica sozinha na última linha (regra 8). Ex:
-"Pode ser em comprimidos, cápsulas, gotas ou ml.
-
-Quanto de ${nome} você toma${referenciaHorarios}?"`;
+citando os horários EXATAMENTE como estão acima, com o tom caloroso de sempre. Depois da
+pergunta, pode encerrar com UM exemplo curto em linha própria começando com "Por exemplo:"
+(como "Por exemplo: 1 comprimido, ou 20 gotas"). Nada além do exemplo depois da pergunta.`;
             }
 
         case 'cad_confirma_forma':
@@ -3497,12 +3504,14 @@ export async function handleCadastro({ user, message, state, context, historicoC
         }
 
         // Estoque já veio na mesma mensagem (MH-80) — nada mais a coletar:
-        // fechamento curto, sem etapa de confirmação.
+        // fechamento curto, sem etapa de confirmação. O resumo acima já traz a
+        // linha de estoque — o fechamento não repete o número.
         const fechamento = montarFechamentoEstoque({
             med: medGravado,
             alerta: contextComMedId.alerta_estoque_baixo || null,
             primeiroMedicamento,
-            firstName
+            firstName,
+            resumoJaMostraEstoque: true
         });
         await saveConversationState(user.id, { state: 'idle', context: {} });
         return `${declarativa}\n\n${resumo}\n\n${fechamento}`;

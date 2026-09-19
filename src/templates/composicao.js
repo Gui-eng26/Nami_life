@@ -20,7 +20,9 @@ pessoa não acha o que importa. Mensagem curta pode e deve ser visualmente organ
    dado ou a decisão, no máximo duas por mensagem.
 4. Fora da lista de itens, no máximo UM emoji na mensagem inteira, e ele marca o tom, não
    decora a frase. Nunca dois emojis seguidos. Nunca emoji no meio de uma frase.
-5. A pergunta final fica sozinha na última linha.
+5. A pergunta final fica no fim da mensagem. A única coisa que pode vir depois dela é
+   UM exemplo curto que ilustre a resposta esperada, em linha própria começando com
+   "Por exemplo:" — nunca conteúdo novo, aviso ou segunda pergunta.
 
 Exemplo de mensagem bem composta — o exemplo ensina a FORMA, nunca o conteúdo:
 a lista com emoji vale para QUALQUER usuário e QUALQUER assunto com 2+ itens

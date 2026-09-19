@@ -11,16 +11,20 @@ function resultado(ok, detalhe) {
 
 // --- Texto -------------------------------------------------
 
-// Constituição regra 8: no máximo uma pergunta, sozinha na última linha.
+// Constituição regra 8: no máximo uma pergunta, no fim da mensagem.
+// Emenda (19/09, caso Cardilol): a única coisa que pode vir DEPOIS da pergunta é
+// um exemplo curto que a ilustre ("Por exemplo: ..."), em linha própria.
 export function umaPerguntaNaUltimaLinha(texto) {
     const interrogacoes = (String(texto).match(/\?/g) || []).length;
     if (interrogacoes === 0) return resultado(true, 'sem pergunta');
     if (interrogacoes > 1) return resultado(false, `${interrogacoes} interrogações na mensagem`);
     const linhas = String(texto).split('\n').map(l => l.trim()).filter(Boolean);
-    const ultima = linhas[linhas.length - 1] || '';
+    let i = linhas.length - 1;
+    while (i >= 0 && /^(por exemplo|exemplo:|ex\.?:|\(ex)/i.test(linhas[i])) i--;
+    const ultima = linhas[i] || '';
     return ultima.includes('?')
-        ? resultado(true, 'pergunta única na última linha')
-        : resultado(false, `a pergunta não está na última linha (última: "${ultima.slice(0, 60)}")`);
+        ? resultado(true, 'pergunta única no fim (exemplo ilustrativo permitido depois)')
+        : resultado(false, `a pergunta não está no fim (última linha não-exemplo: "${ultima.slice(0, 60)}")`);
 }
 
 // Constituição regra 9 / padrão técnico 19: negrito do WhatsApp é UM asterisco.
