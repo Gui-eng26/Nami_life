@@ -1,4 +1,22 @@
-# Baseline do arnês — 1ª execução real (19/09/2026, staging, alvo M1)
+# Arnês — execuções da v44 (staging, alvo M1)
+
+## 3ª execução (19/09/2026) — ENTREGA DO M1 ✅
+
+**57 asserções verdes · 0 falhas no alvo M1 · 4 conhecidas (marco futuro).**
+Todos os 8 casos M1 verdes (A1–A8). Critério de aceite §6.1 do briefing cumprido.
+Conhecidos, todos deliberados: A2/M2 (os 4 medicamentos registrados — runner),
+A9/M2 (BUG-103, correção no resumo) e A10/M4 (data de nascimento no onboarding).
+
+Entre a 1ª e a 3ª execução foram corrigidos, guiados pelo próprio arnês:
+porta desviando mensagens com medicamento para nao_suportado; validador de
+recorrência dependente do extrator; campos_rica ausente no aceite; horário
+solto descartado pelo salto (P57); pergunta fora da última linha nos blocos de
+cad_horarios/cad_quantidade (regra 8); CHECK de system_events sem 'porta';
+limpeza do arnês via delete_user_account (LGPD exercitada a cada execução).
+
+---
+
+## 1ª execução (19/09/2026) — baseline histórico
 
 Executado por Guilherme após a implementação completa do M1 (commits até
 `fix: v44 §5.6/T0 concluído`). Resultado: **50 asserções verdes · 7 falhas no
