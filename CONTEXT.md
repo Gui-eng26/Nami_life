@@ -4,7 +4,7 @@
 > Atualizado no encerramento de cada sessão. O backlog **não** vive aqui — vive em
 > `backlog_items` no Supabase.
 
-**Última atualização:** 18/09/2026 (encerramento da sessão v43)
+**Última atualização:** 19/09/2026 (encerramento da sessão v44 — M0+M1 EM PRODUÇÃO, ver §12)
 
 ---
 
@@ -60,7 +60,11 @@ follow-ups.
 | `src/templates/estoqueTemplates.js` | Textos de estoque |
 | `src/templates/adesaoTemplates.js` | Textos de relatório de adesão |
 | `src/templates/balancoTemplates.js` | Textos de balanço |
-| `src/inventario.js` | **NOVO v39** — inventário de capacidades como dado (P55) |
+| `src/inventario.js` | Inventário de capacidades como dado (P55); **v44: três listas** (FAZ com limites / AINDA_NAO / NUNCA) |
+| `src/porta.js` | **NOVO v44** — porta única de interpretação (tool-use, 1 chamada/turno; proposta, nunca decisão) |
+| `src/funil.js` | **NOVO v44** — funil único de saída (`enviarAoUsuario`): todo envio + log em `funil_envios` |
+| `src/validadores/recorrencia.js` | **NOVO v44** — validador determinístico de recorrência (dias da semana/frequência) |
+| `arnes/` | **NOVO v44** — arnês de regressão (`npm run arnes`): 15 casos-ouro de conversas reais |
 
 ---
 
@@ -68,6 +72,8 @@ follow-ups.
 
 ### 3.1 Entregue e validado
 
+- **v44 M0+M1 (19/09/2026, EM PRODUÇÃO)** — arnês de regressão + arquitetura da porta
+  única (porta, funil, autoria única de fatos, inventário três listas, citação). Ver §12.
 - **MH-009 (v39)** — dashboard de indicadores do Ciclo 2, em produção como serviço
   Railway separado. Ver §9.
 - **MH-081 (v37)** — quantidade da dose exibida em lembretes e follow-ups.
@@ -306,6 +312,17 @@ Números em pt-BR: inteiro sem casas decimais, fracionário com vírgula (`2,5 m
     intencoes_nao_suportadas, care_network ×2; medications ← schedules, dose_logs), o que
     quebrava `delete_user_account` apenas lá. Corrigido por SQL em 18/09. Outras diferenças
     podem existir e nunca foram auditadas.
+21. **T0 (v44, empírico): o `referenceMessageId` do webhook de citação é o `messageId`
+    do envio, NUNCA o `zaapId`.** O funil grava os dois por auditoria e a resolução
+    compara contra ambos; o legado `dose_logs.zapi_message_id` prefere `messageId`
+    (gravar zaapId primeiro era a causa raiz do BUG-029 nunca casar).
+22. **A janela de rollout do Railway (~1–2 min) mantém o container ANTIGO respondendo
+    webhooks.** Confirmado 2× em 19/09 (staging e produção): um turno processado pelo
+    deploy velho no meio da troca produz comportamento já corrigido e pode corromper
+    estado. Testes manuais logo após um push esperam o rollout assentar.
+23. **`stock_movements` e `adesao_estado` têm FK sem CASCADE de propósito** —
+    `delete_user_account` os apaga explicitamente. Qualquer limpeza de usuário passa
+    pela função (o arnês usa exatamente ela, exercitando a LGPD a cada execução).
 
 ---
 
@@ -592,10 +609,12 @@ original do MH-074 de que a apresentação não pediria dado nenhum.
 - **Nice-to-have** (nunca bloqueiam): `dosagem`, `estoque_atual`, `tipo_tratamento`.
 - `forma_farmaceutica` é DERIVADA da unidade da dose e nunca perguntada.
 - A gravação acontece assim que os have-to-have existem, **antes** da pergunta de estoque.
-- O resumo vem DEPOIS do estoque, para que a correção continue dentro do fluxo, e é lido de
-  volta do banco: diz "isto está registrado", nunca "isto vou gravar".
-- Correção no resumo edita o REGISTRO, não o rascunho — `atualizarMedicamentoCampos` para
-  campos simples, `replaceMedication` para horários, `registrarMovimentoEstoque` para estoque.
+- **REVOGADO na v44 (§12):** o resumo vinha DEPOIS do estoque. Decisão de produto de 19/09:
+  o resumo vem logo APÓS a gravação (a coleta de estoque nem sempre chega), continua lido de
+  volta do banco, e o estoque respondido fecha com mensagem curta — a etapa de confirmação
+  saiu do fluxo principal; correção depois do fechamento entra pela porta.
+- Correção pós-fechamento edita o REGISTRO via porta — `configuracao` para horários,
+  `UPDATE_STOCK` (principal) para estoque; dosagem/nome/duração seguem em AINDA_NAO.
 
 ### 11.6 Estoque tem três estados, não dois
 
@@ -664,13 +683,13 @@ na última linha. Aplicado em `recepcionista.js`, `data_nascimento.js` e `cadast
 | 2 verdade no roteamento | entregue (BUG-104, MH-090) |
 | 3 níveis de campo | entregue (MH-094) |
 | 4 destravar o extrator | entregue (dentro do Bloco C) |
-| 5 múltiplos medicamentos numa mensagem | **aberta** |
-| 6 call único `{ intencao, campos }` | **aberta** |
-| 7 runner do onboarding | **aberta** |
+| 5 múltiplos medicamentos numa mensagem | remapeada → **M2** (MH-96, com o runner) |
+| 6 call único `{ intencao, campos }` | **entregue na v44** (porta única, §12) |
+| 7 runner do onboarding | remapeada → **M2 + M4** |
 
-Limitação conhecida e não mascarada: **corrigir e continuar no mesmo turno** ("na verdade é
-às 20h" no meio do fluxo) só se resolve na Fase 6. Hoje o extrator roda em qualquer etapa mas
-só preenche campo vazio, nunca sobrescreve — é a trava que evita corrupção silenciosa.
+A limitação "corrigir e continuar no mesmo turno" foi parcialmente resolvida na v44:
+correção de estoque/horário pós-fechamento entra pela porta (BUG-103 resolvido); correção
+de campo NO MEIO da coleta segue para o M2 (runner).
 
 ### 11.11 Métrica
 
@@ -680,3 +699,109 @@ v43** — primeira ação da próxima sessão.
 
 Cada fase precisa do próprio briefing de execução, gerado perto da execução: briefing é
 contrato, e contrato de 7 fases envelhece antes de ser cumprido.
+
+---
+
+## 12. v44 — M0 (arnês) + M1 (porta única): EM PRODUÇÃO (19/09/2026)
+
+Decisão de Guilherme ("sem medo"): ajustar a arquitetura agentiva com poucos usuários,
+staging isolado e a base real (2.833 turnos) como rede de segurança. Norte do produto:
+**"você fala com a Nami como se tivesse falando com alguém da sua família."**
+Marcos: M0 arnês · M1 porta+funil (**entregues, em produção**) · M2 runner+schema
+(MH-96, MH-77) · M3 configuração/relatórios · M4 onboarding (LGPD, por último).
+Promoção por marco: cada um sobe isolado para `main`, com o arnês verde como portão.
+
+### 12.1 Arquitetura entregue
+
+- **Porta única** (`src/porta.js`): para usuário onboarded, os antigos ramos 4–15 do
+  `routeMessage` viraram fast-paths determinísticos → porta → despacho. UMA chamada de
+  interpretação por turno (tool-use com schema, nunca JSON em texto livre; 1 retry →
+  `degradar()` → repergunta segura). A saída é **proposta, nunca decisão**: campos passam
+  pelos validadores dos especialistas, transição é computada em código. No meio de uma
+  coleta, 'principal' proposto = continuação do fluxo.
+- **Fast-paths que ficaram**: citação+confirmação (grupo do funil), **dose vence coleta**
+  (regra 5 — confirma determinístico e retoma a coleta na mesma mensagem), resposta
+  tardia (BUG-035), cancelamento/período dos relatórios, aceite com `mensagem_rica`
+  (guardada SEMPRE no post_onboarding, com os `campos_rica` da porta — P57).
+- **Entrada única no cadastro** (`entrarNoCadastro`): mescla rascunho + campos da porta +
+  mensagem original. Multi-medicamento = reconhece todos + um-por-vez (até M2).
+  **Medicamento DIFERENTE citado no meio de um cadastro é cadastro NOVO** — fecha o
+  anterior pela verdade do banco, nunca repete a pergunta pendente.
+- **Contrato universal de devolução**: `principal` ganhou `escalarParaRoteador` (campo
+  `devolver` no JSON) — nunca promete ação de outro agente; a porta reinterpreta sem a
+  opção 'principal'. Mata a classe do MH-090.
+- **Funil único de saída** (`src/funil.js`): TODO envio (reativo, proativo, scheduler,
+  cuidador) passa por `enviarAoUsuario` e vira linha em `funil_envios` (texto, origem,
+  zaapId E messageId, agent_log_id). Doses de lembrete agrupado apontam para o envio
+  (`dose_logs.funil_envio_id`) — citação de agrupada confirmável (gap MH-032). Recusa de
+  áudio entrou no pipeline (registrada em `agent_logs`). Critério permanente: **nenhum
+  `sendTextMessage` fora de `whatsapp.js`/`funil.js`** (verificável por grep).
+- **Autoria única de fatos**: números de estado (estoque/dias/doses) têm autor único —
+  template lendo o banco PÓS-escrita. A LLM nunca os escreve (CONFIRM_DOSE incluída);
+  estoque pré-débito é neutralizado no contexto quando há dose pendente.
+- **Inventário em três listas** (`src/inventario.js`, P55 mantido): CAPACIDADES com
+  **limites explícitos**, AINDA_NAO (`{chave, rotulo, escopo}`), NUNCA (fronteira de
+  segurança, sem "ainda", SAMU 192). A porta consulta as três como portão; mensagem que
+  TRAZ medicamento é sempre `cadastro` (o especialista faz a honestidade de limite sem
+  descartar dados) — `nao_suportado` é para pedido sem caminho nenhum.
+- **Validador de recorrência** (`src/validadores/recorrencia.js`): padrão de dia-da-semana/
+  frequência bloqueia gravação de horários, preserva os demais campos e oferece o
+  subconjunto — grava só com consentimento. Notação de receita "N/N hrs" tem resgate
+  determinístico (caso Nimesulida); quantidade por HORÁRIO já é suportada (caso A12);
+  variação por DIA é M2 (MH-77).
+- **Vocabulário canônico obrigatório**: `porta`, `schema`, `runner`, `validador`,
+  `template`, `adaptador`, `funil`, `inventario`. Função nova com trabalho igual a uma
+  existente é defeito de revisão.
+
+### 12.2 Constituição da Nami — v1 (aprovada 19/09) + emendas
+
+Critério de aceite de TODO texto ao usuário; cada regra é asserção do arnês. Resumo:
+(1) nunca tom de obrigação — pedido opcional carrega a porta de saída; (2) fato só
+depois de gravado e só do banco — confirmação de cadastro é declarativa ("X cadastrado!
+Vou te lembrar..."); "Anotei" só para captura intermediária; (3) nada do que a pessoa
+disse é ignorado; (4) nunca reperguntar dado já dito; (5) confirmação de dose vence
+qualquer fluxo; (6) honestidade em três níveis (inventário); (7) padrão não representável
+→ recusa honesta, nunca gravação errada; (8) no máximo uma pergunta, no fim; (9) voz de
+família, nunca de sistema (GUIA_COMPOSICAO); (10) mensagem proativa também é conversa.
+
+**Emendas da v44 (evidência do replay):**
+- **Regra 8**: a única coisa que pode vir DEPOIS da pergunta é UM exemplo curto que a
+  ilustre ("Por exemplo: ..."), em linha própria — nunca conteúdo novo.
+- **Conexão de contexto**: a abertura confirma a ação em curso, conectando o que a pessoa
+  acabou de dizer com o que a Nami pergunta ("Certo! Vamos cadastrar o X pra você.").
+
+### 12.3 Decisões de produto do replay (19/09, revisam a v43)
+
+- **Posologia composta primeiro**: a pergunta pede quantidade E horários juntos; faltando
+  um pedaço, a pergunta seguinte cita o que já veio. Caminho invertido: formato composto
+  primeiro, decomposição só no que faltar.
+- **Resumo logo após a gravação** (revoga parte do §11.5): mensagem pós-gravação é
+  determinística — declaração + resumo do banco (sem linha 📦 quando estoque NULL) +
+  convite de estoque leve ("📦 *Estoque:* se você souber... Se não souber agora, tudo
+  bem também."). Estoque respondido (ou "não sei") fecha curto; SEM etapa de confirmação.
+- **Campos incidentais nunca se perdem** (P57): estoque ("tenho 40cps"), tratamento
+  ("por 5 dias") e quantidade ditos junto da posologia são resgatados pelo extrator
+  completo — que só preenche vazio, nunca sobrescreve o classificador especializado.
+- **Dosagem pura nunca vira nome** (regra 7): "1000mg" em cad_nome é recusado e o nome
+  reperguntado.
+
+### 12.4 Arnês de regressão (M0)
+
+`npm run arnes` — 15 casos-ouro (A1–A15) reproduzindo conversas reais de `agent_logs`
+contra o código, com asserções determinísticas sobre texto final e banco. Banco de teste:
+projeto de STAGING (guarda dura recusa o ref de produção; telefones `+5500000000xx`;
+limpeza via `delete_user_account`). Mock no ponto do funil
+(`configurarTransporteParaTestes`). Casos por marco com expected-fail para M2/M4
+(A2-pleno, A10). NUNCA usar classificações do juizOffline como evidência. **Portão de
+promoção: arnês 100% verde antes de todo merge para `main`.** Ver `arnes/README.md`.
+
+### 12.5 Registros do encerramento
+
+- Backlog (script `scripts/backlog_encerramento_v44.js`): **MH-95** criado/resolvido
+  (citação de primeira classe) · **BUG-029** superseded → MH-95 · **BUG-103** resolvido
+  antecipado (caso A9 verde) · **MH-77** remapeado M2 · **MH-96** criado (runner +
+  multi-medicamento, ex-Fase 5) · **ACH-9** (porta classifica "med já cadastrado +
+  dosagem" como consulta — Predsin, sem dano).
+- Correções manuais de dados (19/09): staging — medications "1000mg" → Caltrat D/1000mg;
+  produção — Nimesulida de Guilherme → temporário, 5 dias (tratamento_fim 24/09).
+- T0 concluído: ver §6 item 21.
