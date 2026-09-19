@@ -16,7 +16,17 @@ import Anthropic from '@anthropic-ai/sdk';
 import 'dotenv/config';
 import { saveConversationState, updateUser, formatarHistoricoConversa } from '../database.js';
 import { extrairComponenteData, montarDataNascimento } from '../dataNascimento.js';
-import { definirEstadoPosOnboarding } from '../estadoPosOnboarding.js';
+// v44 §5.1: estadoPosOnboarding.js morreu — a porta interpreta a intenção no
+// turno seguinte. O fechamento grava post_onboarding e preserva a mensagem
+// inicial como mensagem_rica (P57): se ela já trazia o pedido/medicamento,
+// nada se perde.
+async function fecharEmPostOnboarding(user, mensagemInicial) {
+    await saveConversationState(user.id, {
+        state: 'post_onboarding',
+        context: { mensagem_rica: mensagemInicial || null }
+    });
+    console.log(`✅ Pós-onboarding: aguardando intenção na porta (${user.phone})`);
+}
 import { degradar } from '../observabilidade.js';
 import { GUIA_COMPOSICAO } from '../templates/composicao.js';
 
@@ -315,7 +325,8 @@ async function gerarTexto(promptArgs) {
 
 // ============================================================
 // FECHAMENTO DO FLUXO — reproduz a decisão de roteamento que antes vivia em
-// recepcionista.js, agora com chamador único (definirEstadoPosOnboarding).
+// recepcionista.js, agora fechando sempre em post_onboarding (v44 §5.1 — a
+// porta interpreta a intenção do turno seguinte).
 // motivo distingue o TOM do fechamento: 'recusa' (usuário declarou que não quer)
 // vs. 'limite_tentativas' (MH-072 A.1 item 6 — 3 tentativas de ruído, a Nami pula
 // por conta própria, sem perguntar, sem tratar como recusa do usuário).
@@ -324,7 +335,7 @@ async function gerarTexto(promptArgs) {
 async function fecharSemDado({ user, context, message, motivo = 'recusa' }) {
     const etapa = motivo === 'limite_tentativas' ? 'nasc_limite_tentativas' : 'nasc_recusa';
     const resposta = await gerarTexto({ etapa, context, user, message });
-    await definirEstadoPosOnboarding(user, context.mensagem_inicial || '');
+    await fecharEmPostOnboarding(user, context.mensagem_inicial || '');
     return resposta;
 }
 
@@ -335,7 +346,7 @@ async function gravarEFechar({ user, context, message }) {
         console.log(`🎂 [ANO2D] resultado=confirmado — ${user.phone}`);
     }
     const resposta = await gerarTexto({ etapa: 'nasc_fechamento', context, user, message });
-    await definirEstadoPosOnboarding(user, context.mensagem_inicial || '');
+    await fecharEmPostOnboarding(user, context.mensagem_inicial || '');
     return resposta;
 }
 

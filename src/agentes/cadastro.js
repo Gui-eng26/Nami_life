@@ -2947,10 +2947,11 @@ Não repita horários nem quantidade coletados antes.`;
             const pergunta = renderizarPerguntaEstoque(etapaDaPergunta, context);
             // v43 Bloco C (MH-094, Parte 3.2): chegando direto da gravação antecipada, a
             // pessoa precisa de confirmação de que o medicamento JÁ foi salvo — lida de
-            // volta do registro (P56), nunca "prometida" em prosa. "Anotei aqui" evita
-            // ter que escolher artigo de gênero para o nome do medicamento.
+            // volta do registro (P56), nunca "prometida" em prosa.
+            // v44 (Constituição regra 2): a confirmação de persistência é DECLARATIVA e
+            // completa — "Anotei" ficou restrito a captura intermediária de campo.
             const prefixoGravacao = context?.medicamentoRecemGravado
-                ? `Comece com a linha EXATA "Anotei aqui: *${context.medicamentoRecemGravado}* 💊", pule uma linha, e então `
+                ? `Comece com a linha EXATA "*${context.medicamentoRecemGravado}* cadastrado! Vou te lembrar nos horários certos. 💊", pule uma linha, e então `
                 : '';
             return `${prefixoGravacao}Faça EXATAMENTE esta pergunta, sem reescrever, sem acrescentar outra pergunta e
 sem antecipar nenhuma etapa seguinte (é fluxo de dado de saúde renderizado em código):
@@ -3179,7 +3180,30 @@ export async function handleCadastro({ user, message, state, context, historicoC
         return claudeResponse.message;
     }
 
+    // v44 (evidência A6 — Carla 18/09): com o medicamento JÁ gravado (gravação
+    // antecipada do MH-094), recusar/adiar o que resta (estoque, opcionais) NÃO é
+    // cancelar o cadastro — ele existe no banco e os lembretes valem. A resposta
+    // afirma a verdade do banco (P56), nunca "parei o cadastro".
+    async function fecharComCadastroJaGravado() {
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        let nome = context?.nome || 'seu remédio';
+        let horariosTexto = '';
+        try {
+            const med = await getMedicationComSchedulesAtivos(context.medication_id);
+            if (med) {
+                nome = med.nome;
+                const horarios = (med.schedules || []).filter(s => s.ativo).map(s => String(s.horario).slice(0, 5));
+                if (horarios.length > 0) horariosTexto = ` (${horarios.join(', ')})`;
+            }
+        } catch (e) {
+            console.error('⚠️ Erro ao ler medicamento gravado no fechamento:', e.message);
+        }
+        const firstName = user.name ? user.name.split(' ')[0] : null;
+        return `Tudo bem${firstName ? `, ${firstName}` : ''}! O *${nome}* já está cadastrado e os lembretes estão ativos${horariosTexto}. 🌿\n\nO estoque fica pra depois — quando quiser me falar, é só mandar a quantidade.`;
+    }
+
     if (ehCancelamento(message)) {
+        if (context?.medication_id) return await fecharComCadastroJaGravado();
         await saveConversationState(user.id, { state: 'idle', context: {} });
         return `Tudo bem, cancelei o cadastro 🌿 Se quiser recomeçar, é só me chamar!`;
     }
@@ -3193,6 +3217,10 @@ export async function handleCadastro({ user, message, state, context, historicoC
     }
 
     if (decisao?.encerrarCadastro) {
+        if (context?.medication_id) {
+            console.log(`💊 [CADASTRO] Recusa do opcional com medicamento já gravado — fechando pela verdade do banco — ${user.phone}`);
+            return await fecharComCadastroJaGravado();
+        }
         console.log(`💊 [CADASTRO] Recusa explícita — encerrando cadastro — ${user.phone}`);
         await saveConversationState(user.id, { state: 'idle', context: {} });
         return `Tudo bem, parei o cadastro por aqui 🌿 Se quiser retomar depois, é só me chamar!`;

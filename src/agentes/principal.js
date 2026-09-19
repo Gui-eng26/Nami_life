@@ -51,6 +51,13 @@ export async function handlePrincipal({ user, message, image, historicoConversa 
     const acoesTipos = (claudeResponse.actions || []).map(a => a.type).join(', ') || claudeResponse.action?.type || 'nenhuma';
     console.log(`✅ Claude respondeu — newState: ${claudeResponse.newState}, actions: ${acoesTipos}`);
 
+    // v44 §5.3 — contrato universal de devolução: o pedido pertence a outro agente.
+    // Nada é executado, nada é prometido — o roteador reinterpreta o turno na porta.
+    if (claudeResponse.devolver === true) {
+        console.log(`🔁 [PRINCIPAL] devolver=true — escalando ao roteador — ${user.phone}`);
+        return { escalarParaRoteador: true };
+    }
+
     // Compatibilidade: aceita tanto o formato novo (actions: array)
     // quanto o formato antigo (action: objeto único)
     let listaAcoes = [];
