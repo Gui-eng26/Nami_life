@@ -64,7 +64,7 @@ follow-ups.
 | `src/porta.js` | **NOVO v44** — porta única de interpretação (tool-use, 1 chamada/turno; proposta, nunca decisão) |
 | `src/funil.js` | **NOVO v44** — funil único de saída (`enviarAoUsuario`): todo envio + log em `funil_envios` |
 | `src/validadores/recorrencia.js` | **NOVO v44** — validador determinístico de recorrência (dias da semana/frequência) |
-| `arnes/` | **NOVO v44** — arnês de regressão (`npm run arnes`): 15 casos-ouro de conversas reais |
+| `arnes/` | **NOVO v44** — arnês de regressão (`npm run arnes`): 20 casos-ouro de conversas reais |
 
 ---
 
@@ -769,6 +769,9 @@ família, nunca de sistema (GUIA_COMPOSICAO); (10) mensagem proativa também é 
   ilustre ("Por exemplo: ..."), em linha própria — nunca conteúdo novo.
 - **Conexão de contexto**: a abertura confirma a ação em curso, conectando o que a pessoa
   acabou de dizer com o que a Nami pergunta ("Certo! Vamos cadastrar o X pra você.").
+- **Regra 6 do guia (micro-entrega, validação humana do A18)**: NUNCA repetir informação
+  que a Nami acabou de dar na conversa recente — agradecimento/encerramento recebe
+  fechamento curto e caloroso, sem reexplicação (aceno de porta aberta é permitido).
 
 ### 12.3 Decisões de produto do replay (19/09, revisam a v43)
 
@@ -787,7 +790,7 @@ família, nunca de sistema (GUIA_COMPOSICAO); (10) mensagem proativa também é 
 
 ### 12.4 Arnês de regressão (M0)
 
-`npm run arnes` — 15 casos-ouro (A1–A15) reproduzindo conversas reais de `agent_logs`
+`npm run arnes` — 20 casos-ouro (A1–A20) reproduzindo conversas reais de `agent_logs`
 contra o código, com asserções determinísticas sobre texto final e banco. Banco de teste:
 projeto de STAGING (guarda dura recusa o ref de produção; telefones `+5500000000xx`;
 limpeza via `delete_user_account`). Mock no ponto do funil
@@ -805,3 +808,32 @@ promoção: arnês 100% verde antes de todo merge para `main`.** Ver `arnes/READ
 - Correções manuais de dados (19/09): staging — medications "1000mg" → Caltrat D/1000mg;
   produção — Nimesulida de Guilherme → temporário, 5 dias (tratamento_fim 24/09).
 - T0 concluído: ver §6 item 21.
+
+### 12.6 Micro-entrega pré-M2 (19/09, EM PRODUÇÃO — a0c426c)
+
+Casos A16–A20 (transcrições reais de 30/08–02/09) + copy do recepcionista:
+
+- **A16 Aline** (dano máximo do BUG-104): verdade de persistência asserida a cada turno;
+  M2 expected-fail = 4 medicamentos, cada um com o horário DA SUA linha.
+- **A17 Priscila** (intenção pura → lista só-nomes → "Pó"): coleta sem promessa vazia;
+  apresentação não-representada reconhecida com honestidade (sachê/dose = unidade);
+  nome nunca reperguntado; M2 = iterar a lista item a item.
+- **A18 Juliana** ("é para outra pessoa"): copy nova do recepcionista — postura AINDA_NAO
+  + caminho real de hoje OBRIGATÓRIO (a própria pessoa usar a Nami) + retomada; o turno
+  de fechamento ("obrigado") originou a regra 6 do guia.
+- **A19 Flávia** ("Regenesis e ofolato D"): gravado como um, a confirmação declara o nome
+  exato do banco; M2 = dois registros com confirmação.
+- **A20 Guilherme** ("Encerrar todos"): um-a-um atual documentado como evidência M3
+  (MH-82/MH-39); `ORDEM_MARCOS` do arnês ganhou M3.
+
+Correções de M1 forçadas pelos casos: entrada multi-medicamento usa a LINHA original do
+1º medicamento (nunca a grade inteira da mensagem — regra 7) e semeia horários
+compartilhados normalizados ("às HH:MM") direto no contexto (dado determinístico da
+porta); o salto do extrator em cad_nome decide a etapa considerando o contexto já
+coletado (P57).
+
+**Guia do M2 (próxima janela):** critérios de aceite JÁ escritos e amarelos no arnês —
+A2-pleno/A16-M2 (N medicamentos da mesma mensagem, horário por linha), A17-M2 (lista
+iterada sem perda), A19-M2 (nome composto → dois registros), MH-77 (recorrência com
+schema; validador M1 já garante a honestidade), MH-96 é o item guarda-chuva. A20 (M3) e
+A10 (M4) ficam para as fases seguintes.
