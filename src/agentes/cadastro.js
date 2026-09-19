@@ -3074,7 +3074,7 @@ Não repita horários nem quantidade coletados antes.`;
             // v44 (Constituição regra 2): a confirmação de persistência é DECLARATIVA e
             // completa — "Anotei" ficou restrito a captura intermediária de campo.
             const prefixoGravacao = context?.medicamentoRecemGravado
-                ? `Comece com a linha EXATA "*${context.medicamentoRecemGravado}* cadastrado! Vou te lembrar nos horários certos. 💊", pule uma linha, e então `
+                ? `Comece com a linha EXATA "*${context.medicamentoRecemGravado}* cadastrado! Vou te lembrar nos horários certos.", pule uma linha, e então `
                 : '';
             return `${prefixoGravacao}Reproduza EXATAMENTE este texto, sem reescrever, sem acrescentar pergunta e
 sem antecipar nenhuma etapa seguinte (é fluxo de dado de saúde renderizado em código):
@@ -3533,7 +3533,9 @@ export async function handleCadastro({ user, message, state, context, historicoC
         // pergunta de estoque (código). O resumo vinha só depois do estoque, mas o
         // estoque nem sempre chega; sem estoque informado, o resumo sai sem a linha 📦.
         const firstName = user.name ? user.name.split(' ')[0] : null;
-        const declarativa = `*${resultado.med.nome}* cadastrado${firstName ? `, ${firstName}` : ''}! Vou te lembrar nos horários certos. 💊`;
+        // Sem emoji na declarativa: o 💊 da linha "Remédio" do resumo vem logo abaixo
+        // e duplicava (replay 19/09, micro-ajuste final).
+        const declarativa = `*${resultado.med.nome}* cadastrado${firstName ? `, ${firstName}` : ''}! Vou te lembrar nos horários certos.`;
         const { resumo, med: medGravado } = await montarResumoDoBanco(resultado.med.id);
 
         if (proximaEtapaReal.startsWith('cad_estoque')) {
