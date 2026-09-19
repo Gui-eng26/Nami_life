@@ -1849,7 +1849,7 @@ export function calcularProximaDose(schedulesAtivos, agora = new Date()) {
 // LOGS DE AGENTES
 // ============================================================
 
-export async function logAgentInteraction({ userId, agent, userMessage, agentResponse, estadoConversa = null, contextoConversa = null }) {
+export async function logAgentInteraction({ userId, agent, userMessage, agentResponse, estadoConversa = null, contextoConversa = null, referenceMessageId = null }) {
     const { data, error } = await supabase
         .from('agent_logs')
         .insert({
@@ -1858,7 +1858,8 @@ export async function logAgentInteraction({ userId, agent, userMessage, agentRes
             user_message: userMessage,
             agent_response: agentResponse,
             estado_conversa: estadoConversa,
-            contexto_conversa: contextoConversa
+            contexto_conversa: contextoConversa,
+            reference_message_id: referenceMessageId
         })
         .select('id')
         .single();

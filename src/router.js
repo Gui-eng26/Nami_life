@@ -2,7 +2,8 @@ import { getConversationState, logAgentInteraction, getRecentDoses,
     getDoseLogByZapiMessageId, confirmDoseByLogId,
     getEstoqueInfoParaAlerta, contarConfirmacoesHoje, calcularAlertaEstoque,
     saveConversationState, getHistoricoRecente, getContextoProativoRecente,
-    getDosesRetroativas, confirmarDoseRetroativa, usuarioRespondeuDesde } from './database.js';
+    getDosesRetroativas, confirmarDoseRetroativa, usuarioRespondeuDesde,
+    getEnvioFunilPorProviderId, getDosesDoEnvio } from './database.js';
 import { registrarEvento, registrarFeedback } from './observabilidade.js';
 import { buildAlertaEstoquePosConfirmacao, buildConviteEstoqueNaoCadastrado } from './templates/estoqueTemplates.js';
 import { interpretarTurno } from './porta.js';
@@ -622,8 +623,63 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         return null;
     }
 
-    // FAST-PATH: confirmação por referência de mensagem (função "responder" do WhatsApp)
+    // ---- CITAÇÃO (§5.6, supera BUG-029): resolve o referenceMessageId no funil ----
+    // A comparação é contra zaap_id E message_id até o T0 (§4) decidir qual vale.
+    // Regra: o citado vence o estado atual NA INTERPRETAÇÃO (entra no contexto da
+    // porta) — nunca escreve estado direto.
+    let envioCitado = null;
+    let mensagemCitada = null;
+    if (referenceMessageId) {
+        envioCitado = await getEnvioFunilPorProviderId(referenceMessageId);
+        if (envioCitado) {
+            mensagemCitada = {
+                texto: envioCitado.texto,
+                quando: new Date(envioCitado.created_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }),
+                origem: envioCitado.origem
+            };
+            console.log(`💬 [CITAÇÃO] referenceMessageId resolvido no funil (${envioCitado.origem}) — ${user.phone}`);
+        } else {
+            console.log(`💬 [CITAÇÃO] referenceMessageId ${referenceMessageId} sem correspondência no funil — ${user.phone}`);
+        }
+    }
+
+    // FAST-PATH determinístico preservado e consertado (§5.6): citação de
+    // lembrete/follow-up + confirmação → confirma EXATAMENTE aquele grupo de doses
+    // (generaliza o antigo caso individual — o agrupado era irreconhecível, MH-032).
     if (referenceMessageId && detectarConfirmacaoDose(message)) {
+        const dosesDoEnvio = envioCitado ? filtrarDosesPendentes(await getDosesDoEnvio(envioCitado.id)) : [];
+
+        if (dosesDoEnvio.length > 0) {
+            for (const dose of dosesDoEnvio) {
+                await confirmDoseByLogId(dose.id);
+            }
+            let alertaSufixo = '';
+            for (const medId of [...new Set(dosesDoEnvio.map(d => d.medication_id))]) {
+                alertaSufixo += await montarAlertaEstoquePosConfirmacao(medId);
+            }
+            const nomes = [...new Set(dosesDoEnvio.map(d => d.medications?.nome || 'seu remédio'))].join(' e ');
+            const firstName = user.name ? user.name.split(' ')[0] : 'você';
+
+            console.log(`✅ [FAST-PATH] Grupo de ${dosesDoEnvio.length} dose(s) confirmado via citação do envio — ${user.phone} — ${nomes}`);
+
+            const agentLogIdCitacao = await logAgentInteraction({
+                userId: user.id,
+                agent: 'fast_path_reference',
+                userMessage: message,
+                agentResponse: `Dose(s) confirmada(s) via citação: ${nomes}`,
+                estadoConversa: null,
+                contextoConversa: null,
+                referenceMessageId
+            });
+
+            return {
+                texto: `✅ Anotei! Dose do *${nomes}* confirmada, ${firstName}. Continue assim! 💪💊${alertaSufixo}`,
+                agente: 'fast_path_reference',
+                agentLogId: agentLogIdCitacao
+            };
+        }
+
+        // Legado (pré-funil): dose individual vinculada por zapi_message_id.
         const doseLog = await getDoseLogByZapiMessageId(referenceMessageId);
         if (doseLog && doseLog.confirmed === false) {
             await confirmDoseByLogId(doseLog.id);
@@ -638,7 +694,8 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                 userMessage: message,
                 agentResponse: `Dose confirmada: ${nomeRemedio}`,
                 estadoConversa: null,
-                contextoConversa: null
+                contextoConversa: null,
+                referenceMessageId
             });
 
             const alertaSufixo = await montarAlertaEstoquePosConfirmacao(doseLog.medication_id);
@@ -785,7 +842,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         // ---- PORTA ÚNICA (§5.1): 1 chamada de interpretação por turno ----
         if (response === undefined) {
             const proposta = await interpretarTurno({
-                message, currentState, historicoConversa, contextoProativo
+                message, currentState, historicoConversa, contextoProativo, mensagemCitada
             });
 
             if (!proposta) {
@@ -823,7 +880,8 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         userMessage: message,
         agentResponse: response,
         estadoConversa: currentState || null,
-        contextoConversa: state?.context || null
+        contextoConversa: state?.context || null,
+        referenceMessageId: referenceMessageId || null
     });
 
     if (intencaoNaoSuportadaDetectada) {
