@@ -1362,7 +1362,12 @@ async function classificarTipoTratamento({ message, nomeMedicamento, aguardandoD
 function primeiraEtapaFaltante(ctx) {
     // HAVE-TO-HAVE: sem estes dois não existe lembrete.
     if (!ctx?.nome) return 'cad_nome';
-    if (!ctx?.pares_posologia?.length) return 'cad_horarios';
+    if (!ctx?.pares_posologia?.length) {
+        // v44 (arnês A2, P57): horários já coletados sem quantidade não voltam a
+        // cad_horarios — falta só o QUANTO (mesmo destino que decidirCadHorarios
+        // já dava no caso 'horarios_apenas').
+        return ctx?.horarios?.length ? 'cad_quantidade_por_dose' : 'cad_horarios';
+    }
 
     // Gravação acontece aqui, antes de qualquer campo opcional (MH-094/BUG-104/P56/P57).
     if (!ctx?.medication_id) return 'cad_gravar';
@@ -2291,6 +2296,18 @@ function montarSaltoCadastroCompleto(completo) {
             contextUpdates.horarios = horarios;
         }
     }
+    // v44 (arnês A2, P57): horário solto SEM intervalo ("Lamotrigina, 8h") é O horário
+    // do remédio — descartá-lo fazia a pessoa repetir o que já disse. Com quantidade
+    // conhecida vira par completo; sem quantidade, vira horário coletado aguardando o
+    // QUANTO (primeiraEtapaFaltante segue para cad_quantidade_por_dose).
+    if (pares.length === 0 && !completo.intervaloHoras && completo.horarioInicio
+        && horarioValido(completo.horarioInicio)) {
+        if (completo.quantidadeUnica !== null) {
+            pares = [{ horario: completo.horarioInicio, quantidade: completo.quantidadeUnica }];
+        } else {
+            contextUpdates.horarios = [completo.horarioInicio];
+        }
+    }
     if (pares.length > 0) {
         contextUpdates.horarios = pares.map(p => p.horario);
         contextUpdates.pares_posologia = pares;
@@ -2896,10 +2913,11 @@ function montarBlocoEtapa(etapaDaPergunta, context, nome) {
             if (context?.acaoPosologia === 'indeterminado') {
                 return `Desculpe, não peguei direito 😊 Pergunte de novo em quais *HORÁRIOS* a
 pessoa toma ou usa o ${nome}. Não cite nenhum horário ou quantidade — nem os que apareceram antes
-na conversa.`;
+na conversa. Qualquer explicação vem ANTES; a pergunta fica sozinha na última linha (regra 8).`;
             }
             return `Pergunte em quais *HORÁRIOS* a pessoa toma ou usa o ${nome}. Ex: "Agora vamos
-à *FORMA DE USO*. Em quais *HORÁRIOS* você toma ou usa o ${nome}?"`;
+à *FORMA DE USO*. Em quais *HORÁRIOS* você toma ou usa o ${nome}?"
+Nada depois da pergunta — ela fica sozinha na última linha (regra 8).`;
 
         case 'cad_quantidade_por_dose':
             if (context?.mencionaConcentracao) {
@@ -2910,12 +2928,15 @@ preciso saber agora é *QUANTO* você toma de cada vez — por exemplo, 1 compri
             }
             if (context?.acaoPosologia === 'indeterminado') {
                 return `Desculpe, não peguei direito 😊 Pergunte de novo *QUANTO* de ${nome} a
-pessoa toma ou usa em cada horário — por exemplo, 1 comprimido, 2 comprimidos, 20 gotas. Não cite
-horários nem quantidades — nem os que apareceram antes na conversa.`;
+pessoa toma ou usa em cada horário. Não cite horários nem quantidades — nem os que apareceram
+antes na conversa. Exemplos e explicações vêm ANTES; a pergunta fica sozinha na última linha
+(regra 8).`;
             }
             return `Pergunte *QUANTO* de ${nome} a pessoa toma ou usa em cada horário. Ex: "Ainda
-sobre a *FORMA DE USO*: *QUANTO* de ${nome} você toma ou usa em cada horário? (ex: 2
-comprimidos, 1 cápsula, 20 gotas, 5ml)"`;
+sobre a *FORMA DE USO* — pode ser em comprimidos, cápsulas, gotas ou ml.
+
+*QUANTO* de ${nome} você toma ou usa em cada horário?"
+Exemplos vêm ANTES; nada depois da pergunta — ela fica sozinha na última linha (regra 8).`;
 
         case 'cad_confirma_forma':
             return `A mensagem deve ser EXATAMENTE: "${nome}, só confirmando: ${context?.blocoConfirmaForma || ''}?" — não altere nada desse trecho, é dado de saúde renderizado em código.`;

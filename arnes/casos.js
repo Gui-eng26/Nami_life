@@ -93,7 +93,7 @@ export const CASOS = [
             checagensDeForma(checks, 'turno 1', r1);
             // Regra 3: nada do que a pessoa disse é ignorado — os 4 nomes reconhecidos.
             checks.push({ nome: 'turno 1: reconhece Lamotrigina', ...contem(r1, /lamotrigina/i, 'Lamotrigina') });
-            checks.push({ nome: 'turno 1: reconhece Rosuvastatina', ...contem(r1, /rosu?vastatina/i, 'Rosuvastatina') });
+            checks.push({ nome: 'turno 1: reconhece Rosuvastatina', ...contem(r1, /ros[ou]?vastatina/i, 'Rosuvastatina (como escrita ou corrigida)') });
             checks.push({ nome: 'turno 1: reconhece Desvenlafaxina', ...contem(r1, /desve[nl]?lafaxina/i, 'Desvenlafaxina') });
             checks.push({ nome: 'turno 1: reconhece Vitamina D', ...contem(r1, /vitamina d/i, 'Vitamina D') });
             // Regra 6: nunca afirmar o que não foi executado neste turno.
