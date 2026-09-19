@@ -1085,6 +1085,45 @@ Responda APENAS com um objeto JSON válido, sem markdown, sem backticks, sem exp
 }`;
 }
 
+// v44 (caso Nimesulida, 19/09): resgate DETERMINÍSTICO da notação de receita
+// "1cp 12/12 hrs" / "de 12 em 12 horas" quando o classificador LLM falha. Devolve
+// uma classificação sintética no MESMO shape validado, para reapresentar à mesma
+// máquina de decisão (decidirCadHorarios/decidirCadQuantidade) — nunca decide
+// etapa por fora dela.
+function interpretarIntervaloDeterministico(message) {
+    const msg = String(message || '');
+    const mIntervalo = msg.match(/\b(\d{1,2})\s*\/\s*(\d{1,2})\s*(?:h|hrs?|horas)?\b/i)
+        || msg.match(/\bde\s+(\d{1,2})\s+em\s+(\d{1,2})\s*(?:h|hrs?|horas)?\b/i);
+    if (!mIntervalo) return null;
+    const a = Number(mIntervalo[1]);
+    const b = Number(mIntervalo[2]);
+    if (a !== b || a < 1 || a > 24) return null;
+
+    const mQtd = msg.match(/\b(\d+(?:[.,]\d+)?)\s*(cps?|comprimidos?|c[áa]psulas?|gotas?|gts|ml)\b/i);
+    let quantidadeUnica = null;
+    let unidadeDose = null;
+    let formaExplicita = null;
+    if (mQtd) {
+        quantidadeUnica = Number(mQtd[1].replace(',', '.'));
+        const u = mQtd[2].toLowerCase();
+        if (u.startsWith('gota') || u === 'gts') { unidadeDose = 'gota'; formaExplicita = 'gotas'; }
+        else if (u === 'ml') { unidadeDose = 'ml'; }
+        else if (u.startsWith('cá') || u.startsWith('ca')) { unidadeDose = 'unidade'; formaExplicita = 'capsula'; }
+        else { unidadeDose = 'unidade'; formaExplicita = 'comprimido'; }
+    }
+
+    return {
+        categoria: 'frequencia_intervalo',
+        pares: [],
+        quantidadeUnica,
+        intervaloHoras: a,
+        horarioInicio: null,
+        unidadeDose,
+        formaExplicita,
+        multiplicadorAplicado: false
+    };
+}
+
 function horarioValido(h) {
     if (typeof h !== 'string' || !HORARIO_REGEX.test(h)) return false;
     const [hh, mm] = h.split(':').map(Number);
@@ -1139,8 +1178,15 @@ function validarClassificacaoPosologia(parsed, unidadeDoseContexto = null) {
     quantidadeUnica = Number.isFinite(quantidadeUnica) && quantidadeUnica > 0 ? quantidadeUnica : null;
     if (categoria === 'quantidade_apenas' && quantidadeUnica === null) categoria = 'indeterminado';
 
+    // v44 (caso Nimesulida, 19/09): o modelo às vezes devolve o intervalo como TEXTO
+    // ("12/12", "12h") — Number() dava NaN e a categoria frequencia_intervalo era
+    // rebaixada a indeterminado EM SILÊNCIO. Coerção: primeiro número do texto.
     let intervaloHoras = Number(parsed.intervalo_horas);
-    intervaloHoras = Number.isFinite(intervaloHoras) && intervaloHoras > 0 ? intervaloHoras : null;
+    if (!Number.isFinite(intervaloHoras)) {
+        const m = String(parsed.intervalo_horas ?? '').match(/\d{1,2}/);
+        intervaloHoras = m ? Number(m[0]) : NaN;
+    }
+    intervaloHoras = Number.isFinite(intervaloHoras) && intervaloHoras > 0 && intervaloHoras <= 24 ? intervaloHoras : null;
     const horarioInicio = horarioValido(parsed.horario_inicio) ? parsed.horario_inicio : null;
     if (categoria === 'frequencia_intervalo' && intervaloHoras === null) categoria = 'indeterminado';
 
@@ -2651,9 +2697,22 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
             unidadeDoseContexto: context?.unidade_dose
         });
 
-        const decisao = etapaAtual === 'cad_horarios'
+        let decisao = etapaAtual === 'cad_horarios'
             ? decidirCadHorarios(classificacao, context)
             : decidirCadQuantidade(classificacao, context);
+
+        // v44 (caso Nimesulida, 19/09): "1cp 12/12 hrs" escapava do classificador e o
+        // usuário entrava em loop de repergunta. Antes de tratar como falha, a notação
+        // de intervalo é lida por regex e reapresentada à MESMA máquina de decisão.
+        if (ACOES_DE_FALHA.has(decisao.acao)) {
+            const sintetica = interpretarIntervaloDeterministico(message);
+            if (sintetica) {
+                console.log(`⏱️ [CADASTRO] Intervalo resgatado por regex: ${sintetica.intervaloHoras}/${sintetica.intervaloHoras}h (quantidade: ${sintetica.quantidadeUnica ?? 'não dita'})`);
+                decisao = etapaAtual === 'cad_horarios'
+                    ? decidirCadHorarios(sintetica, context)
+                    : decidirCadQuantidade(sintetica, context);
+            }
+        }
 
         const mencionaConcentracao = etapaAtual === 'cad_quantidade_por_dose' && decisao.acao === 'indeterminado'
             && /\d+(?:[.,]\d+)?\s*(mg|mcg|g|%|mg\/ml)\b/i.test(message);
@@ -2671,25 +2730,42 @@ async function calcularDecisaoEtapa(etapaAtual, message, context, historicoConve
         // posologia; o extrator completo roda aqui só como RESGATE dos campos de
         // estoque — nunca decide etapa nem sobrescreve o que a camada especializada já
         // decidiu (mesma cautela documentada em tentarExtracaoRicaParcial).
-        const sugereEstoque = /\btenho\b|\bem casa\b|\bestoque\b|\bcaixa\b|\bfrascos?\b|\bsobra\w*\b|\brestam?\b/i.test(message);
-        if (sugereEstoque && !ACOES_DE_FALHA.has(decisao.acao)
+        const sugereEstoque = /\btenho\b|\bem casa\b|\bestoque\b|\bcaixa\b|\bfrascos?\b|\bsobra\w*\b|\brestam?\b/i.test(message)
             && !context?.estoque_perguntado
-            && (context?.estoque_resolvido === undefined || context?.estoque_resolvido === null)) {
+            && (context?.estoque_resolvido === undefined || context?.estoque_resolvido === null);
+        // v44 (caso Nimesulida, 19/09): "por 5 dias" junto da posologia também era
+        // descartado — o tratamento ficava gravado como contínuo.
+        const sugereTratamento = /\b(por|durante)\s+(\d+|uma?|duas?)\s+(dias?|semanas?)\b|\buso\s+cont[íi]nuo\b/i.test(message)
+            && !context?.tipo_tratamento;
+        if ((sugereEstoque || sugereTratamento) && !ACOES_DE_FALHA.has(decisao.acao)) {
             try {
                 const completo = await extrairCadastroCompleto({ message, historicoConversa });
                 const salto = montarSaltoCadastroCompleto({ ...completo, nome: context?.nome || completo.nome });
-                const CAMPOS_ESTOQUE = ['estoque_resolvido', 'estoque_motivo', 'estoque_estimado',
-                    'status_frasco', 'volume_frasco', 'frascos', 'estoque_fracao_pendente'];
-                for (const campo of CAMPOS_ESTOQUE) {
-                    if (salto.contextUpdates[campo] !== undefined && decisao.contextUpdates[campo] === undefined) {
+                const CAMPOS_RESGATAVEIS = [
+                    // quantidade dita junto ("1cp 12/12 hrs") sobrevive como pendente
+                    // quando o classificador de posologia não a capturou — mesma
+                    // mecânica de decidirCadHorarios/quantidade_apenas.
+                    'quantidade_pendente', 'unidade_dose_pendente', 'forma_explicita_pendente',
+                    ...(sugereEstoque ? ['estoque_resolvido', 'estoque_motivo', 'estoque_estimado',
+                        'status_frasco', 'volume_frasco', 'frascos', 'estoque_fracao_pendente'] : []),
+                    ...(sugereTratamento ? ['tipo_tratamento', 'tratamento_dias', 'tipo_tratamento_pendente'] : [])
+                ];
+                for (const campo of CAMPOS_RESGATAVEIS) {
+                    // Nunca sobrescreve o que o especialista decidiu NEM o que o contexto
+                    // já coletou — o resgate só preenche vazio.
+                    const jaNoContexto = context?.[campo] !== undefined && context?.[campo] !== null;
+                    if (!jaNoContexto && salto.contextUpdates[campo] !== undefined && decisao.contextUpdates[campo] === undefined) {
                         decisao.contextUpdates[campo] = salto.contextUpdates[campo];
                     }
                 }
                 if (decisao.contextUpdates.estoque_resolvido !== undefined && decisao.contextUpdates.estoque_resolvido !== null) {
                     console.log(`📦 [CADASTRO] Estoque resgatado da mensagem de posologia: ${decisao.contextUpdates.estoque_resolvido}`);
                 }
+                if (decisao.contextUpdates.tratamento_dias !== undefined && decisao.contextUpdates.tratamento_dias !== null) {
+                    console.log(`🔄 [CADASTRO] Tratamento resgatado da mensagem de posologia: ${decisao.contextUpdates.tratamento_dias} dias`);
+                }
             } catch (e) {
-                console.error('⚠️ Resgate de estoque na mensagem de posologia falhou (fluxo segue sem ele):', e.message);
+                console.error('⚠️ Resgate de campos incidentais na posologia falhou (fluxo segue sem eles):', e.message);
             }
         }
 

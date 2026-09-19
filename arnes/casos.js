@@ -465,5 +465,43 @@ export const CASOS = [
             checks.push({ nome: 'resposta repergunta o NOME do medicamento', ...contem(r1, /nome/i, 'repergunta do nome') });
             return checks;
         }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A15',
+        marco: 'M1',
+        titulo: 'Nimesulida 19/09 (produção) — notação de receita "1cp 12/12 hrs por 5 dias"',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Guilherme', onboarded: true, estado: 'post_onboarding' });
+
+            await turno(ctx, user, 'Nimesulida 100mg');
+            const r2 = await turno(ctx, user, '1cp 12/12 hrs por 5 dias');
+            checagensDeForma(checks, 'turno 2', r2);
+            // Em produção este turno caiu em loop de repergunta da posologia inteira.
+            checks.push({ nome: 'turno 2: intervalo reconhecido — pede só o horário da 1ª dose', ...contem(r2, /primeira dose/i, 'pergunta da primeira dose') });
+            checks.push({ nome: 'turno 2: não repergunta a posologia inteira', ...naoContem(r2, /quanto .{0,30}(e|em quais) .{0,15}hor[áa]rios/i, 'repergunta da posologia completa') });
+
+            const r3 = await turno(ctx, user, '8h');
+            checagensDeForma(checks, 'turno 3', r3);
+            const meds = await medicamentos(ctx.db, user.id, { nomeIlike: 'Nimesulida%' });
+            const schedules = (meds[0]?.schedules || []).filter(s => s.ativo)
+                .map(s => ({ horario: String(s.horario).slice(0, 5), quantidade: Number(s.quantidade_por_dose) }))
+                .sort((a, b) => a.horario.localeCompare(b.horario));
+            checks.push({
+                nome: 'turno 3: grade 08:00 e 20:00 com 1 comprimido (12/12 a partir das 8h)',
+                ok: meds.length === 1 && schedules.length === 2
+                    && schedules[0].horario === '08:00' && schedules[0].quantidade === 1
+                    && schedules[1].horario === '20:00' && schedules[1].quantidade === 1,
+                detalhe: `schedules: ${JSON.stringify(schedules)}`
+            });
+            checks.push({
+                nome: 'turno 3: "por 5 dias" aproveitado — tratamento temporário de 5 dias (P57)',
+                ok: meds[0]?.tipo_tratamento === 'temporario' && Number(meds[0]?.tratamento_dias) === 5,
+                detalhe: `tipo: ${meds[0]?.tipo_tratamento}, dias: ${meds[0]?.tratamento_dias}`
+            });
+            return checks;
+        }
     }
 ];
