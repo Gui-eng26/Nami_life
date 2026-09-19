@@ -14,7 +14,7 @@ import { handleRelatorios, extrairPeriodo } from './agentes/relatorios.js';
 import { handleConfiguracao } from './agentes/configuracao.js';
 import { handleExclusaoConta, confirmarIntencaoExclusaoConta } from './agentes/exclusaoConta.js';
 import { handleDataNascimento } from './agentes/data_nascimento.js';
-import { isCancelamento, pareceExclusaoConta } from './nlp_helpers.js';
+import { isCancelamento, pareceExclusaoConta, normalizar } from './nlp_helpers.js';
 
 // ============================================================
 // IDEMPOTÊNCIA — descarta eventos duplicados da Z-API
@@ -297,15 +297,50 @@ async function despacharRelatorio({ user, message, image, historicoConversa,
 // mensagem original. Proibido contexto literal de cadastro fora daqui.
 // ============================================================
 
+// Um nome proposto pela porta "é outro medicamento" quando não bate com o nome
+// do cadastro em andamento (mesma tolerância de encontrarMedicamento: igualdade
+// ou continência, normalizada).
+function citaOutroMedicamento(medicamentosPropostos, nomeEmAndamento) {
+    if (!nomeEmAndamento || !medicamentosPropostos || medicamentosPropostos.length === 0) return false;
+    const atual = normalizar(nomeEmAndamento);
+    return !medicamentosPropostos.some(m => {
+        const proposto = normalizar(m);
+        return proposto === atual || proposto.includes(atual) || atual.includes(proposto);
+    });
+}
+
+// Fechamento do cadastro anterior pela verdade do banco (P56): ele JÁ existe e
+// gera lembretes; só o opcional (estoque) fica para depois — NULL, nunca 0 (P49).
+function montarFechamentoCadastroAnterior(nomeAnterior) {
+    return `Só fechando o anterior: o *${nomeAnterior}* já está cadastrado, e o estoque dele fica pra depois — quando quiser, é só me mandar a quantidade. 🌿`;
+}
+
 async function entrarNoCadastro({ user, message, image, state, camposExtraidos = null,
                                   historicoConversa, contextoProativo = null }) {
     const estadoAtual = state?.state || 'idle';
 
-    // Fluxo em andamento: o contexto coletado vale. Fora dele, começa do início
-    // mesclando qualquer rascunho preservado.
-    const contextoBase = ((estadoAtual === 'adding_med') && state?.context?.etapa)
+    // v44 (replay manual 19/09, Guilherme): medicamento NOVO citado no meio de um
+    // cadastro em andamento é um cadastro NOVO, não resposta da coleta — repetir a
+    // pergunta pendente ignorava a mensagem inteira (regra 3). O anterior, já
+    // gravado, fecha pela verdade do banco; rascunho não gravado é abandonado pelo
+    // próprio pivô do usuário.
+    const nomeEmAndamento = (estadoAtual === 'adding_med') ? (state?.context?.nome || null) : null;
+    const trouxeOutroMedicamento = citaOutroMedicamento(camposExtraidos?.medicamentos, nomeEmAndamento);
+    let prefixoFechamentoAnterior = '';
+    if (trouxeOutroMedicamento) {
+        console.log(`💊 [ENTRADA-CADASTRO] Novo medicamento sobre cadastro em andamento (${nomeEmAndamento} → ${camposExtraidos.medicamentos.join(', ')}) — ${user.phone}`);
+        if (state?.context?.medication_id) {
+            prefixoFechamentoAnterior = montarFechamentoCadastroAnterior(nomeEmAndamento);
+        }
+    }
+
+    // Fluxo em andamento: o contexto coletado vale. Fora dele (ou num pivô para
+    // outro medicamento), começa do início mesclando qualquer rascunho preservado.
+    const contextoBase = (!trouxeOutroMedicamento && (estadoAtual === 'adding_med') && state?.context?.etapa)
         ? state.context
-        : { etapa: 'cad_nome', ...(state?.context?.rascunho_cadastro || {}) };
+        : trouxeOutroMedicamento
+            ? { etapa: 'cad_nome' }
+            : { etapa: 'cad_nome', ...(state?.context?.rascunho_cadastro || {}) };
 
     // P57: um aceite curto ("sim") depois de uma mensagem rica preservada entrega
     // ao cadastro a mensagem COM os dados, nunca o "sim".
@@ -337,8 +372,9 @@ async function entrarNoCadastro({ user, message, image, state, camposExtraidos =
         user, message: mensagemParaCadastro, image, state, historicoConversa,
         contextoProativo, context: contextoBase
     });
-    if (prefixoMultiMed && typeof rCad.response === 'string') {
-        rCad.response = `${prefixoMultiMed}\n\n${rCad.response}`;
+    const prefixos = [prefixoFechamentoAnterior, prefixoMultiMed].filter(Boolean).join('\n\n');
+    if (prefixos && typeof rCad.response === 'string') {
+        rCad.response = `${prefixos}\n\n${rCad.response}`;
     }
     return rCad;
 }
@@ -369,6 +405,27 @@ async function despacharCadastro({ user, message, image, state, context, histori
     }
 
     if (proposta.intencao === 'cadastro') {
+        // v44 (replay manual 19/09): 'cadastro' na reinterpretação tem DOIS sentidos.
+        // Com um medicamento DIFERENTE do em andamento nos campos, é cadastro NOVO —
+        // repetir a pergunta pendente ignorava a mensagem (regra 3). Sem medicamento
+        // novo, a porta está concordando que o usuário não saiu do fluxo: repete a
+        // pergunta pendente sem descartar nada (comportamento original).
+        if (citaOutroMedicamento(proposta.campos?.medicamentos, context?.nome)) {
+            console.log(`💊 [ESCALADA-CADASTRO] Novo medicamento sobre cadastro em andamento (${context?.nome} → ${proposta.campos.medicamentos.join(', ')}) — ${user.phone}`);
+            const respostaNovo = await handleCadastro({
+                user, message, state: { state: 'idle', context: {} }, historicoConversa,
+                context: { etapa: 'cad_nome' }
+            });
+            if (respostaNovo?.escalarParaRoteador) {
+                return { agentName: 'porta_degradada', response: reperguntaSegura(user), feedback: proposta.feedback };
+            }
+            const prefixo = context?.medication_id ? montarFechamentoCadastroAnterior(context.nome) : '';
+            const response = (prefixo && typeof respostaNovo === 'string')
+                ? `${prefixo}\n\n${respostaNovo}`
+                : respostaNovo;
+            return { agentName: 'cadastro', response, feedback: proposta.feedback };
+        }
+
         console.log(`💊 [ESCALADA-CADASTRO] Porta confirmou cadastro — mantendo fluxo — ${user.phone}`);
         const retomada = await repetirPerguntaCadastro({ context, userName: user.name, historicoConversa });
         return { agentName: 'cadastro', response: retomada, feedback: proposta.feedback };

@@ -350,5 +350,47 @@ export const CASOS = [
             });
             return checks;
         }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A11',
+        marco: 'M1',
+        titulo: 'Guilherme 19/09 (staging) — novo cadastro com coleta de estoque do anterior pendente',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Guilherme', onboarded: true, estado: 'post_onboarding' });
+
+            // Chega ao ponto real: 1º medicamento gravado, coleta de estoque pendente.
+            await turno(ctx, user, 'Desvenlafaxina 50mg, 3 comprimidos às 6h');
+            const medsAntes = await medicamentos(ctx.db, user.id, { nomeIlike: 'Desvenlafaxina%' });
+            if (medsAntes.length !== 1) {
+                return [{ nome: 'setup: 1º medicamento gravado no turno 1', ok: false, detalhe: `${medsAntes.length} linha(s) — replay não alcançou o estado do caso` }];
+            }
+
+            // Evidência real: a Nami repetiu a pergunta de estoque da Desvenlafaxina
+            // e ignorou a Losartana inteira (2x, mesmo com "Quero cadastrar...").
+            const r2 = await turno(ctx, user, 'Losartana 50mg, 1cp às 13:32');
+            checagensDeForma(checks, 'turno 2', r2);
+            checks.push({ nome: 'turno 2: nada ignorado — responde sobre a Losartana (regra 3)', ...contem(r2, /losartana/i, 'Losartana') });
+            checks.push({ nome: 'turno 2: não repete a pergunta de estoque do anterior', ...naoContem(r2, /quantos comprimidos de Desvenlafaxina/i, 'repergunta de estoque do anterior') });
+
+            const losartana = await medicamentos(ctx.db, user.id, { nomeIlike: 'Losartana%' });
+            const horariosLosartana = losartana.flatMap(m => (m.schedules || []).filter(s => s.ativo).map(s => String(s.horario).slice(0, 5)));
+            checks.push({
+                nome: 'turno 2: Losartana gravada com schedule 13:32',
+                ok: losartana.length === 1 && horariosLosartana.includes('13:32'),
+                detalhe: `${losartana.length} linha(s); horários: ${horariosLosartana.join(', ') || 'nenhum'}`
+            });
+
+            const desven = await medicamentos(ctx.db, user.id, { nomeIlike: 'Desvenlafaxina%' });
+            checks.push({
+                nome: 'anterior continua ativo, estoque não informado (NULL — P49)',
+                ok: desven[0]?.ativo === true && desven[0]?.estoque_atual === null,
+                detalhe: `ativo: ${desven[0]?.ativo}, estoque_atual: ${desven[0]?.estoque_atual}`
+            });
+            checks.push({ nome: 'coleta segue no cadastro novo (estado adding_med)', ...(await estadoDaConversa(ctx.db, user.id, 'adding_med')) });
+            return checks;
+        }
     }
 ];
