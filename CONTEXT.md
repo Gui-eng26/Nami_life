@@ -918,4 +918,82 @@ Guilherme, que recarregou os créditos assim que avisado. O arnês falha com cla
 nesse cenário; os casos determinísticos (A0/A21/A22/A23) continuam rodando. Vale um
 alerta de billing na conta para não depender de aviso em sessão.
 
+### 12.8 v44 — M3 (configuração + relatórios no runner): VALIDADO EM STAGING (20/09/2026)
+
+Briefing `briefings/execucao_v44_m3.md`. Commits na `staging` (Commit 0 → P6), arnês
+entre cada um; migração `20260920000000_v44_m3_status_tratamento` aplicada no STAGING
+via MCP (produção só na promoção). **Sem promoção a produção nesta sessão; backlog
+intocado (governança do briefing — script pronto em
+`scripts/backlog_encerramento_v44_m3.js`, aguarda o "sim, registra").**
+
+- **Commit 0 (caso Evandro, defeito de produção do M2, 20/09 12:51):** `RE_HORARIO`
+  aceita os sufixos reais (hs/hrs/hr/horas; lookbehind impede "12/12 hrs" de virar
+  12:00) — um lugar só, propaga a multi-med/recorrência. Correção de grafia na coleta
+  ("Keppra" sobre "Kepra") por `nomeCorrigidoParecido` (palavra a palavra, edição ≤2 em
+  palavra com corpo — "Vitamina C"≠"Vitamina D") na guarda do pivô MH-83, na falha do
+  validador de estoque e no convite agregado. Resposta ao convite de estoque agregado:
+  estado leve `cad_estoque_lote`; forma nomeada ("Marevan 30, Kepra 29") atribui por
+  fronteira de palavra; número seco só resolve com UM pendente (com mais, pergunta de
+  qual é). Caso A32 (33 asserções). Correção de dado (Kepra→Keppra) executada por
+  Guilherme em 20/09.
+- **P1 — estado explícito:** `medications.status` ('ativo'|'pausado'|'encerrado') +
+  `status_alterado_em`, backfill inferindo o atual; `ativo` boolean segue como derivado
+  de compat no M3. Pausar/encerrar/reativar escrevem por ponto único
+  (`escreverStatusTratamento`). Lista de remédios separa Ativos → Pausados com
+  cabeçalhos; MH-31 nasce (subtipo `historico_encerrados`).
+- **P6.2 — tool-use em TUDO:** `classificarComFerramenta` (llm.js) é o ponto único
+  (schema + 1 retry + degradar); classificadores com shape conhecido DECLARAM schema
+  (objeto livre fazia o modelo oscilar — A11/A13 pegaram; campo obrigatório+nulável
+  induzia placeholder "<UNKNOWN>", rejeitado na normalização). configuracao, moldura
+  dos relatórios, principal e juiz offline migrados; prompts inalterados. **A0
+  estendida: zero `JSON.parse` em src/ (grep-guard).**
+- **P6.3:** BUG-69 (escalada dupla nunca vaza o objeto de sinal), ACH-5 (currentState
+  REAL na escalada), MH-48 (sinal de escalada em `agent_logs.contexto_conversa`).
+- **P2 — edição = modo correção do runner** (`executarCorrecao`): nome, dosagem,
+  quantidade por dose, horários (com recorrência), duração (recalcula `tratamento_fim`
+  — MH-43 parcial) e estoque; validador do schema + escrita por ponto único +
+  confirmação ANTES → DEPOIS pós-escrita. MH-75 (`schemas/perfil.js` no mesmo runner),
+  MH-41 (dose pendente do horário antigo cancelada no ato), MH-79 (apresentação
+  distinta → oferta de novo tratamento com nome qualificado). Caso A26.
+- **P3 — reativação em 5 passos:** foto congelada → "manter ou mudar" → alterações via
+  P2 → confirmação que DECLARA os horários vigentes → convite de estoque no template do
+  cadastro. Porta 1 ("reativar X" — o fluxo cego morreu) e porta 2 (cadastrar
+  pausado/encerrado → aviso+foto+oferta; **BUG-61 morto**, "Isso" avança o recadastro e
+  o encerrado fica no histórico). Casos A24/A25.
+- **P6.1 — BUG-86:** dupla pendência (pergunta SIM/NÃO aberta + dose) → vence a
+  PERGUNTA FEITA POR ÚLTIMO; mesma janela (90s) → desambiguação de uma linha; pergunta
+  ABERTA de coleta não disputa (regra 5 preservada — A4). Caso A30 (duas partes).
+- **P4 — relatórios:** pergunta sobre UM medicamento responde sobre ELE (visão
+  específica: posologia, status explícito, estoque, últimas doses — A27); período
+  LIVRE (leitura desde `users.created_at`, intervalos "semana passada"/"de X a Y"/
+  "últimos N dias" em `dataReferencia.js`, até 31 dias por vez; antes do início →
+  resposta honesta — A28); **adesão reativa (7/15/30) morreu** (subtipo, estado e
+  templates removidos; pedidos caem no período livre); A31 (epistemologia: nunca "não
+  tomou" para `semRegistro`; semanal byte a byte asserido por hash); caronas MH-60
+  (estoque por dias de cobertura), MH-63 (janela "agora" só para horário que já
+  chegou), MH-50 (bloco insuficiente com estoque real + fraseado de cobertura zero).
+  **MH-62 — decisão de escopo (logs de produção, 45 dias): uso do `proximo_remedio` é
+  quase nulo (3 mensagens, todas na prática balanço) → escopo MANTIDO ("remédios de
+  hoje", passado confirmado oculto).** Copy do resumo semanal INTOCADO (decisão de
+  Guilherme).
+- **P5 — elegibilidade do proativo:** `elegivelParaResumo(user, tipo, hoje)` pura
+  (A29): semanal só >7 dias de Nami; mensal só >28 (antes disso o ciclo fica no
+  semanal); quem não é elegível não recebe nada — sem substituto.
+- **P6.4:** "encerrar todos"/seleção múltipla → UMA confirmação agregada + execução em
+  lote (pausar idem) — **A20 verde**. P6.5: BUG-36 morto ("manter" é confirmação de
+  manutenção no fluxo novo); fluxos novos nasceram como templates; passe de tom nos
+  fallbacks (MH-47). P6.6: MH-51 (pergunta "qual medicamento?" no meio do fluxo →
+  responde com a lista e retoma). P6.7: MH-27 fica FORA (decisão de Guilherme) — entrou
+  no AINDA_NAO com honestidade + oferta do que existe.
+
+**Arnês:** 32 casos (A0–A32), alvo M3; expected-fail restante APENAS A10 (M4).
+A32 marcado M2 de propósito (correção quente gateia a promoção já). Casos novos:
+A24–A32. Flakiness conhecida: casos multi-turno com LLM real oscilam raramente —
+rerun individual confirma.
+
+**Replay manual pendente (Guilherme, critério de aceite 3):** reativar com alteração
+de horário · corrigir nome digitado errado · "quais remédios eu tomei terça?" ·
+pergunta sobre um medicamento específico · "encerrar todos" · alguém com <7 dias NÃO
+recebe o semanal de domingo.
+
 
