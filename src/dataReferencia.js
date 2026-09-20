@@ -79,9 +79,18 @@ export function resolverDataReferencia(expressao) {
 }
 
 // Valida a janela suportada. Devolve { ok, motivo }.
-export function validarJanela(dataISO) {
+// v44 M3 P4: a janela de LEITURA é livre — qualquer data desde o início do
+// usuário na Nami (users.created_at). A janela de CONFIRMAÇÃO retroativa
+// (2 dias) é outra coisa e não muda. Sem criadoEmISO, mantém o limite antigo
+// de 30 dias (rede de segurança para chamador que não passar o usuário).
+export function validarJanela(dataISO, criadoEmISO = null) {
     const hoje = hojeBRT();
     if (dataISO > hoje) return { ok: false, motivo: 'futuro' };
+    if (criadoEmISO) {
+        const inicio = String(criadoEmISO).slice(0, 10);
+        if (dataISO < inicio) return { ok: false, motivo: 'antes_do_inicio' };
+        return { ok: true, motivo: null };
+    }
     const limite = somarDias(hoje, -MAX_DIAS_RETROATIVOS);
     if (dataISO < limite) return { ok: false, motivo: 'antigo' };
     return { ok: true, motivo: null };
@@ -117,6 +126,110 @@ export function janelaDiaBRT(dataISO) {
         inicio: new Date(`${dataISO}T00:00:00.000-03:00`).toISOString(),
         fim: new Date(`${dataISO}T23:59:59.999-03:00`).toISOString()
     };
+}
+
+// ============================================================
+// v44 M3 P4 — PERÍODO LIVRE: intervalos de leitura ("semana passada",
+// "de segunda a quarta", "últimos 15 dias"). Determinístico, sem LLM.
+// A adesão reativa (7/15/30) morreu — pedido de período cai aqui.
+// ============================================================
+
+const LIMITE_DIAS_INTERVALO = 31;
+
+function nomeDeDiaParaISO(nome, referenciaISO) {
+    const alvo = DIAS_SEMANA[nome];
+    if (alvo === undefined) return null;
+    const atual = diaDaSemana(referenciaISO);
+    const delta = (atual - alvo + 7) % 7;
+    return somarDias(referenciaISO, -delta);
+}
+
+function pontaParaISO(token, referenciaISO) {
+    const t = normalizar(token);
+    if (DIAS_SEMANA[t] !== undefined) return nomeDeDiaParaISO(t, referenciaISO);
+    const { dataISO, erro } = resolverDataReferencia(t);
+    return erro ? null : dataISO;
+}
+
+// Detecta e resolve um INTERVALO na mensagem. Devolve
+// { inicioISO, fimISO, rotulo } ou null quando não há intervalo.
+// erro: 'futuro' quando a ponta final está no futuro.
+export function extrairIntervalo(message) {
+    const msg = normalizar(message);
+    const hoje = hojeBRT();
+
+    // "últimos N dias" / "última semana" / "últimas duas semanas"
+    const mUltimos = msg.match(/[uú]ltim[oa]s?\s+(\d{1,3})\s+dias/);
+    if (mUltimos) {
+        const n = Math.min(Number(mUltimos[1]), LIMITE_DIAS_INTERVALO);
+        return { inicioISO: somarDias(hoje, -(n - 1)), fimISO: hoje, rotulo: `últimos ${n} dias` };
+    }
+    if (/[uú]ltima semana/.test(msg)) {
+        return { inicioISO: somarDias(hoje, -6), fimISO: hoje, rotulo: 'últimos 7 dias' };
+    }
+    // "como foi minha semana" / "minha semana" — a semana vivida: últimos 7 dias.
+    if (/\bminha semana\b|\bcomo foi a semana\b/.test(msg)) {
+        return { inicioISO: somarDias(hoje, -6), fimISO: hoje, rotulo: 'últimos 7 dias' };
+    }
+    // Pedido de adesão/regularidade sem período dito: últimos 7 dias (a adesão
+    // reativa 7/15/30 morreu — este é o destino dela).
+    if (/\bades[aã]o\b|\bregularidade\b|\btenho esquecido\b|\bquantas vezes esqueci\b/.test(msg)) {
+        return { inicioISO: somarDias(hoje, -6), fimISO: hoje, rotulo: 'últimos 7 dias' };
+    }
+
+    // "semana passada" — semana civil anterior (segunda a domingo)
+    if (/semana passada/.test(msg)) {
+        const diasDesdeSegunda = (diaDaSemana(hoje) - 1 + 7) % 7;
+        const segundaDestaSemana = somarDias(hoje, -diasDesdeSegunda);
+        return {
+            inicioISO: somarDias(segundaDestaSemana, -7),
+            fimISO: somarDias(segundaDestaSemana, -1),
+            rotulo: 'semana passada'
+        };
+    }
+    // "essa/esta semana" — segunda desta semana até hoje
+    if (/\b(essa|esta) semana\b/.test(msg)) {
+        const diasDesdeSegunda = (diaDaSemana(hoje) - 1 + 7) % 7;
+        return { inicioISO: somarDias(hoje, -diasDesdeSegunda), fimISO: hoje, rotulo: 'essa semana' };
+    }
+
+    // "mês passado" / "esse mês"
+    if (/m[eê]s passado/.test(msg)) {
+        const [ano, mes] = hoje.split('-').map(Number);
+        const anoAnt = mes === 1 ? ano - 1 : ano;
+        const mesAnt = mes === 1 ? 12 : mes - 1;
+        const inicio = `${anoAnt}-${String(mesAnt).padStart(2, '0')}-01`;
+        const fim = somarDias(`${ano}-${String(mes).padStart(2, '0')}-01`, -1);
+        return { inicioISO: inicio, fimISO: fim, rotulo: 'mês passado' };
+    }
+    if (/\b(esse|este) m[eê]s\b/.test(msg)) {
+        const [ano, mes] = hoje.split('-').map(Number);
+        return { inicioISO: `${ano}-${String(mes).padStart(2, '0')}-01`, fimISO: hoje, rotulo: 'esse mês' };
+    }
+
+    // "de X a/até Y" — dias da semana ou datas (dd/mm)
+    const mDe = msg.match(/\bde\s+(segunda(?:-feira)?|ter[çc]a(?:-feira)?|quarta(?:-feira)?|quinta(?:-feira)?|sexta(?:-feira)?|s[áa]bado|domingo|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s+(?:a|à|ate|até)\s+(segunda(?:-feira)?|ter[çc]a(?:-feira)?|quarta(?:-feira)?|quinta(?:-feira)?|sexta(?:-feira)?|s[áa]bado|domingo|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/);
+    if (mDe) {
+        const fimISO = pontaParaISO(mDe[2], hoje);
+        if (!fimISO) return null;
+        let inicioISO = pontaParaISO(mDe[1], fimISO);
+        if (!inicioISO) return null;
+        if (inicioISO > fimISO) inicioISO = somarDias(inicioISO, -7);
+        return { inicioISO, fimISO, rotulo: `de ${rotularData(inicioISO)} a ${rotularData(fimISO)}` };
+    }
+
+    return null;
+}
+
+// Lista de dias (ISO) de um intervalo, limitada a LIMITE_DIAS_INTERVALO.
+export function diasDoIntervalo(inicioISO, fimISO) {
+    const dias = [];
+    let d = inicioISO;
+    while (d <= fimISO && dias.length < LIMITE_DIAS_INTERVALO) {
+        dias.push(d);
+        d = somarDias(d, 1);
+    }
+    return dias;
 }
 
 // Extrai a expressão de data do texto da mensagem, deterministicamente.

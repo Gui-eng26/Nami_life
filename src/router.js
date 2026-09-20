@@ -11,11 +11,11 @@ import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
 import { executarRunner, repetirPergunta } from './runner.js';
 import { SCHEMA_CADASTRO } from './schemas/cadastro.js';
-import { handleRelatorios, extrairPeriodo } from './agentes/relatorios.js';
+import { handleRelatorios } from './agentes/relatorios.js';
 import { handleConfiguracao } from './agentes/configuracao.js';
 import { handleExclusaoConta, confirmarIntencaoExclusaoConta } from './agentes/exclusaoConta.js';
 import { handleDataNascimento } from './agentes/data_nascimento.js';
-import { isCancelamento, pareceExclusaoConta, medicamentoDiferente } from './nlp_helpers.js';
+import { isCancelamento, pareceExclusaoConta, medicamentoDiferente, nomeCorrigidoParecido, normalizar } from './nlp_helpers.js';
 
 // ============================================================
 // IDEMPOTÊNCIA — descarta eventos duplicados da Z-API
@@ -160,7 +160,7 @@ function montarRetomadaColeta(state) {
         return 'E quando quiser, seguimos com o cadastro de onde paramos 🌿';
     }
     if (s === 'configurando') return 'E quando quiser, seguimos com o ajuste de onde paramos 🌿';
-    if (s === 'aguardando_periodo_adesao' || s === 'aguardando_escolha_tratamento') {
+    if (s === 'aguardando_escolha_tratamento') {
         return 'E quando quiser, seguimos com o relatório de onde paramos 🌿';
     }
     return null;
@@ -614,6 +614,22 @@ async function despacharPorProposta({ proposta, user, message, image, state, cur
     if (intencao === 'principal' && currentState === 'configurando') {
         intencao = 'configuracao';
     }
+    // Commit 0/M3 (achado do portão): no convite de estoque agregado, mensagem
+    // que toca um PENDENTE (número, nome ou grafia corrigida — "Keppra") é
+    // resposta ao convite, nunca desvio para a configuração (com corrigir_nome
+    // no inventário, a porta passou a propor 'configuracao' para isso).
+    if (intencao === 'configuracao' && state?.context?.etapa === 'cad_estoque_lote') {
+        const pendentes = state.context.estoque_lote || [];
+        const msgNorm = normalizar(message);
+        const tocaPendente = /\d/.test(message) || pendentes.some(p => {
+            const nomeNorm = normalizar(p.nome);
+            return msgNorm.includes(nomeNorm) || nomeCorrigidoParecido(p.nome, message.trim());
+        });
+        if (tocaPendente) {
+            console.log(`📦 [DESPACHO] Resposta ao convite de estoque agregado — segue no cadastro — ${user.phone}`);
+            intencao = 'cadastro';
+        }
+    }
 
     let agentName = intencao;
     let response;
@@ -623,12 +639,10 @@ async function despacharPorProposta({ proposta, user, message, image, state, cur
 
     // Saída dos estados de pergunta do relatório quando o assunto mudou —
     // são estados leves, sem dado coletado a preservar.
-    const emEstadoDePerguntaRelatorio = currentState === 'aguardando_periodo_adesao'
-        || currentState === 'aguardando_escolha_tratamento';
-    const continuaNoRelatorio = intencao === 'relatorios' && (
-        (currentState === 'aguardando_periodo_adesao' && subtipoRelatorio === 'adesao') ||
-        (currentState === 'aguardando_escolha_tratamento' && subtipoRelatorio === 'progresso_tratamento')
-    );
+    const emEstadoDePerguntaRelatorio = currentState === 'aguardando_escolha_tratamento';
+    const continuaNoRelatorio = intencao === 'relatorios'
+        && currentState === 'aguardando_escolha_tratamento'
+        && subtipoRelatorio === 'progresso_tratamento';
     if (emEstadoDePerguntaRelatorio && !continuaNoRelatorio) {
         await saveConversationState(user.id, { state: 'idle', context: {} });
         state = { state: 'idle', context: {} };
@@ -951,22 +965,8 @@ export async function routeMessage({ user, message, image, messageId, referenceM
             if (rCad.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
         }
 
-        // Respostas determinísticas dos estados de pergunta do relatório (BUG-057/056).
-        if (response === undefined && currentState === 'aguardando_periodo_adesao') {
-            if (isCancelamento(message)) {
-                await saveConversationState(user.id, { state: 'idle', context: {} });
-                agentName = 'relatorios';
-                const firstName = user.name ? user.name.split(' ')[0] : 'você';
-                console.log(`📊 Desistência do período de adesão — ${user.phone}`);
-                response = `Sem problemas, ${firstName}! Se quiser ver sua adesão depois, é só me chamar 🌿`;
-            } else if (extrairPeriodo(message)) {
-                console.log(`📊 Roteando para relatorios (aguardando período de adesão) — ${user.phone}`);
-                const r = await despacharRelatorio({ user, message, image, historicoConversa,
-                                                     subtipo: 'adesao', params: { medicamento: null, expressaoData: null }, state });
-                agentName = r.agentName;
-                response = r.response;
-            }
-        }
+        // Resposta determinística do estado de pergunta do relatório (BUG-056).
+        // (P4.4/M3: o estado aguardando_periodo_adesao morreu com a adesão reativa.)
         if (response === undefined && currentState === 'aguardando_escolha_tratamento' && isCancelamento(message)) {
             await saveConversationState(user.id, { state: 'idle', context: {} });
             agentName = 'relatorios';

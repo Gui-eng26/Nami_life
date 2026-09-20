@@ -14,7 +14,7 @@ import {
     registrarMovimentoEstoque,
     verificarMedicamentoExistente
 } from '../database.js';
-import { isCancelamento, encontrarMedicamento, normalizar } from '../nlp_helpers.js';
+import { isCancelamento, encontrarMedicamento, encontrarTodosMedicamentos, normalizar } from '../nlp_helpers.js';
 import { classificarComFerramenta } from '../validadores/llm.js';
 import { AINDA_NAO, respostaHonestaAindaNao } from '../inventario.js';
 import { executarCorrecao, executarCorrecaoPerfil, iniciarCadastroComNome } from '../runner.js';
@@ -617,7 +617,7 @@ async function executarAcao(user, firstName, ctx) {
 
         default:
             await saveConversationState(user.id, { state: 'idle', context: {} });
-            return `Não consegui executar a ação. Pode tentar novamente?`;
+            return `Ih, me perdi aqui e não consegui fazer o ajuste. 😅 Pode me dizer de novo o que você quer mudar?`;
     }
 }
 
@@ -629,6 +629,22 @@ async function processarIntencaoOuEscalar({ user, firstName, message, medication
         await saveConversationState(user.id, { state: 'idle', context: {} });
         return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
     }
+    // MH-51 (M3 P6.6): pergunta de esclarecimento no meio do fluxo é DÚVIDA —
+    // responde (a lista real) e retoma, nunca repete a mesma pergunta como se
+    // fosse ruído.
+    const ehPerguntaDeQualMedicamento = /\?\s*$/.test(message.trim())
+        && /\bqua(l|is)\b/i.test(message)
+        && /medicamento|rem[eé]dio/i.test(message)
+        && !encontrarMedicamento(message, medicationsAtivos);
+    if (ehPerguntaDeQualMedicamento && medicationsAtivos.length > 0) {
+        const lista = medicationsAtivos.map(m => `• *${m.nome}*`).join('\n');
+        const retomada = context.medicationNome && context.medicationNome !== 'esse medicamento'
+            ? `A gente estava falando do *${context.medicationNome}* — quer seguir com ele?`
+            : 'Sobre qual deles você quer falar?';
+        console.log(`❓ [MH-51] Dúvida de esclarecimento respondida com a lista — ${user.phone}`);
+        return `Claro! Seus medicamentos cadastrados são:\n\n${lista}\n\n${retomada}`;
+    }
+
     const { acao, medicamentoMencionado, novoHorario } = await classificarIntencao(message, medicationsAtivos, historicoConversa);
 
     // MH-75 (P2): dados pessoais não dependem de medicamento cadastrado.
@@ -677,6 +693,29 @@ async function processarIntencaoOuEscalar({ user, firstName, message, medication
             }
         });
         return `Entendido, ${firstName}! Sobre o *${nomeExibir}*, você quer:\n\n• *Pausar* os lembretes (temporário — pode retomar depois)\n• *Encerrar* o tratamento definitivamente\n\nO que prefere?`;
+    }
+
+    // P6.4 (M3, MH-82/39): "encerrar todos" / seleção múltipla → UMA
+    // confirmação agregada (vale também para pausar — mesmo mecanismo).
+    if (acao === 'encerrar' || acao === 'pausar') {
+        const querTodos = /\b(todos|todas|tudo)\b/i.test(message);
+        const citados = encontrarTodosMedicamentos(message, medicationsAtivos);
+        const alvosLote = querTodos ? medicationsAtivos : (citados.length > 1 ? citados : []);
+        if (alvosLote.length > 1) {
+            await saveConversationState(user.id, {
+                state: 'configurando',
+                context: {
+                    etapa: 'confirm_acao_lote',
+                    acao,
+                    medicationIds: alvosLote.map(m => m.id),
+                    nomes: alvosLote.map(m => m.nome)
+                }
+            });
+            const verboLabel = acao === 'encerrar' ? 'encerrar o tratamento' : 'pausar os lembretes';
+            const lista = alvosLote.map(m => `• *${m.nome}*`).join('\n');
+            console.log(`⚙️ [P6.4] Lote de ${acao}: ${alvosLote.length} tratamento(s) — ${user.phone}`);
+            return `Só confirmar, ${firstName}: vou ${verboLabel} de todos os seus ${alvosLote.length} medicamentos:\n\n${lista}\n\nConfirmar?`;
+        }
     }
 
     // Medicamento já identificado no contexto (vem de esclarecer_pausar_encerrar anterior ou de outro fluxo)
@@ -1043,6 +1082,30 @@ export async function handleConfiguracao({ user, message, state, context, histor
         return `Qual desses você quer alterar?\n\n${lista}\n\nMe responda com o horário — por exemplo: *${schedulesRestantes[0]?.horario?.substring(0, 5)}*`;
     }
 
+    // ── ETAPA confirm_acao_lote (P6.4 — MH-82/39): UMA confirmação agregada ──
+    if (etapa === 'confirm_acao_lote') {
+        if (isCancelamento(message) || /\b(n[aã]o|nao|n)\b/i.test(message.toLowerCase())) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
+        }
+        if (!isConfirmacao(message)) {
+            return { escalarParaRoteador: true };
+        }
+        const acaoLote = context.acao;
+        for (const medicationId of context.medicationIds || []) {
+            if (acaoLote === 'encerrar') await encerrarTratamento(medicationId);
+            else await pausarMedicamento(medicationId);
+        }
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        const nomes = (context.nomes || []).map(n => `*${n}*`).join(', ');
+        const n = (context.medicationIds || []).length;
+        console.log(`⚙️ [P6.4] Lote executado: ${acaoLote} × ${n} — ${user.phone}`);
+        if (acaoLote === 'encerrar') {
+            return `✅ Prontinho, ${firstName}! Encerrei os ${n} tratamentos: ${nomes}. Os lembretes foram desativados 🌿\n\nSe quiser retomar algum deles no futuro, é só me pedir.`;
+        }
+        return `✅ Prontinho, ${firstName}! Pausei os lembretes dos ${n}: ${nomes}. Quando quiser retomar algum, é só me dizer "reativar" 🌿`;
+    }
+
     // ── ETAPAS DO MODO CORREÇÃO (M3 P2) ──────────────────────────────────────
     if (etapa === 'corrigir_campo') {
         if (isCancelamentoGenuino(message, medicationsAtivos)) {
@@ -1086,7 +1149,7 @@ export async function handleConfiguracao({ user, message, state, context, histor
 
     // Fallback
     await saveConversationState(user.id, { state: 'idle', context: {} });
-    return `Algo deu errado no fluxo de configuração, ${firstName}. Pode tentar novamente?`;
+    return `Me perdi um pouquinho aqui, ${firstName}. 😅 Pode me dizer de novo o que você quer ajustar?`;
 }
 
 // ── HELPER: continua após intenção clara + medicamento opcional ──────────────

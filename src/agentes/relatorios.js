@@ -10,11 +10,15 @@ import {
     upsertAdesaoEstado,
     saveConversationState,
     precisaSaudacao,
-    registrarEventoProativo
+    registrarEventoProativo,
+    getMedicamentosEncerrados,
+    getUltimasDosesDoMedicamento,
+    getMedicationComSchedulesAtivos,
+    calcularConsumoDiario
 } from '../database.js';
 import { registrarEvento } from '../observabilidade.js';
 import { enviarAoUsuario } from '../funil.js';
-import { isCancelamento, encontrarMedicamento } from '../nlp_helpers.js';
+import { encontrarMedicamento } from '../nlp_helpers.js';
 import {
     escolherFaixa,
     montarMensagemSemanal,
@@ -27,23 +31,23 @@ import {
     escolherFaseProgresso,
     montarMensagemProgresso,
     montarFallbackContinuo,
-    montarResumoCompacto,
-    montarPerguntaPeriodo,
-    montarRecusaPeriodo
+    montarResumoCompacto
 } from '../templates/adesaoTemplates.js';
-import { resolverDataReferencia, validarJanela, rotularData, diasAtras, hojeBRT, extrairExpressaoData } from '../dataReferencia.js';
+import {
+    resolverDataReferencia, validarJanela, rotularData, diasAtras, hojeBRT,
+    extrairExpressaoData, extrairIntervalo, diasDoIntervalo
+} from '../dataReferencia.js';
+import { rotuloDias } from '../validadores/recorrencia.js';
 import {
     montarBlocoFactual, resumirSituacao, molduraPadrao, montarCabecalhoData,
     TEXTO_FORA_DA_JANELA, TEXTO_DATA_FUTURA, TEXTO_DATA_NAO_RECONHECIDA
 } from '../templates/balancoTemplates.js';
-import Anthropic from '@anthropic-ai/sdk';
+import { classificarComFerramenta } from '../validadores/llm.js';
 
 // Considera fechamento mensal quando o último fechamento tem 28+ dias (ou nunca fechou).
 const DIAS_FECHAMENTO_MENSAL = 28;
-const PERIODOS_VALIDOS = [7, 15, 30];
 // '100' > '80_99' > '50_79' > 'abaixo_50' — usado para marco (melhor faixa já atingida)
 const RANKING_FAIXA = { abaixo_50: 0, '50_79': 1, '80_99': 2, '100': 3 };
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const JANELA_CONFIRMACAO_RETROATIVA_DIAS = 2;
 
 // Saudação condicional dos templates "sob demanda" (BRIEFING_APRESENTACAO_V2.md, seção 1) —
@@ -105,7 +109,9 @@ export function classificarIntencaoRelatorio(message) {
             'o que devo tomar agora',
             'que remédio tomo agora'
         ],
-        adesao: [
+        // P4.4 (M3): os padrões de adesão apontam para o balanço — o pedido
+        // de adesão cai no período livre.
+        balanco_periodo: [
             'quantas vezes esqueci',
             'tenho esquecido muito',
             'como está minha adesão',
@@ -128,7 +134,7 @@ export function classificarIntencaoRelatorio(message) {
     };
 
     for (const [tipo, termos] of Object.entries(padroes)) {
-        if (termos.some(t => msg.includes(t))) return tipo;
+        if (termos.some(t => msg.includes(t))) return tipo === 'balanco_periodo' ? 'balanco_do_dia' : tipo;
     }
 
     return null;
@@ -146,14 +152,17 @@ export async function handleRelatorios({ user, message, subtipo, params, state }
     switch (subtipo) {
         case 'balanco_do_dia':
             return await relatorioBalancoDoDia({ user, message, params: p });
+        // P4.1 (M3): pergunta sobre UM medicamento responde sobre ELE — a
+        // mensagem e os params chegam até aqui (o defeito era de roteamento).
         case 'meus_remedios':
-            return await relatorioMeusRemedios(user);
+            return await relatorioMeusRemedios({ user, message, params: p });
         case 'estoque':
             return await relatorioEstoque({ user, message, params: p });
         case 'proximo_remedio':
             return await relatorioProximoRemedio({ user, message, params: p });
-        case 'adesao':
-            return await relatorioAdesao({ user, message, state });
+        // MH-31 (M3): encerrados só sob pedido.
+        case 'historico_encerrados':
+            return await relatorioEncerrados(user);
         case 'progresso_tratamento':
             return await relatorioProgressoTratamento({ user, message, state });
         default:
@@ -185,6 +194,15 @@ async function resolverMedicamento({ userId, message, medicamentoParam }) {
 async function relatorioBalancoDoDia({ user, message, params }) {
     const firstName = user.name?.split(' ')[0] || 'você';
 
+    // P4.3 (M3) — PERÍODO LIVRE: intervalo detectado na mensagem (ou na
+    // expressão da porta) vira balanço de período; a adesão reativa morreu e
+    // seus pedidos caem aqui.
+    const intervalo = extrairIntervalo(message)
+        || (params.expressaoData ? extrairIntervalo(params.expressaoData) : null);
+    if (intervalo) {
+        return await relatorioBalancoPeriodo({ user, message, params, intervalo });
+    }
+
     // Princípio 17: texto da mensagem primeiro; params do classificador como fallback.
     // Necessário porque a Camada 1 não produz params (C-1, v25).
     const expressao = extrairExpressaoData(message) || params.expressaoData;
@@ -192,10 +210,15 @@ async function relatorioBalancoDoDia({ user, message, params }) {
     if (erro === 'futuro') return comSaudacao(user.id, firstName, TEXTO_DATA_FUTURA);
     if (erro) return comSaudacao(user.id, firstName, TEXTO_DATA_NAO_RECONHECIDA);
 
-    const janela = validarJanela(dataISO);
+    // P4.3: leitura livre desde o início do usuário na Nami; antes disso,
+    // resposta honesta com a data de início.
+    const janela = validarJanela(dataISO, user.created_at || null);
     if (!janela.ok) {
-        return comSaudacao(user.id, firstName,
-            janela.motivo === 'futuro' ? TEXTO_DATA_FUTURA : TEXTO_FORA_DA_JANELA);
+        if (janela.motivo === 'futuro') return comSaudacao(user.id, firstName, TEXTO_DATA_FUTURA);
+        if (janela.motivo === 'antes_do_inicio') {
+            return comSaudacao(user.id, firstName, montarTextoAntesDoInicio(user.created_at));
+        }
+        return comSaudacao(user.id, firstName, TEXTO_FORA_DA_JANELA);
     }
 
     const med = await resolverMedicamento({
@@ -223,6 +246,66 @@ async function relatorioBalancoDoDia({ user, message, params }) {
     if (moldura.fechamento) partes.push(moldura.fechamento);
 
     return comSaudacao(user.id, firstName, partes.join('\n\n'));
+}
+
+// P4.3: balanço de PERÍODO — leitura pura, 100% determinística (sem moldura
+// LLM), um resumo por dia + total do período. Fora da janela de confirmação
+// retroativa não há oferta de registro (A28).
+function montarTextoAntesDoInicio(criadoEm) {
+    const inicio = String(criadoEm || '').slice(0, 10);
+    const [ano, mes, dia] = inicio.split('-');
+    const dataBR = dia ? `${dia}/${mes}/${ano}` : null;
+    return `A gente começou a conversar${dataBR ? ` em ${dataBR}` : ' há pouco tempo'} — antes disso eu ainda não estava com você, então não tenho registros. 🌿`;
+}
+
+async function relatorioBalancoPeriodo({ user, message, params, intervalo }) {
+    const firstName = user.name?.split(' ')[0] || 'você';
+    const hoje = hojeBRT();
+    const inicioUsuario = String(user.created_at || '').slice(0, 10) || null;
+
+    let { inicioISO, fimISO } = intervalo;
+    if (fimISO > hoje) fimISO = hoje;
+    if (inicioUsuario && fimISO < inicioUsuario) {
+        return comSaudacao(user.id, firstName, montarTextoAntesDoInicio(user.created_at));
+    }
+    if (inicioUsuario && inicioISO < inicioUsuario) inicioISO = inicioUsuario;
+    if (inicioISO > fimISO) {
+        return comSaudacao(user.id, firstName, TEXTO_DATA_FUTURA);
+    }
+
+    const med = await resolverMedicamento({
+        userId: user.id, message, medicamentoParam: params.medicamento
+    });
+
+    const linhas = [];
+    let totalDoses = 0;
+    let totalConfirmadas = 0;
+    for (const dia of diasDoIntervalo(inicioISO, fimISO)) {
+        const doses = await getDosesDoDia(user.id, dia, med?.id || null);
+        const reais = doses.filter(d => d.status !== 'agendado' || d.horarioJaPassou);
+        if (reais.length === 0) continue;
+        const confirmadas = reais.filter(d => d.status === 'confirmado').length;
+        totalDoses += reais.length;
+        totalConfirmadas += confirmadas;
+        const [, m, d] = dia.split('-');
+        const icone = confirmadas === reais.length ? '✅' : confirmadas === 0 ? '❌' : '◽';
+        linhas.push(`${icone} ${d}/${m} — ${confirmadas} de ${reais.length} doses`);
+    }
+
+    const cabecalho = `📅 ${intervalo.rotulo}${med ? ` — *${med.nome}*` : ''}`;
+    if (totalDoses === 0) {
+        return comSaudacao(user.id, firstName,
+            `${cabecalho}\n\nNão encontrei registros de doses nesse período, ${firstName}. 🌿`);
+    }
+
+    const percentual = Math.round((totalConfirmadas / totalDoses) * 100);
+    const corpo = [
+        cabecalho,
+        linhas.join('\n'),
+        `No período: *${totalConfirmadas}* de *${totalDoses}* doses confirmadas (${percentual}%).`
+    ].join('\n\n');
+
+    return comSaudacao(user.id, firstName, corpo);
 }
 
 const PROMPT_MOLDURA = `Você é a Nami, assistente de saúde via WhatsApp. Linguagem simples, clara e
@@ -325,12 +408,22 @@ async function gerarMoldura({ nome, rotuloData, resumo, med, podeConfirmarRetroa
 // R-002: QUAIS MEUS REMÉDIOS?
 // ============================================================
 
-async function relatorioMeusRemedios(user) {
+async function relatorioMeusRemedios({ user, message, params }) {
     const firstName = user.name?.split(' ')[0] || 'você';
     const medications = await getMedicamentosAtivos(user.id);
 
     if (medications.length === 0) {
         return `Você ainda não tem remédios cadastrados, ${firstName}. Quer cadastrar agora? 💊`;
+    }
+
+    // P4.1 (M3): pergunta sobre UM medicamento responde sobre ELE — nunca a
+    // lista completa (o defeito era de roteamento: a função nem recebia a
+    // mensagem; resolverMedicamento já existia).
+    const med = await resolverMedicamento({
+        userId: user.id, message, medicamentoParam: params?.medicamento
+    });
+    if (med) {
+        return await relatorioMedicamentoEspecifico({ user, firstName, medicationId: med.id });
     }
 
     // A-2 (v25): ordem alfabética. Feita AQUI e não em getUserMedications de propósito —
@@ -376,6 +469,76 @@ async function relatorioMeusRemedios(user) {
     return msg.trim();
 }
 
+// P4.1 (M3): visão de UM tratamento — posologia, horários, status explícito,
+// estoque e últimas doses, tudo lido do banco (P56).
+async function relatorioMedicamentoEspecifico({ user, firstName, medicationId }) {
+    const med = await getMedicationComSchedulesAtivos(medicationId);
+    const ultimas = await getUltimasDosesDoMedicamento(medicationId, 5);
+
+    const statusLabel = med.status === 'pausado'
+        ? '⏸️ lembretes pausados'
+        : med.status === 'encerrado' ? '🔴 encerrado' : '✅ ativo';
+
+    const pares = (med.schedulesAtivos.length > 0 ? med.schedulesAtivos : med.schedules || [])
+        .map(sch => ({
+            horario: String(sch.horario).slice(0, 5),
+            quantidade: Number(sch.quantidade_por_dose),
+            dias: rotuloDias(sch.dias_semana)
+        }))
+        .sort((a, b) => a.horario.localeCompare(b.horario));
+    const linhasPosologia = pares
+        .map(par => `   • ${par.horario} — ${par.quantidade} por vez${par.dias ? ` (${par.dias})` : ''}`)
+        .join('\n');
+
+    const linhas = [`💊 *${med.nome}*${med.dosagem ? ` — ${med.dosagem}` : ''} (${med.forma_farmaceutica})`];
+    linhas.push(`Status: ${statusLabel}`);
+    if (linhasPosologia) linhas.push(`⏰ Posologia:\n${linhasPosologia}`);
+    linhas.push(`🔄 Tratamento: ${med.tipo_tratamento === 'temporario' ? `${med.tratamento_dias} dias` : 'contínuo'}`);
+    if (med.estoque_atual !== null && med.estoque_atual !== undefined) {
+        linhas.push(`📦 Estoque: ${med.estoque_atual} ${med.unidade_estoque === 'ml' ? 'ml' : 'unidades'}${med.estoque_estimado ? ' (estimativa)' : ''}`);
+    } else {
+        linhas.push('📦 Estoque: não informado (me diga quantos você tem e eu acompanho)');
+    }
+
+    if (ultimas.length > 0) {
+        const ICONE_DOSE = { confirmado: '✅', nao_informado: '⏳', nao_tomado: '❌', sem_estoque: '📦', pendente: '❓', pausado: '⏸️' };
+        const linhasDoses = ultimas.map(d => {
+            const quando = new Date(d.scheduled_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo' });
+            const hora = d.horario_agendado ? String(d.horario_agendado).slice(0, 5)
+                : new Date(d.scheduled_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+            const rotulo = d.status === 'confirmado' ? 'confirmada'
+                : d.status === 'nao_tomado' ? 'não tomada'
+                : d.status === 'nao_informado' ? 'sem confirmação'
+                : d.status === 'sem_estoque' ? 'sem estoque'
+                : d.status === 'pendente' ? 'aguardando confirmação' : d.status;
+            return `   ${ICONE_DOSE[d.status] || '•'} ${quando} ${hora} — ${rotulo}`;
+        }).join('\n');
+        linhas.push(`Últimas doses:\n${linhasDoses}`);
+    }
+
+    return comSaudacao(user.id, firstName, linhas.join('\n'));
+}
+
+// MH-31 (M3): histórico de tratamentos encerrados — só sob pedido.
+async function relatorioEncerrados(user) {
+    const firstName = user.name?.split(' ')[0] || 'você';
+    const encerrados = await getMedicamentosEncerrados(user.id);
+
+    if (encerrados.length === 0) {
+        return comSaudacao(user.id, firstName, 'Você ainda não tem nenhum tratamento encerrado por aqui. 🌿');
+    }
+
+    const linhas = encerrados.map(m => {
+        const quando = m.status_alterado_em
+            ? new Date(m.status_alterado_em).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'America/Sao_Paulo' })
+            : null;
+        return `• *${m.nome}*${m.dosagem ? ` — ${m.dosagem}` : ''}${quando ? ` (encerrado em ${quando})` : ''}`;
+    }).join('\n');
+
+    return comSaudacao(user.id, firstName,
+        `🗂️ Tratamentos que você já encerrou:\n\n${linhas}\n\nSe quiser retomar algum deles, é só me pedir pra reativar. 🌿`);
+}
+
 // ============================================================
 // R-003: ESTOQUE
 // ============================================================
@@ -392,8 +555,26 @@ async function relatorioEstoque({ user, message, params }) {
         userId: user.id, message, medicamentoParam: params.medicamento
     });
 
-    const lista = med ? estoque.filter(e => e.id === med.id) : estoque;
+    let lista = med ? estoque.filter(e => e.id === med.id) : estoque;
     if (lista.length === 0) return null; // não encontrou — cai no principal
+
+    // MH-60 (M3 P4.8): ordena por DIAS DE COBERTURA crescente (mais urgente
+    // primeiro) — unidades enganam (8 a 1/dia duram mais que 10 a 3/dia).
+    const comCobertura = [];
+    for (const item of lista) {
+        let cobertura = null;
+        if (item.estoque_atual !== null && item.estoque_atual !== undefined) {
+            const { consumoDiario } = await calcularConsumoDiario(item.id);
+            cobertura = consumoDiario > 0 ? Math.floor(item.estoque_atual / consumoDiario) : null;
+        }
+        comCobertura.push({ ...item, _cobertura: cobertura });
+    }
+    lista = comCobertura.sort((a, b) => {
+        if (a._cobertura === null && b._cobertura === null) return String(a.nome).localeCompare(String(b.nome), 'pt-BR');
+        if (a._cobertura === null) return 1;
+        if (b._cobertura === null) return -1;
+        return a._cobertura - b._cobertura;
+    });
 
     const cabecalho = med
         ? `📦 Estoque do *${med.nome}*, ${firstName}:\n\n`
@@ -502,85 +683,10 @@ async function relatorioProximoRemedio({ user, message, params }) {
 }
 
 // ============================================================
-// R-005: ADESÃO SOB DEMANDA — seleção de período em duas etapas
+// R-005 morreu no M3 (P4.4): a adesão reativa (7/15/30) saiu — pedidos de
+// adesão caem no PERÍODO LIVRE do balanço (relatorioBalancoPeriodo). O
+// cálculo calcularAdesao permanece para o resumo semanal PROATIVO, intocado.
 // ============================================================
-
-export function extrairPeriodo(message) {
-    for (const periodo of PERIODOS_VALIDOS) {
-        if (new RegExp(`\\b${periodo}\\b`).test(message)) return periodo;
-    }
-    return null;
-}
-
-// Mensagem menciona algum número (fora dos 3 períodos válidos) — pedido de período fora de escopo
-function mencionaPeriodoInvalido(message) {
-    return /\b\d{1,3}\b/.test(message);
-}
-
-async function relatorioAdesao({ user, message, state }) {
-    const firstName = user.name?.split(' ')[0] || 'você';
-    const aguardandoPeriodo = state?.state === 'aguardando_periodo_adesao';
-
-    if (aguardandoPeriodo && isCancelamento(message)) {
-        await saveConversationState(user.id, { state: 'idle', context: {} });
-        return `Sem problemas, ${firstName}! Se quiser ver sua adesão depois, é só me chamar 🌿`;
-    }
-
-    const periodo = extrairPeriodo(message);
-
-    if (!periodo) {
-        await saveConversationState(user.id, { state: 'aguardando_periodo_adesao', context: {} });
-
-        if (mencionaPeriodoInvalido(message)) {
-            await registrarEvento({
-                tipo: 'intencao_nao_suportada',
-                severidade: 'baixa',
-                userId: user.id,
-                agent: 'relatorios',
-                origem: 'classificador_central',
-                agentLogId: null,
-                titulo: 'Intenção não suportada (período de adesão inválido)'
-            });
-            return comSaudacao(user.id, firstName, montarRecusaPeriodo());
-        }
-        return comSaudacao(user.id, firstName, montarPerguntaPeriodo());
-    }
-
-    await saveConversationState(user.id, { state: 'idle', context: {} });
-
-    const dados = await calcularAdesao(user.id, periodo);
-    if (dados.esperado === 0) {
-        return `Ainda não tenho dados suficientes para calcular sua adesão, ${firstName}. Continue confirmando suas doses e em breve terei um histórico para te mostrar! 💊`;
-    }
-
-    return comSaudacao(user.id, firstName, await montarRespostaAdesaoDireta(user, dados, periodo));
-}
-
-// "Sob demanda: versão direta" (4.7) — números atuais + tendência desde o último
-// envio automático, sem avançar nem repetir o texto da jornada semanal/mensal.
-// Não atualiza adesao_estado — só os envios automáticos fazem isso.
-async function montarRespostaAdesaoDireta(user, dados, periodo) {
-    const firstName = user.name?.split(' ')[0] || 'você';
-    const adesaoEstado = await getAdesaoEstado(user.id);
-
-    let msg = `📊 Sua adesão nos últimos ${periodo} dias, ${firstName}:\n\n`;
-    msg += `${dados.percentual}% (${dados.confirmado}/${dados.esperado} doses)\n\n`;
-    msg += `✅ Confirmadas: ${dados.porStatus.confirmado}\n`;
-    msg += `⏳ Sem resposta: ${dados.porStatus.nao_informado}\n`;
-    msg += `❌ Não tomadas: ${dados.porStatus.nao_tomado}\n`;
-    msg += `📦 Sem estoque: ${dados.porStatus.sem_estoque}`;
-
-    if (adesaoEstado.percentual_ultimo_envio !== null && adesaoEstado.percentual_ultimo_envio !== undefined) {
-        const diff = dados.percentual - adesaoEstado.percentual_ultimo_envio;
-        const tipoTendencia = diff > 5 ? 'subiu' : diff < -5 ? 'caiu' : 'estavel';
-        msg += `\n\n${montarBlocoTendencia(tipoTendencia, {
-            taxaAnterior: adesaoEstado.percentual_ultimo_envio,
-            taxaAtual: dados.percentual
-        })}`;
-    }
-
-    return msg;
-}
 
 // ============================================================
 // R-006: PROGRESSO DO TRATAMENTO
@@ -644,13 +750,40 @@ async function relatorioProgressoTratamento({ user, message }) {
 // RESUMO AUTOMÁTICO — SEMANAL OU FECHAMENTO MENSAL (chamado pelo scheduler)
 // ============================================================
 
+// ============================================================
+// P5 (M3) — ELEGIBILIDADE DO PROATIVO: função PURA, testável sem LLM
+// (asserção determinística A29). Resumo semanal só para quem tem mais
+// de 7 dias de Nami; fechamento mensal só para mais de 28. Quem não é
+// elegível simplesmente não recebe — sem mensagem substituta.
+// ============================================================
+
+export function elegivelParaResumo(user, tipo, hoje = hojeBRT()) {
+    const inicio = String(user?.created_at || '').slice(0, 10);
+    if (!inicio || !/^\d{4}-\d{2}-\d{2}$/.test(inicio)) return false;
+    const diasDeNami = Math.round(
+        (Date.parse(`${hoje}T00:00:00Z`) - Date.parse(`${inicio}T00:00:00Z`)) / 86_400_000
+    );
+    if (tipo === 'mensal') return diasDeNami > 28;
+    return diasDeNami > 7;
+}
+
 export async function enviarResumoSemanal(user) {
     try {
         const firstName = user.name?.split(' ')[0] || 'você';
+
+        // P5: sem 7 dias de Nami, nenhum resumo — nem substituto.
+        if (!elegivelParaResumo(user, 'semanal')) {
+            console.log(`⏭️  Resumo semanal ignorado (usuário com ≤7 dias de Nami): ${user.phone}`);
+            return;
+        }
+
         const adesaoEstado = await getAdesaoEstado(user.id);
 
-        const isMensal = !adesaoEstado.ultimo_fechamento_mensal_at ||
-            (Date.now() - new Date(adesaoEstado.ultimo_fechamento_mensal_at).getTime()) >= DIAS_FECHAMENTO_MENSAL * 24 * 60 * 60 * 1000;
+        // Fechamento mensal só para quem tem mais de 28 dias — antes disso o
+        // ciclo fica no semanal (nunca um "mensal" com histórico de dias vazios).
+        const isMensal = (!adesaoEstado.ultimo_fechamento_mensal_at ||
+            (Date.now() - new Date(adesaoEstado.ultimo_fechamento_mensal_at).getTime()) >= DIAS_FECHAMENTO_MENSAL * 24 * 60 * 60 * 1000)
+            && elegivelParaResumo(user, 'mensal');
         const dias = isMensal ? 30 : 7;
 
         const dados = await calcularAdesao(user.id, dias);

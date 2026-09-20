@@ -816,8 +816,22 @@ export const CASOS = [
 
             const r1 = await turno(ctx, user, 'Encerrar todos');
             checagensDeForma(checks, 'turno 1', r1);
-            checks.push({ marco: 'M3', nome: 'M3: reconhece "todos" com UMA confirmação agregada', ...contem(r1, /todos os (seus )?(4 )?(rem[ée]dios|medicamentos|tratamentos)|os 4 (rem[ée]dios|medicamentos|tratamentos)/i, 'confirmação agregada') });
+            checks.push({ marco: 'M3', nome: 'M3: reconhece "todos" com UMA confirmação agregada', ...contem(r1, /todos os (seus )?(4 )?(rem[ée]dios|medicamentos|tratamentos)|os 4 (rem[ée]dios|medicamentos|tratamentos)|4 medicamentos/i, 'confirmação agregada') });
             checks.push({ marco: 'M3', nome: 'M3: nunca pede para escolher UM de cada vez', ...naoContem(r1, /qual (deles|medicamento|rem[ée]dio|tratamento) você (quer|deseja)/i, 'seleção um-a-um') });
+
+            // P6.4 (M3): a confirmação executa o lote inteiro, com status explícito.
+            const r2 = await turno(ctx, user, 'Sim');
+            checagensDeForma(checks, 'turno 2', r2);
+            const medsDepois = await medicamentos(ctx.db, user.id);
+            const todosEncerrados = medsDepois.length === 4
+                && medsDepois.every(m => m.status === 'encerrado' && (m.schedules || []).every(s => !s.ativo));
+            checks.push({
+                marco: 'M3',
+                nome: 'M3: os 4 encerrados no banco com status explícito (P1) e schedules inativos',
+                ok: todosEncerrados,
+                detalhe: medsDepois.map(m => `${m.nome}:${m.status}`).join(', ')
+            });
+            checks.push({ marco: 'M3', nome: 'M3: fechamento declara os 4 pelo nome', ok: /ômega|omega/i.test(r2) && /losartana/i.test(r2) && /vitamina d/i.test(r2) && /melatonina/i.test(r2), detalhe: r2.slice(0, 200) });
             return checks;
         }
     },
@@ -1434,6 +1448,178 @@ export const CASOS = [
                 ok: horariosNovo.length === 1 && horariosNovo[0] === '09:00' && Number(novo?.tratamento_dias) === 7,
                 detalhe: `horários: ${horariosNovo.join(', ')}; dias: ${novo?.tratamento_dias}`
             });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A27',
+        marco: 'M3',
+        titulo: 'P4.1 — pergunta sobre UM medicamento responde sobre ELE (nunca a lista completa)',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Consulta', onboarded: true, estado: 'idle' });
+            await seeds.criarMedicamento({ userId: user.id, nome: 'Losartana', dosagem: '50mg', estoque: 30, horarios: ['08:00'] });
+            await seeds.criarMedicamento({ userId: user.id, nome: 'Ômega 3', estoque: null, horarios: ['12:00'], quantidadePorDose: 2 });
+
+            const r1 = await turno(ctx, user, 'Me mostra os dados do Ômega 3');
+            checagensDeForma(checks, 'visão específica', r1);
+            checks.push({ nome: 'responde sobre ELE: nome + horário do banco', ok: /ômega|omega/i.test(r1) && /12:00/.test(r1), detalhe: r1.slice(0, 220) });
+            checks.push({ nome: 'nunca a lista completa (Losartana fora)', ...naoContem(r1, /losartana/i, 'outro medicamento') });
+            checks.push({ nome: 'dados do banco: posologia (2 por vez) e estoque não informado', ok: /2 por vez|2 unidades|— 2\b/.test(r1) && /n[ãa]o informado/i.test(r1), detalhe: r1.slice(0, 260) });
+            checks.push({ nome: 'status explícito exibido (ativo)', ...contem(r1, /ativo/i, 'status') });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A28',
+        marco: 'M3',
+        titulo: 'P4.3 — período livre: dia antigo é leitura pura; intervalo funciona; antes do início é resposta honesta',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Leitor', onboarded: true, estado: 'idle' });
+            // Usuário com 40 dias de Nami (o seed nasce agora — recua o created_at).
+            const inicioISO = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
+            await ctx.db.from('users').update({ created_at: inicioISO }).eq('id', user.id);
+            user.created_at = inicioISO;
+            const { med, schedules } = await seeds.criarMedicamento({ userId: user.id, nome: 'Enalapril', horarios: ['08:00'] });
+
+            // Dose CONFIRMADA há 5 dias e uma SEM resposta há 5 dias (mesmo dia).
+            const cincoDiasAtras = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000);
+            const dataAntigaISO = cincoDiasAtras.toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+            const [, mesA, diaA] = dataAntigaISO.split('-');
+            await ctx.db.from('dose_logs').insert([
+                {
+                    medication_id: med.id, schedule_id: schedules[0].id,
+                    scheduled_at: new Date(`${dataAntigaISO}T08:00:00-03:00`).toISOString(),
+                    horario_agendado: '08:00', reminder_sent: true, confirmed: true,
+                    status: 'confirmado', taken_at: new Date(`${dataAntigaISO}T08:05:00-03:00`).toISOString()
+                },
+                {
+                    medication_id: med.id, schedule_id: schedules[0].id,
+                    scheduled_at: new Date(`${dataAntigaISO}T20:00:00-03:00`).toISOString(),
+                    horario_agendado: '20:00', reminder_sent: true, confirmed: false,
+                    status: 'nao_informado'
+                }
+            ]);
+
+            // (a) Dia antigo (5 dias, fora da janela de 30 que existia): leitura pura.
+            const r1 = await turno(ctx, user, `O que eu tomei no dia ${diaA}/${mesA}?`);
+            checagensDeForma(checks, 'dia antigo', r1);
+            checks.push({ nome: '(a) dia antigo LIDO (a trava de 30 dias não existe mais para leitura)', ...naoContem(r1, /[úu]ltimos 30 dias/i, 'trava antiga de janela') });
+            checks.push({ nome: '(a) fato do banco: dose confirmada aparece', ...contem(r1, /enalapril/i, 'nome do medicamento') });
+            checks.push({ nome: '(a) A31: nunca "não tomou" para dose sem resposta', ...naoContem(r1, /n[ãa]o tomou|n[ãa]o tomad[oa]/i, 'afirmação de não-tomada') });
+
+            // (b) Intervalo: "como foi minha semana?" agrega os dias.
+            const r2 = await turno(ctx, user, 'Como foi minha semana? Quero ver minha adesão');
+            checagensDeForma(checks, 'intervalo', r2);
+            checks.push({ nome: '(b) intervalo funciona: resposta agregada com contagem de doses', ok: /doses confirmadas|de \d+ doses/i.test(r2), detalhe: r2.slice(0, 260) });
+            checks.push({ nome: '(b) sem a recusa antiga dos períodos fechados (7/15/30)', ...naoContem(r2, /per[íi]odos fechados|7, 15 ou 30/i, 'recusa da adesão reativa') });
+
+            // (c) Data anterior ao created_at: resposta honesta.
+            const r3 = await turno(ctx, user, 'O que eu tomei em 01/01/2025?');
+            checagensDeForma(checks, 'antes do início', r3);
+            checks.push({ nome: '(c) antes do início da Nami → resposta honesta com a data de começo', ...contem(r3, /come[çc]amos a conversar|come[çc]ou a conversar|ainda n[ãa]o estava com você/i, 'resposta honesta') });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A29',
+        marco: 'M3',
+        titulo: 'P5 — elegibilidade do proativo (função pura, determinística): <7d sem semanal; <28d sem mensal',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const { elegivelParaResumo, enviarResumoSemanal } = await import('../src/agentes/relatorios.js');
+
+            const casos = [
+                ['2026-09-17', 'semanal', false], // 3 dias
+                ['2026-09-13', 'semanal', false], // exatamente 7 — precisa de MAIS de 7
+                ['2026-09-10', 'semanal', true],  // 10 dias
+                ['2026-09-10', 'mensal', false],  // 10 dias
+                ['2026-08-23', 'mensal', false],  // exatamente 28
+                ['2026-08-20', 'mensal', true],   // 31 dias
+                [null, 'semanal', false]
+            ];
+            const hoje = '2026-09-20';
+            const falhas = casos.filter(([created, tipo, esperado]) =>
+                elegivelParaResumo({ created_at: created }, tipo, hoje) !== esperado);
+            checks.push({
+                nome: 'função pura: fronteiras de 7 e 28 dias exatas (> estrito)',
+                ok: falhas.length === 0,
+                detalhe: falhas.length ? `falhas: ${JSON.stringify(falhas)}` : 'todas as fronteiras corretas'
+            });
+
+            // Quem não é elegível simplesmente NÃO recebe — sem mensagem substituta.
+            const userNovo = await seeds.criarUsuario({ nome: 'Recém Chegado', onboarded: true, estado: 'idle' });
+            const antes = ctx.enviosCapturados.length;
+            await enviarResumoSemanal(userNovo);
+            checks.push({
+                nome: 'usuário com <7 dias NÃO recebe o resumo de domingo (nenhum envio)',
+                ok: ctx.enviosCapturados.length === antes,
+                detalhe: `${ctx.enviosCapturados.length - antes} envio(s) capturado(s)`
+            });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A31',
+        marco: 'M3',
+        titulo: 'A31 — epistemologia de status (transversal): confirmado ≠ tomado; semanal byte a byte',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+
+            // Semanal INTOCADO (critério de aceite 4): byte a byte contra o
+            // snapshot capturado antes do M3.
+            const crypto = await import('node:crypto');
+            const { montarMensagemSemanal } = await import('../src/templates/adesaoTemplates.js');
+            const amostras = [
+                montarMensagemSemanal({ nome: 'Maria', taxa: 92, faixa: '80_99', semana: 2 }),
+                montarMensagemSemanal({ nome: 'Maria', taxa: 100, faixa: '100', semana: 1 }),
+                montarMensagemSemanal({ nome: 'Maria', taxa: 45, faixa: 'abaixo_50', semana: 1 })
+            ];
+            const esperados = [
+                'fa8feb5eef416c8de4e4c5a75733e7583ec7d80ae91353faf56ef37b71cac362',
+                'ed263f4ad5407f74376fbc5f8517ad21dab2cdbd47bba1c636ab92cf40f833c8',
+                '1265d832f054c43fd7fac112efe55fe314c28cf605d45890339ae01f430897d2'
+            ];
+            const intocado = amostras.every((a, i) =>
+                crypto.createHash('sha256').update(a).digest('hex') === esperados[i]);
+            checks.push({ nome: 'copy do resumo semanal byte a byte IGUAL ao pré-M3', ok: intocado, detalhe: intocado ? 'hashes idênticos' : 'o copy semanal MUDOU' });
+
+            // "Quais remédios tomei hoje?" — confirmados + pendências, nunca
+            // "você não tomou" para dose sem resposta.
+            const user = await seeds.criarUsuario({ nome: 'Episteme', onboarded: true, estado: 'idle' });
+            const { med: medA, schedules: schedA } = await seeds.criarMedicamento({ userId: user.id, nome: 'Losartana', estoque: 30, horarios: ['06:00'] });
+            const { med: medB, schedules: schedB } = await seeds.criarMedicamento({ userId: user.id, nome: 'Metformina', estoque: null, horarios: ['06:30'] });
+            const hojeISO = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+            await ctx.db.from('dose_logs').insert([
+                {
+                    medication_id: medA.id, schedule_id: schedA[0].id,
+                    scheduled_at: new Date(`${hojeISO}T06:00:00-03:00`).toISOString(),
+                    horario_agendado: '06:00', reminder_sent: true, confirmed: true,
+                    status: 'confirmado', taken_at: new Date(`${hojeISO}T06:05:00-03:00`).toISOString()
+                },
+                {
+                    medication_id: medB.id, schedule_id: schedB[0].id,
+                    scheduled_at: new Date(`${hojeISO}T06:30:00-03:00`).toISOString(),
+                    horario_agendado: '06:30', reminder_sent: true, confirmed: false,
+                    status: 'nao_informado'
+                }
+            ]);
+
+            const r1 = await turno(ctx, user, 'Quais remédios eu tomei hoje?');
+            checagensDeForma(checks, 'balanço', r1);
+            checks.push({ nome: 'o confirmado aparece como confirmado', ok: /losartana/i.test(r1) && /confirmad/i.test(r1), detalhe: r1.slice(0, 240) });
+            checks.push({ nome: 'o sem-resposta aparece como pendência ("sem confirmação"), nunca sumido', ok: /metformina/i.test(r1) && /sem confirma|aguardando/i.test(r1), detalhe: r1.slice(0, 300) });
+            checks.push({ nome: 'NUNCA "você não tomou" para dose sem registro', ...naoContem(r1, /n[ãa]o tomou|n[ãa]o tomad[oa]/i, 'afirmação de não-tomada') });
+            checks.push({ nome: '"sem estoque" só com estoque cadastrado (nenhum aqui)', ...naoContem(r1, /sem estoque/i, 'sem estoque indevido') });
             return checks;
         }
     }

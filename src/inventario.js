@@ -34,26 +34,34 @@ export const CAPACIDADES = [
   {
     agente: 'relatorios',
     titulo: 'Relatórios e consultas',
-    descricao: 'consultar o que foi tomado ou faltou em um dia (hoje, ontem ou dia nomeado), ' +
-      'doses tomadas, adesão, estoque, próximos remédios, horários cadastrados, progresso do tratamento',
-    resumoUsuario: 'avisar quando o estoque está acabando, e mostrar o histórico e a adesão ao tratamento',
-    limites: 'adesão agregada em janelas de 7, 15 ou 30 dias; balanço por dia-calendário',
+    descricao: 'consultar o que foi tomado ou faltou em um dia OU período (hoje, ontem, dia ' +
+      'nomeado, semana passada, últimos N dias), doses tomadas, estoque, próximos remédios, ' +
+      'horários cadastrados, progresso do tratamento, histórico de tratamentos encerrados, e a ' +
+      'visão de UM medicamento específico',
+    resumoUsuario: 'avisar quando o estoque está acabando, e mostrar o histórico do tratamento',
+    limites: 'leitura livre desde o início do uso da Nami (períodos de até 31 dias por vez); ' +
+      'confirmação retroativa continua limitada a 2 dias',
     subtipos: [
       {
         chave: 'balanco_do_dia',
-        descricao: 'o que foi tomado / o que faltou / o que ficou pendente em um dia ' +
-          '(hoje, ontem, ou um dia nomeado). Use este subtipo para perguntas como "tomei meus ' +
-          'remédios hoje?", "faltou algum remédio ontem?", "esqueci de tomar alguma coisa?", ' +
-          '"ficou alguma dose pendente?", "pulei algum remédio no domingo?"'
+        descricao: 'o que foi tomado / o que faltou / o que ficou pendente em um DIA (hoje, ' +
+          'ontem, dia nomeado) ou em um PERÍODO ("semana passada", "últimos 15 dias", "de ' +
+          'segunda a quarta"). Também cobre pedidos de adesão/regularidade ("como está minha ' +
+          'adesão", "tenho esquecido muito?"). Ex: "tomei meus remédios hoje?", "faltou algum ' +
+          'remédio ontem?", "como foi minha semana?", "pulei algum remédio no domingo?"'
       },
-      { chave: 'meus_remedios', descricao: 'listar medicamentos cadastrados e seus horários' },
+      {
+        chave: 'meus_remedios',
+        descricao: 'listar medicamentos cadastrados e seus horários — OU a visão de UM ' +
+          'medicamento específico (posologia, horários, status, estoque, últimas doses) quando ' +
+          'a pergunta é sobre um remédio nomeado ("como está o meu Enalapril?")'
+      },
       { chave: 'estoque', descricao: 'consultar quantidade em estoque' },
       { chave: 'proximo_remedio', descricao: 'qual remédio tomar agora/a seguir' },
       {
-        chave: 'adesao',
-        descricao: 'taxa de adesão agregada de um período (7, 15 ou 30 dias). Use SOMENTE quando ' +
-          'o usuário pedir explicitamente um percentual, uma taxa, ou um resumo de vários dias. ' +
-          'Pergunta sobre UM dia específico é sempre balanco_do_dia, nunca adesao.'
+        chave: 'historico_encerrados',
+        descricao: 'tratamentos que o usuário JÁ ENCERROU ("quais tratamentos eu já encerrei?", ' +
+          '"que remédios eu já tomei antes?")'
       },
       { chave: 'progresso_tratamento', descricao: 'quantos dias/doses faltam para o tratamento acabar' }
     ]

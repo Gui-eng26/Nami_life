@@ -124,19 +124,19 @@ const TEMPLATES_PROGRESSO = {
     final: `Estamos quase lá com o [Medicamento]! 🥰\nVocê já está no dia [DiasDecorridos] de [TratamentoDias] — faltam só [DiasRestantes] dias e [DosesRestantes] doses pra terminar.\nContinue firme, você está mandando bem! 💪\n[BlocoEstoque]`
 };
 
+// MH-50 (M3 P4): o bloco "insuficiente" declara o ESTOQUE REAL, e cobertura
+// zero tem fraseado próprio (nunca "dá pra mais 0 dias").
 const BLOCO_ESTOQUE = {
     suficiente: `✅ Seu estoque atual, de [Estoque] unidades, é suficiente pra terminar o tratamento tranquilamente.`,
-    insuficiente: `⚠️ Um aviso: seu estoque atual dá pra mais [DiasCobertos] dias — mas ainda faltam [DiasRestantes] dias de tratamento. Vale a pena providenciar mais em breve, pra não interromper o cuidado! 💊`
+    insuficiente: `⚠️ Um aviso: você tem [Estoque] unidades no estoque — dá pra mais [DiasCobertos] dias, e ainda faltam [DiasRestantes] dias de tratamento. Vale a pena providenciar mais em breve, pra não interromper o cuidado! 💊`,
+    zerado: `⚠️ Um aviso: seu estoque atual ([Estoque] unidades) não cobre nem o dia de hoje — e ainda faltam [DiasRestantes] dias de tratamento. Vale providenciar mais ainda hoje, pra não interromper o cuidado! 💊`
 };
 
-const FALLBACK_CONTINUO = `Como o seu medicamento é de uso contínuo, ele não tem uma data de término ou um número de dias pra acabar, sabe? ✨\nEle faz parte do seu cuidado diário com a saúde a longo prazo.\nMas se você quiser, posso te mostrar sua taxa de adesão e ver como está a sua regularidade nos últimos tempos. Quer dar uma olhada? 📊`;
+// P4.6 (M3): sem oferta de "taxa de adesão" (a adesão reativa morreu) — o
+// caminho real é o balanço de período.
+const FALLBACK_CONTINUO = `Seu medicamento é de uso contínuo — ele não tem data de término, faz parte do seu cuidado de todo dia. ✨\nSe quiser ver como foi sua semana, é só me perguntar "como foi minha semana?" 🌿`;
 
-// ------------------------------------------------------------
-// 4.6 — Fluxo de escolha de período (sem saudação embutida)
-// ------------------------------------------------------------
-const PERGUNTA_PERIODO = `Posso gerar o seu relatório de adesão agora mesmo. 📝\nPara qual período você gostaria de olhar?\nÚltimos 7 dias\nÚltimos 15 dias\nÚltimos 30 dias\nÉ só me dizer o período que você prefere! 👍`;
-
-const RECUSA_PERIODO = `Peço desculpas! 🌸\nComo ainda estou aprendendo e em constante desenvolvimento, hoje eu só consigo calcular a sua adesão nesses três períodos fechados: últimos 7, 15 ou 30 dias.\nGostaria de escolher um desses três para darmos uma olhadinha hoje?`;
+// (P4.4/M3: os templates de escolha de período morreram com a adesão reativa.)
 
 // ============================================================
 // FUNÇÕES
@@ -190,7 +190,10 @@ export function montarBlocoMarco() {
 }
 
 export function montarBlocoEstoque({ suficiente, estoque, diasRestantes, diasCobertos }) {
-    const template = suficiente ? BLOCO_ESTOQUE.suficiente : BLOCO_ESTOQUE.insuficiente;
+    // MH-50: cobertura zero tem fraseado próprio — nunca "dá pra mais 0 dias".
+    const template = suficiente
+        ? BLOCO_ESTOQUE.suficiente
+        : (Number(diasCobertos) === 0 ? BLOCO_ESTOQUE.zerado : BLOCO_ESTOQUE.insuficiente);
     return substituir(template, { Estoque: estoque, DiasRestantes: diasRestantes, DiasCobertos: diasCobertos });
 }
 
@@ -224,10 +227,3 @@ export function montarResumoCompacto(progressos) {
     return `Aqui está o progresso dos seus tratamentos: 💊\n\n${linhas}\n\nQuer detalhes de algum específico? É só me dizer o nome! 😊`;
 }
 
-export function montarPerguntaPeriodo() {
-    return PERGUNTA_PERIODO;
-}
-
-export function montarRecusaPeriodo() {
-    return RECUSA_PERIODO;
-}

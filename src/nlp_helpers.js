@@ -64,6 +64,19 @@ export function nomeCorrigidoParecido(nomeAtual, nomeNovo) {
     });
 }
 
+// P6.4 (M3, MH-82/39): TODOS os medicamentos citados na mensagem (fronteira de
+// palavra na forma normalizada) — para seleção múltipla em lote.
+export function encontrarTodosMedicamentos(texto, medications) {
+    if (!texto) return [];
+    const t = normalizar(texto);
+    return medications.filter(m => {
+        const nome = normalizar(m.nome).trim();
+        if (!nome) return false;
+        const escapado = nome.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(`(?:^|[^a-z0-9])${escapado}(?:$|[^a-z0-9])`).test(t);
+    });
+}
+
 export function encontrarMedicamento(texto, medications) {
     if (!texto) return null;
     const t = normalizar(texto);

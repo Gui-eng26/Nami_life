@@ -26,7 +26,9 @@ import { degradar } from './observabilidade.js';
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const INTENCOES_VALIDAS = ['cadastro', 'relatorios', 'configuracao', 'principal', 'excluir_conta', 'nao_suportado'];
-const SUBTIPOS_VALIDOS = ['balanco_do_dia', 'meus_remedios', 'estoque', 'proximo_remedio', 'adesao', 'progresso_tratamento'];
+// P4 (M3): 'adesao' morreu (pedidos caem no período livre do balanço);
+// 'historico_encerrados' nasceu (MH-31).
+const SUBTIPOS_VALIDOS = ['balanco_do_dia', 'meus_remedios', 'estoque', 'proximo_remedio', 'progresso_tratamento', 'historico_encerrados'];
 const FEEDBACKS_VALIDOS = ['elogio', 'critica', 'sugestao'];
 
 function ferramentaInterpretacao(excluirPrincipal) {

@@ -1637,6 +1637,31 @@ export async function getDosesDoDia(userId, dataISO, medicationId = null) {
     return doses.sort((a, b) => a.horario.localeCompare(b.horario));
 }
 
+// MH-31 (M3 P1/P4): histórico de tratamentos encerrados — leitura simples
+// pelo estado explícito (inclui registros antigos com ativo=false).
+export async function getMedicamentosEncerrados(userId) {
+    const { data, error } = await supabase
+        .from('medications')
+        .select('id, nome, dosagem, tipo_tratamento, tratamento_dias, status, status_alterado_em, created_at')
+        .eq('user_id', userId)
+        .or('status.eq.encerrado,ativo.eq.false')
+        .order('status_alterado_em', { ascending: false, nullsFirst: false });
+    if (error) throw new Error(`Erro ao buscar encerrados: ${error.message}`);
+    return data || [];
+}
+
+// Últimas doses de UM medicamento (visão específica do P4) — leitura pura.
+export async function getUltimasDosesDoMedicamento(medicationId, limite = 5) {
+    const { data, error } = await supabase
+        .from('dose_logs')
+        .select('scheduled_at, horario_agendado, status, confirmed')
+        .eq('medication_id', medicationId)
+        .order('scheduled_at', { ascending: false })
+        .limit(limite);
+    if (error) throw new Error(`Erro ao buscar últimas doses: ${error.message}`);
+    return data || [];
+}
+
 // Medicamentos ativos — alias semântico para getUserMedications
 export async function getMedicamentosAtivos(userId) {
     return getUserMedications(userId);
@@ -1691,9 +1716,12 @@ export async function getProximosMedicamentos(userId) {
             const confirmado = confirmadasPorDose.has(`${med.id}|${horario}`);
             const diff = _minutesDiff(horaAtual, horario);
 
+            // MH-63 (M3 P4): "agora" é horário que JÁ chegou (até 2h atrás) —
+            // nunca mais "está na hora de tomar" 30 minutos antes, alinhado ao
+            // enquadramento do balanço (futuro = "ainda não chegou").
             if (diff < -120) {
                 passados.push({ nome: med.nome, horario, confirmado });
-            } else if (diff >= -120 && diff <= 30) {
+            } else if (diff >= -120 && diff <= 0) {
                 agoraList.push({ nome: med.nome, horario, confirmado });
             } else {
                 proximos.push({ nome: med.nome, horario, confirmado });
