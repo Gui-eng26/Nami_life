@@ -53,6 +53,41 @@ export const FRACOES_ESTOQUE = {
 };
 
 // ------------------------------------------------------------
+// MH-86 (v44 M2) — resgates DETERMINÍSTICOS do turno composto.
+// Status + frascos + volume + fração ditos numa mensagem só nunca
+// são descartados (absorve MH-73 C.1/C.2 na prática — P57). A
+// matemática de gotas/ml não muda; muda só o ponto de entrada.
+// ------------------------------------------------------------
+
+const FRACOES_DETERMINISTICAS = [
+    ['recem_aberto', /rec[ée]m[- ]aberto|acabei de abrir|quase cheio/i],
+    ['tres_quartos', /3\s*\/\s*4|tr[êe]s quartos/i],
+    ['um_quarto', /1\s*\/\s*4|um quarto|um quartinho/i],
+    ['metade', /\bmetade\b|meio frasco|50\s*%/i],
+    ['quase_acabando', /quase acabando|quase no fim|t[áa] no fim|s[óo] um pouquinho/i]
+];
+
+export function extrairFracaoDeterministica(texto) {
+    const t = String(texto || '');
+    for (const [bucket, re] of FRACOES_DETERMINISTICAS) {
+        if (re.test(t)) return bucket;
+    }
+    return null;
+}
+
+const RE_STATUS_ABERTO = /\bj[áa]\s+(uso|abri|estou usando|t[ôo] usando|comecei)|\babert[oa]\b|\bem uso\b|pela metade/i;
+const RE_STATUS_FECHADO = /\blacrad|\bfechad[oa]\b|nunca abri|n[ãa]o abri|ainda n[ãa]o us|novinho/i;
+
+export function extrairStatusDeterministico(texto) {
+    const t = String(texto || '');
+    const aberto = RE_STATUS_ABERTO.test(t);
+    const fechado = RE_STATUS_FECHADO.test(t);
+    if (aberto && !fechado) return 'aberto';
+    if (fechado && !aberto) return 'fechado';
+    return null;
+}
+
+// ------------------------------------------------------------
 // Classificadores LLM (prompts inalterados — BUG-97, MH-073 C)
 // ------------------------------------------------------------
 
@@ -259,12 +294,23 @@ export async function validarEstoque({ message, campos, historicoConversa = [] }
                 return { acao: 'frascos_apenas', updates: { frascos } };
             }
 
-            const statusClassificacao = await classificarStatusFrasco({ message, nomeMedicamento: campos?.nome, historicoConversa });
+            // MH-86 (M2 §6): PONTO DE ENTRADA ÚNICO do estoque líquido — status +
+            // nº de frascos + volume + fração ditos num turno só são todos
+            // aproveitados (absorve MH-73 C.1/C.2; P57). Determinístico primeiro;
+            // o classificador LLM de status só roda quando a fala não o resolve.
+            const fracaoDet = extrairFracaoDeterministica(message);
+            const statusDet = extrairStatusDeterministico(message);
+            const { frascos, volume } = extrairFrascosEVolume(message);
+            // Volume DECLARADO como tamanho do frasco ("frasco de 60ml", "é de
+            // 60ml") — nunca confundido com a sobra ("sobram 30ml").
+            const mVolumeFrasco = String(message).match(/(?:frasco|vidro)\s*(?:de\s*)?(\d+(?:[.,]\d+)?)\s*ml|\bde\s+(\d+(?:[.,]\d+)?)\s*ml/i);
+            const volumeDeclarado = mVolumeFrasco ? parseFloat((mVolumeFrasco[1] || mVolumeFrasco[2]).replace(',', '.')) : null;
 
-            // MH-073 Parte C.1: aproveita frascos/volume ou valor/fração já ditos na
-            // MESMA mensagem que respondeu o status (Princípio 1).
-            if (statusClassificacao.categoria === 'fechado') {
-                const { frascos, volume } = extrairFrascosEVolume(message);
+            const status = statusDet
+                ?? (fracaoDet ? 'aberto' : null)
+                ?? (await classificarStatusFrasco({ message, nomeMedicamento: campos?.nome, historicoConversa })).categoria;
+
+            if (status === 'fechado') {
                 if (frascos !== null && volume !== null) {
                     return resolver(frascos * volume, { status_frasco: 'fechado', frascos, volume_frasco: volume, estoque_motivo: 'frascos_fechados' });
                 }
@@ -273,14 +319,29 @@ export async function validarEstoque({ message, campos, historicoConversa = [] }
                 }
                 return { acao: 'status_frasco_fechado', updates: { status_frasco: 'fechado' } };
             }
-            if (statusClassificacao.categoria === 'aberto') {
-                const valorExato = extrairValorExatoEstoque(message);
-                const volumeConhecido = Number(campos?.volume_frasco) || null;
-                if (valorExato !== null && volumeConhecido !== null) {
-                    return resolver(valorExato, { status_frasco: 'aberto', volume_frasco: volumeConhecido, estoque_motivo: 'aberto_valor_exato' });
+            if (status === 'aberto') {
+                const volumeConhecido = volumeDeclarado ?? (Number(campos?.volume_frasco) || null);
+
+                // Fração + volume no mesmo turno → resolve na hora.
+                if (fracaoDet) {
+                    if (volumeConhecido !== null) {
+                        return resolver(volumeConhecido * FRACOES_ESTOQUE[fracaoDet], {
+                            status_frasco: 'aberto', volume_frasco: volumeConhecido, estoque_motivo: `aberto_fracao:${fracaoDet}`
+                        });
+                    }
+                    return { acao: 'status_frasco_aberto_com_fracao', updates: { status_frasco: 'aberto', estoque_fracao_pendente: fracaoDet } };
                 }
-                if (valorExato !== null) {
+
+                const valorExato = extrairValorExatoEstoque(message);
+                const valorEhVolumeDoFrasco = valorExato !== null && volumeDeclarado !== null && valorExato === volumeDeclarado;
+                if (valorExato !== null && !valorEhVolumeDoFrasco) {
+                    if (volumeConhecido !== null) {
+                        return resolver(valorExato, { status_frasco: 'aberto', volume_frasco: volumeConhecido, estoque_motivo: 'aberto_valor_exato' });
+                    }
                     return { acao: 'status_frasco_aberto_com_valor', updates: { status_frasco: 'aberto', estoque_valor_exato_pendente: valorExato } };
+                }
+                if (volumeDeclarado !== null) {
+                    return { acao: 'status_frasco_aberto_com_volume', updates: { status_frasco: 'aberto', volume_frasco: volumeDeclarado } };
                 }
                 return { acao: 'status_frasco_aberto', updates: { status_frasco: 'aberto' } };
             }
@@ -315,7 +376,12 @@ export async function validarEstoque({ message, campos, historicoConversa = [] }
             return { acao: 'valor_exato_pendente', updates: { estoque_valor_exato_pendente: valorExato } };
         }
 
-        const classificacao = await classificarFracaoEstoque({ message, nomeMedicamento: campos?.nome, historicoConversa });
+        // MH-86: fração dita em palavras conhecidas resolve sem LLM (mesma
+        // tabela); o classificador continua cobrindo o resto.
+        const fracaoDet = extrairFracaoDeterministica(message);
+        const classificacao = fracaoDet
+            ? { categoria: fracaoDet }
+            : await classificarFracaoEstoque({ message, nomeMedicamento: campos?.nome, historicoConversa });
         const volume = Number(campos?.volume_frasco) || null;
 
         if (classificacao.categoria === 'nao_sei') {

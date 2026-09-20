@@ -146,7 +146,7 @@ export const SCHEMA_CADASTRO = {
         // Opcionais: nunca perguntados por iniciativa da Nami. dosagem e
         // tipo/duração chegam pelo extrator completo (P57); forma é INFERIDA da
         // unidade/fala — pergunta só na ambiguidade real (que hoje não existe:
-        // cad_confirma_forma morreu por construção — BUG-102).
+        // a etapa de confirmação de forma morreu por construção — BUG-102).
         { nome: 'dosagem', nivel: 'opcional', extraivel: true, perguntavel: false },
         { nome: 'forma', nivel: 'opcional', inferida: true, perguntavel: false },
         { nome: 'tipo_tratamento', nivel: 'opcional', extraivel: true, perguntavel: false }

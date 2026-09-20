@@ -44,6 +44,81 @@ export const CASOS = [
 
     // --------------------------------------------------------
     {
+        id: 'A0',
+        marco: 'M2',
+        titulo: 'Guardas de construção do M2 (grep-guards §8.2 + ACH-3 vivo + ACH-4)',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const fs = await import('node:fs');
+            const path = await import('node:path');
+            const url = await import('node:url');
+            const raizSrc = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../src');
+
+            const arquivos = [];
+            (function varrer(dir) {
+                for (const nome of fs.readdirSync(dir)) {
+                    const p = path.join(dir, nome);
+                    if (fs.statSync(p).isDirectory()) varrer(p);
+                    else if (p.endsWith('.js')) arquivos.push(p);
+                }
+            })(raizSrc);
+            const conteudo = new Map(arquivos.map(p => [path.relative(raizSrc, p), fs.readFileSync(p, 'utf8')]));
+
+            // Grep-guard 1: nenhum sendTextMessage fora de whatsapp.js/funil.js.
+            const violadoresEnvio = [...conteudo.entries()]
+                .filter(([f, c]) => !['whatsapp.js', 'funil.js'].includes(f) && /sendTextMessage/.test(c))
+                .map(([f]) => f);
+            checks.push({ nome: 'grep: nenhum sendTextMessage fora de whatsapp.js/funil.js', ok: violadoresEnvio.length === 0, detalhe: violadoresEnvio.join(', ') || 'limpo' });
+
+            // Grep-guard 2 (BUG-102): cad_confirma_forma não existe mais em src/.
+            const violadoresForma = [...conteudo.entries()]
+                .filter(([, c]) => /cad_confirma_forma/.test(c)).map(([f]) => f);
+            checks.push({ nome: 'grep (BUG-102): cad_confirma_forma morto por construção', ok: violadoresForma.length === 0, detalhe: violadoresForma.join(', ') || 'limpo' });
+
+            // Grep-guard 3: escrita em schedules só em database.js (saveSchedule
+            // ponto único; os demais usos são update/delete de configuração lá).
+            const violadoresSchedules = [...conteudo.entries()]
+                .filter(([f, c]) => f !== 'database.js' && /from\(['"]schedules['"]\)\s*[\s\S]{0,80}?\.insert\(/.test(c))
+                .map(([f]) => f);
+            checks.push({ nome: 'grep (ACH-3): insert em schedules só em database.js', ok: violadoresSchedules.length === 0, detalhe: violadoresSchedules.join(', ') || 'limpo' });
+
+            // Grep-guard 4: perguntas de coleta do cadastro só no schema.
+            const violadoresPergunta = [...conteudo.entries()]
+                .filter(([f, c]) => f !== path.join('schemas', 'cadastro.js')
+                    && /Qual o \*nome\* d|quanto você toma ou usa por vez/i.test(c))
+                .map(([f]) => f);
+            checks.push({ nome: 'grep (MH-85/P54): pergunta de coleta só no schema', ok: violadoresPergunta.length === 0, detalhe: violadoresPergunta.join(', ') || 'limpo' });
+
+            // ACH-3 vivo: saveSchedule recusa horário duplicado do mesmo medicamento.
+            const user = await seeds.criarUsuario({ nome: 'Guarda', onboarded: true, estado: 'idle' });
+            const { med } = await seeds.criarMedicamento({ userId: user.id, nome: 'Guarda ACH3', horarios: ['08:00'] });
+            const { saveSchedule } = await import('../src/database.js');
+            await saveSchedule({ medicationId: med.id, horario: '08:00', quantidadePorDose: 2 });
+            const { data: schedules } = await ctx.db.from('schedules').select('id, horario').eq('medication_id', med.id);
+            checks.push({
+                nome: 'ACH-3: segundo saveSchedule no mesmo horário NÃO duplica',
+                ok: (schedules || []).length === 1,
+                detalhe: `${(schedules || []).length} schedule(s) para o mesmo horário`
+            });
+
+            // ACH-4: dosagem tem validador de formato — ponto único ehDosagemPura.
+            const { ehDosagemPura, ehDosagemReconhecivel } = await import('../src/validadores/camposSimples.js');
+            checks.push({
+                nome: 'ACH-4: "1000mg" é dosagem pura (nunca nome); "Caltrat D" não é',
+                ok: ehDosagemPura('1000mg') && ehDosagemPura('0,5%') && !ehDosagemPura('Caltrat D'),
+                detalhe: `1000mg:${ehDosagemPura('1000mg')} 0,5%:${ehDosagemPura('0,5%')} CaltratD:${ehDosagemPura('Caltrat D')}`
+            });
+            checks.push({
+                nome: 'ACH-4: formato de dosagem reconhecível (número+unidade)',
+                ok: ehDosagemReconhecivel('50mg') && ehDosagemReconhecivel('100mg/ml') && !ehDosagemReconhecivel('bastante'),
+                detalhe: `50mg:${ehDosagemReconhecivel('50mg')} 100mg/ml:${ehDosagemReconhecivel('100mg/ml')} bastante:${ehDosagemReconhecivel('bastante')}`
+            });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
         id: 'A1',
         marco: 'M1',
         titulo: 'Sid 18/09 — mensagem rica única ("Minoxidil 3mg, 1 comprimido às 21h")',
@@ -386,6 +461,14 @@ export const CASOS = [
                 nome: 'turno 2: Losartana gravada com schedule 13:32',
                 ok: losartana.length === 1 && horariosLosartana.includes('13:32'),
                 detalhe: `${losartana.length} linha(s); horários: ${horariosLosartana.join(', ') || 'nenhum'}`
+            });
+            // MH-83 (M2): NADA do cadastro anterior vaza para o novo — a Losartana
+            // tem SÓ o horário da própria mensagem, nunca o 06:00 da Desvenlafaxina.
+            checks.push({
+                marco: 'M2',
+                nome: 'M2 (MH-83): nada do anterior vaza — Losartana SÓ com 13:32',
+                ok: losartana.length === 1 && horariosLosartana.length === 1 && horariosLosartana[0] === '13:32',
+                detalhe: `horários da Losartana: ${horariosLosartana.join(', ') || 'nenhum'}`
             });
 
             const desven = await medicamentos(ctx.db, user.id, { nomeIlike: 'Desvenlafaxina%' });
@@ -815,6 +898,74 @@ export const CASOS = [
                 nome: 'as duas doses confirmadas no banco',
                 ok: logsA.some(d => d.confirmed === true) && logsB.some(d => d.confirmed === true),
                 detalhe: `A: ${logsA.map(d => d.status).join(',')} | B: ${logsB.map(d => d.status).join(',')}`
+            });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A23',
+        marco: 'M2',
+        titulo: 'MH-86 — estoque líquido num turno só (validador composto, resgates determinísticos)',
+        async executar() {
+            const checks = [];
+            const { validarEstoque } = await import('../src/validadores/estoque.js');
+            const camposBase = { nome: 'Xarope Teste', unidade_estoque: 'ml', medication_id: 'fake' };
+
+            // Status + volume + fração NA MESMA mensagem → resolve num turno,
+            // sem nenhuma chamada de LLM (status e fração determinísticos).
+            const r1 = await validarEstoque({
+                message: 'Já uso, o frasco é de 60ml e tá pela metade', campos: camposBase
+            });
+            checks.push({
+                nome: 'aberto + volume + fração num turno → resolvido (60ml × 1/2 = 30)',
+                ok: r1.acao === 'estoque_resolvido' && r1.resolvido?.valor === 30
+                    && r1.resolvido?.motivo === 'aberto_fracao:metade',
+                detalhe: `acao: ${r1.acao}, valor: ${r1.resolvido?.valor}, motivo: ${r1.resolvido?.motivo}`
+            });
+
+            // Fechado + frascos + volume na mesma mensagem (MH-73 C.1 preservado).
+            const r2 = await validarEstoque({
+                message: 'Tá fechado ainda, tenho 2 frascos de 100ml', campos: camposBase
+            });
+            checks.push({
+                nome: 'fechado + frascos + volume num turno → resolvido (2 × 100 = 200)',
+                ok: r2.acao === 'estoque_resolvido' && r2.resolvido?.valor === 200
+                    && r2.resolvido?.motivo === 'frascos_fechados',
+                detalhe: `acao: ${r2.acao}, valor: ${r2.resolvido?.valor}, motivo: ${r2.resolvido?.motivo}`
+            });
+
+            // Fração sem volume → o que veio nunca se perde (P57): fica pendente
+            // e falta SÓ o volume.
+            const r3 = await validarEstoque({
+                message: 'já abri, tá quase acabando', campos: camposBase
+            });
+            checks.push({
+                nome: 'aberto + fração sem volume → fração preservada, falta só o volume',
+                ok: r3.updates?.status_frasco === 'aberto' && r3.updates?.estoque_fracao_pendente === 'quase_acabando',
+                detalhe: `acao: ${r3.acao}, updates: ${JSON.stringify(r3.updates)}`
+            });
+
+            // Volume declarado NÃO é confundido com sobra ("de 60ml" ≠ "sobram 60ml").
+            const r4 = await validarEstoque({
+                message: 'tá aberto, é de 60ml', campos: camposBase
+            });
+            checks.push({
+                nome: 'volume declarado ("de 60ml") não vira valor de sobra',
+                ok: r4.acao !== 'estoque_resolvido' && r4.updates?.volume_frasco === 60,
+                detalhe: `acao: ${r4.acao}, updates: ${JSON.stringify(r4.updates)}`
+            });
+
+            // Sobra exata com volume já conhecido → resolve direto.
+            const r5 = await validarEstoque({
+                message: 'já tô usando, sobram uns 25ml',
+                campos: { ...camposBase, volume_frasco: 60 }
+            });
+            checks.push({
+                nome: 'sobra exata com volume conhecido → resolvido (25ml)',
+                ok: r5.acao === 'estoque_resolvido' && r5.resolvido?.valor === 25,
+                detalhe: `acao: ${r5.acao}, valor: ${r5.resolvido?.valor}, motivo: ${r5.resolvido?.motivo}`
             });
             return checks;
         }
