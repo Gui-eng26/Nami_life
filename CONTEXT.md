@@ -4,7 +4,7 @@
 > Atualizado no encerramento de cada sessão. O backlog **não** vive aqui — vive em
 > `backlog_items` no Supabase.
 
-**Última atualização:** 19/09/2026 (encerramento da sessão v44 — M0+M1 EM PRODUÇÃO, ver §12)
+**Última atualização:** 19/09/2026 (encerramento da sessão v44-M2 — runner+schema VALIDADO EM STAGING, ver §12.7)
 
 ---
 
@@ -323,6 +323,13 @@ Números em pt-BR: inteiro sem casas decimais, fracionário com vírgula (`2,5 m
 23. **`stock_movements` e `adesao_estado` têm FK sem CASCADE de propósito** —
     `delete_user_account` os apaga explicitamente. Qualquer limpeza de usuário passa
     pela função (o arnês usa exatamente ela, exercitando a LGPD a cada execução).
+24. **`schedules.dias_semana` é `text[]` ('seg'..'dom') com DEFAULT dos 7 dias, e a RPC
+    `get_pending_reminders` SEMPRE filtrou pelo dia corrente** — descoberta do M2 (v44):
+    a infraestrutura nunca foi dormente no SQL, só no JS (nada escrevia a coluna). O
+    modelo text[] foi aproveitado pelo MH-77 (em vez de int[]); `intervalo_dias` +
+    `data_inicio` são aditivos. Todo consumidor novo de schedules considera
+    `dias_semana`/`intervalo_dias` antes de assumir dose diária (ponto único:
+    `scheduleCobreDia`/`diasPorSemanaDoSchedule` em `database.js`).
 
 ---
 
@@ -683,9 +690,9 @@ na última linha. Aplicado em `recepcionista.js`, `data_nascimento.js` e `cadast
 | 2 verdade no roteamento | entregue (BUG-104, MH-090) |
 | 3 níveis de campo | entregue (MH-094) |
 | 4 destravar o extrator | entregue (dentro do Bloco C) |
-| 5 múltiplos medicamentos numa mensagem | remapeada → **M2** (MH-96, com o runner) |
+| 5 múltiplos medicamentos numa mensagem | **entregue no M2** (validada em staging, §12.7) |
 | 6 call único `{ intencao, campos }` | **entregue na v44** (porta única, §12) |
-| 7 runner do onboarding | remapeada → **M2 + M4** |
+| 7 runner do onboarding | runner entregue no M2 (§12.7); onboarding fica no **M4** |
 
 A limitação "corrigir e continuar no mesmo turno" foi parcialmente resolvida na v44:
 correção de estoque/horário pós-fechamento entra pela porta (BUG-103 resolvido); correção
@@ -708,7 +715,8 @@ Decisão de Guilherme ("sem medo"): ajustar a arquitetura agentiva com poucos us
 staging isolado e a base real (2.833 turnos) como rede de segurança. Norte do produto:
 **"você fala com a Nami como se tivesse falando com alguém da sua família."**
 Marcos: M0 arnês · M1 porta+funil (**entregues, em produção**) · M2 runner+schema
-(MH-96, MH-77) · M3 configuração/relatórios · M4 onboarding (LGPD, por último).
+(**entregue, VALIDADO EM STAGING — aguarda promoção, §12.7**) · M3 configuração/relatórios ·
+M4 onboarding (LGPD, por último).
 Promoção por marco: cada um sobe isolado para `main`, com o arnês verde como portão.
 
 ### 12.1 Arquitetura entregue
@@ -837,3 +845,74 @@ A2-pleno/A16-M2 (N medicamentos da mesma mensagem, horário por linha), A17-M2 (
 iterada sem perda), A19-M2 (nome composto → dois registros), MH-77 (recorrência com
 schema; validador M1 já garante a honestidade), MH-96 é o item guarda-chuva. A20 (M3) e
 A10 (M4) ficam para as fases seguintes.
+
+### 12.7 v44 — M2 (runner + schema): VALIDADO EM STAGING (19/09/2026, aguarda promoção)
+
+**Estado explícito: validada em staging — NÃO está em produção.** Commits
+`3b8f7ac..fca6b39` na branch `staging`; promoção pendente de: merge `staging` → `main`,
+migrações `20260919100000` (MH-77) e `20260919110000` (MH-30) aplicadas em produção via
+MCP, e o SQL da Manô (`scripts/sql_mano_recorrencia_producao.sql`, aprovação e execução
+de Guilherme, com aviso a ela).
+
+**Entrega (briefing `briefings/execucao_v44_m2.md`, 5 commits, arnês verde entre cada um):**
+
+- `cadastro.js` (3.709 linhas, 13 etapas artesanais) morreu → `src/schemas/cadastro.js`
+  (campos declarados como dado + TODAS as perguntas de coleta renderizadas em código,
+  MH-85/P54) + `src/runner.js` (4 responsabilidades: o que falta — `proximaPendencia`,
+  função ÚNICA; absorver; gravar por ponto único; devolver pelo contrato universal) +
+  `src/validadores/*` (classificadores mudaram de ENDEREÇO, não de lógica). O cadastro
+  não faz mais nenhuma chamada de LLM de geração — só classificadores. `sujeito` por
+  tratamento modelado (default: o próprio usuário), nenhuma UI nova.
+- **MH-96 multi-medicamento:** divisão determinística em N candidatos (linhas, " e ",
+  vírgulas) no runner+extrator — os caminhos especiais da porta (§12.6) morreram. LOTE
+  com confirmação única quando todos têm horário (A2-pleno/A16: cada um com o horário DA
+  SUA linha); FILA que sobrevive a desvio e a pivô (A17); nome composto → dois registros
+  com posologia compartilhada (A19); MH-83 absorvido (reset total no pivô, asserção A11).
+- **MH-77 recorrência:** dias da semana por horário, dia sim/dia não (`intervalo_dias`),
+  1x por semana com dia nomeado; validador PREENCHE em vez de bloquear (A3 grava seg-sex
+  6h + sáb-dom 10h no MESMO turno); ciclos por semanas seguem AINDA_NAO. Consumidores de
+  dose diária revisados: consumo POR SEMANA ÷ 7 (cobertura de estoque), balanço do dia,
+  próximos medicamentos, preservação de dias em replace/reativação (ver §6 item 24).
+- **MH-30 conclusão automática:** job diário 09:00 BRT desativa tratamento vencido e
+  avisa PELO FUNIL (`proativo:conclusao_tratamento`); a RPC filtra `tratamento_fim` —
+  dose de tratamento vencido nunca nasce (A21, com controle positivo).
+- **MH-49:** alerta de estoque de temporário compara com os dias RESTANTES do tratamento
+  (A22). O ramo antigo comparava tipo "agudo" — valor inexistente no CHECK, inalcançável.
+- **MH-86:** estoque líquido num turno só (status+frascos+volume+fração; resgates
+  determinísticos; A23). Absorve MH-73 C.1/C.2.
+- **Guardas de construção (A0):** grep-guards do §8.2 do briefing como asserções
+  executáveis (sendTextMessage só no funil; BUG-102 morto; escrita de schedules só em
+  `database.js`; pergunta de coleta só no schema) + ACH-3 vivo (saveSchedule recusa
+  horário duplicado) + ACH-4 (formato de dosagem).
+
+**Arnês:** 24 casos (A0–A23), 169 asserções, 0 falhas no alvo M2; expected-fail apenas
+A20 (M3) e A10 (M4). A0/A21/A22/A23 são determinísticos (rodam sem custo de LLM).
+
+**Replay manual (Guilherme, 19/09):** Aline ×4 OK · horários por dia da semana OK ·
+Priscila OK após 5 correções na própria sessão (ACH-10): divisão com fronteira de
+palavra ("Vitamina D" nunca casa dentro de "Vitamina de A a Z"), alteração de medicamento
+JÁ ATIVO despachada à configuração (nunca mais o beco "é só me dizer"), copy da fila
+compacta com negrito, fila sobrevive ao pivô, e a decisão de produto de GRAMAS.
+Conclusão automática (MH-30) validada só pelo arnês (A21), sem replay manual.
+
+**Decisão de produto — gramas (19/09, Guilherme):** gramas ditos na posologia ("5gr às
+10h", "10grs às 11h") são POSOLOGIA por horário, NUNCA dosagem do produto (a posologia
+de pó varia por horário — caso real: creatina "1 scoop às 10h, 10grs às 11h, 1 sachê às
+20h"). Até o MH-93 (repriorizado para alta), vale a convenção DECLARADA: cada dose de pó
+= 1 unidade, coerção POR VALOR, e a resposta avisa a conversão (regra 7). Nada é escrito
+em `dosagem` a partir de gramas.
+
+**Backlog do encerramento (`scripts/backlog_encerramento_v44_m2.js`):** MH-96, MH-77,
+MH-30, MH-49, MH-86, MH-85, MH-83, BUG-102, ACH-3, ACH-4 e MH-73 C.1/C.2 →
+`em_validacao` (viram `resolvido` na promoção) · ACH-10 criado (achados do replay) ·
+MH-93 repriorizado para alta com a decisão de gramas.
+
+**Incidente registrado:** a chave da API Anthropic ficou temporariamente sem créditos no
+meio da sessão (bloqueia porta e classificadores — derrubaria a Nami inteira) e voltou
+sozinha. O arnês falha com clareza nesse cenário; os casos determinísticos continuam
+rodando. Conferir o billing.
+
+**Na promoção, além do fluxo do §7:** mover esta entrega para "em produção", remover
+`cadastro.js` do §2.1/§2.2 (substituído por runner+schema+validadores) e flipar os 12
+itens de backlog para `resolvido`.
+
