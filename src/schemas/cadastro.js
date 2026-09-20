@@ -449,21 +449,8 @@ export function renderizarDuplicataAtiva(existente, horariosAtivos) {
     return `O *${existente.nome}* já está cadastrado e ativo 💊\n\nDosagem: ${existente.dosagem}\nHorários:\n${horariosFormatados}\nEstoque: ${existente.estoque_atual} unidades\nTratamento: ${tipoLabel}\n\nSe quiser atualizar alguma informação, é só me dizer!`;
 }
 
-export function renderizarDuplicataPausada(existente, horariosTodos) {
-    const horariosFormatados = horariosTodos.map(h => `• ${h}`).join('\n');
-    const tipoLabel = existente.tipo_tratamento === 'temporario'
-        ? `${existente.tratamento_dias} dias`
-        : 'uso contínuo';
-    return `O *${existente.nome}* está com os lembretes pausados 💊\n\nÚltimos dados cadastrados:\n${horariosFormatados}\nEstoque: ${existente.estoque_atual} unidades\nTratamento: ${tipoLabel}\n\nQuer reativar os lembretes?`;
-}
-
-export function renderizarPropostaReencadastro(nome) {
-    return `O *${nome}* foi encerrado anteriormente.\n\nQuer cadastrar um novo tratamento com ele agora?`;
-}
-
-export function renderizarReencadastroRecusado() {
-    return `Tudo bem! Se precisar de algo mais, é só me chamar 🌿`;
-}
+// (P3: renderizarDuplicataPausada/PropostaReencadastro/ReencadastroRecusado
+// morreram — a porta 2 da reativação assume com aviso + foto + oferta.)
 
 export function renderizarDuplicataNaGravacao(med) {
     return `Já tenho o *${med.nome}* cadastrado! 💊\n\n`
@@ -617,6 +604,129 @@ export function renderizarRepeticaoPropostaLote(candidatos) {
 // (MH-83) — pela verdade do banco: ele JÁ existe e gera lembretes.
 export function renderizarFechamentoAnterior(nomeAnterior) {
     return `Só fechando o anterior: o *${nomeAnterior}* já está cadastrado, e o estoque dele fica pra depois — quando quiser, é só me mandar a quantidade. 🌿`;
+}
+
+// ------------------------------------------------------------
+// REATIVAÇÃO EM 5 PASSOS (v44 M3 P3): foto congelada → manter ou
+// mudar → alterações via P2 → confirmação que DECLARA os horários
+// vigentes → convite de estoque no MESMO template do cadastro.
+// Porta 1: pedido explícito. Porta 2: cadastrar med pausado/encerrado
+// (aviso + foto + oferta — mata o BUG-61).
+// ------------------------------------------------------------
+
+// Grade congelada no pause/encerramento: schedules preservados (ativo=false),
+// deduplicados por horário (grades antigas desativadas se acumulam). Dado
+// puro, compartilhado entre configuracao (porta 1) e runner (porta 2).
+export function paresCongelados(med) {
+    const vistos = new Map();
+    for (const s of med.schedules || []) {
+        const h = String(s.horario).slice(0, 5);
+        if (!vistos.has(h)) {
+            vistos.set(h, {
+                horario: h,
+                quantidade: Number(s.quantidade_por_dose),
+                dias_semana: s.dias_semana ?? null,
+                intervalo_dias: s.intervalo_dias ?? null
+            });
+        }
+    }
+    return [...vistos.values()].sort((a, b) => a.horario.localeCompare(b.horario));
+}
+
+// Foto congelada do pause/encerramento: posologia + horários preservados
+// (schedules com ativo=false, incluindo dias_semana/intervalo do M2).
+export function renderizarFotoCongelada({ med, pares }) {
+    const rotulo = rotuloDaDose(med.unidade_dose, med.forma_farmaceutica);
+    const linhas = [`💊 ${med.nome}${med.dosagem ? ` — ${med.dosagem}` : ''}`];
+    if ((pares || []).length > 0) {
+        linhas.push(`⏰ Posologia que estava valendo:\n${renderizarListaPosologia(pares, rotulo)}`);
+    }
+    if (med.tipo_tratamento === 'temporario' && med.tratamento_dias) {
+        linhas.push(`🔄 Tratamento: ${med.tratamento_dias} dias`);
+    }
+    return linhas.join('\n');
+}
+
+// Porta 2 — aviso + foto + oferta (o "sim" seco decide pelo caminho natural:
+// reativar quando estava pausado, recadastrar quando foi encerrado).
+export function renderizarAvisoJaExiste({ med, pares, statusAnterior }) {
+    const abertura = statusAnterior === 'encerrado'
+        ? `O *${med.nome}* já passou por aqui — o tratamento foi encerrado. Ficou assim:`
+        : `O *${med.nome}* já está cadastrado, só com os lembretes pausados. Ficou assim:`;
+    return `${abertura}\n\n${renderizarFotoCongelada({ med, pares })}\n\n`
+        + `Quer *reativar* esse tratamento como estava, ou *cadastrar de novo* do zero?`;
+}
+
+// Passo 1+2 (porta 1): foto + "manter assim ou mudar algo?".
+export function renderizarFotoComManterOuMudar({ med, pares }) {
+    return `${renderizarFotoCongelada({ med, pares })}\n\n`
+        + `Quer reativar *mantendo assim*, ou prefere mudar algo antes (horários, quantidade)?`;
+}
+
+export function renderizarPerguntaOQueMudar(medicationNome) {
+    return `Claro! O que você quer ajustar no *${medicationNome}* antes de reativar — os horários ou a quantidade por dose?`;
+}
+
+// Passo 4: a confirmação DECLARA os horários que valem a partir de agora
+// (nunca mais "reativados" sem dizer quais) — 100% pós-escrita.
+export function renderizarReativacaoConcluida({ med, pares, firstName }) {
+    const rotulo = rotuloDaDose(med.unidade_dose, med.forma_farmaceutica);
+    return `✅ Pronto${firstName ? `, ${firstName}` : ''}! O *${med.nome}* está reativado. Os lembretes valem a partir de agora:\n`
+        + renderizarListaPosologia(pares, rotulo);
+}
+
+// ------------------------------------------------------------
+// MODO CORREÇÃO (v44 M3 P2): templates da edição de um tratamento
+// já gravado — pergunta do valor que falta e confirmação declarando
+// ANTES → DEPOIS, lida pós-escrita (regra 2).
+// ------------------------------------------------------------
+
+const ROTULO_CAMPO_CORRECAO = {
+    nome: 'nome',
+    dosagem: 'dosagem',
+    quantidade: 'quantidade por dose',
+    horarios: 'horários',
+    duracao: 'duração do tratamento',
+    estoque: 'estoque'
+};
+
+export function renderizarPerguntaCorrecao({ campoAlvo, medicationNome }) {
+    const rotulo = ROTULO_CAMPO_CORRECAO[campoAlvo] || campoAlvo;
+    if (campoAlvo === 'nome') {
+        return `Vamos corrigir o nome do *${medicationNome}*. 😊\n\nQual o nome certo?`;
+    }
+    if (campoAlvo === 'dosagem') {
+        return `Vamos ajustar a dosagem do *${medicationNome}*. 😊\n\nQual a dosagem certa?\nPor exemplo: 50mg`;
+    }
+    if (campoAlvo === 'quantidade') {
+        return `Vamos ajustar a quantidade do *${medicationNome}*. 😊\n\nQuanto você toma ou usa em cada horário?\nPor exemplo: 1 comprimido, ou 20 gotas`;
+    }
+    if (campoAlvo === 'horarios') {
+        return `Vamos ajustar os horários do *${medicationNome}*. 😊\n\nEm quais horários você toma ou usa?\nPor exemplo: 8h e 20h`;
+    }
+    if (campoAlvo === 'duracao') {
+        return `Vamos ajustar a duração do tratamento com *${medicationNome}*. 😊\n\nEle é de uso contínuo, ou por quantos dias?`;
+    }
+    if (campoAlvo === 'estoque') {
+        return `Vamos atualizar o estoque do *${medicationNome}*. 😊\n\nQuantos você tem em casa agora?`;
+    }
+    return `O que você quer corrigir no *${medicationNome}* — ${Object.values(ROTULO_CAMPO_CORRECAO).join(', ')}?`;
+}
+
+// Confirmação pós-escrita da correção: declara o ANTES → DEPOIS (regra 2).
+export function renderizarCorrecaoAplicada({ campoAlvo, medicationNome, antes, depois }) {
+    const rotulo = ROTULO_CAMPO_CORRECAO[campoAlvo] || campoAlvo;
+    const rotuloCapitalizado = rotulo.charAt(0).toUpperCase() + rotulo.slice(1);
+    const linhaAntes = (antes !== null && antes !== undefined && String(antes).length > 0)
+        ? `${antes} → `
+        : '';
+    return `✏️ ${rotuloCapitalizado} do *${medicationNome}* atualizad${campoAlvo === 'dosagem' || campoAlvo === 'quantidade' || campoAlvo === 'duracao' ? 'a' : 'o'}: ${linhaAntes}*${depois}*.`;
+}
+
+// MH-79: edição de dosagem/forma que indica PRODUTO DISTINTO (apresentação
+// diferente) — oferece novo tratamento com nome qualificado, nunca sobrescreve.
+export function renderizarOfertaNovaApresentacao({ medicationNome, nomeQualificado }) {
+    return `Isso parece uma apresentação diferente do ${medicationNome} — nesse caso o melhor é um cadastro próprio (*${nomeQualificado}*), pra cada um ter seus horários e estoque. 😊\n\nQuer que eu cadastre o *${nomeQualificado}* como um novo tratamento?`;
 }
 
 // ------------------------------------------------------------

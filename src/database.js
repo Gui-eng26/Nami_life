@@ -1275,7 +1275,7 @@ export async function adicionarSchedule(medicationId, horario) {
     console.log(`➕ Schedule adicionado — medication: ${medicationId}, horario: ${horarioFormatado}`);
 }
 
-export async function reativarComAtualizacao({ medicationId, estoque, tipo_tratamento, tratamento_dias, horarios, apenasHorarios = false }) {
+export async function reativarComAtualizacao({ medicationId, estoque, tipo_tratamento, tratamento_dias, horarios, apenasHorarios = false, diasPorHorario = null }) {
     // MH-073: preserva quantidade_por_dose antes de desativar os horários antigos —
     // mesma blindagem de replaceMedication (seção 5.6 do briefing).
     // MH-77: dias_semana/intervalo preservados pela mesma razão.
@@ -1313,6 +1313,21 @@ export async function reativarComAtualizacao({ medicationId, estoque, tipo_trata
         });
     }
 
+    // MH-41 (M3 P2): horários que SAEM da grade levam junto as doses pendentes
+    // deles — nunca mais follow-up de horário que não existe.
+    const horariosNovos = new Set(horarios.map(h => String(h).trim().substring(0, 5)));
+    const { data: schedulesAtivosAntes } = await supabase
+        .from('schedules')
+        .select('horario')
+        .eq('medication_id', medicationId)
+        .eq('ativo', true);
+    for (const s of schedulesAtivosAntes || []) {
+        const horaStr = String(s.horario).substring(0, 5);
+        if (!horariosNovos.has(horaStr)) {
+            await cancelarDosesPendentesDoHorario(medicationId, horaStr);
+        }
+    }
+
     const { error: errDel } = await supabase
         .from('schedules')
         .update({ ativo: false })
@@ -1322,6 +1337,9 @@ export async function reativarComAtualizacao({ medicationId, estoque, tipo_trata
     for (const horario of horarios) {
         const horarioStr = String(horario).trim().substring(0, 5);
         const antigo = antigoPorHorario.get(horarioStr);
+        // M3 P2: recorrência NOVA dita na edição vence a preservada; sem ela,
+        // preserva a do horário antigo (comportamento de sempre, MH-77).
+        const diasNovos = diasPorHorario?.[horarioStr] ?? null;
         const { error: errSched } = await supabase
             .from('schedules')
             .insert({
@@ -1329,25 +1347,102 @@ export async function reativarComAtualizacao({ medicationId, estoque, tipo_trata
                 horario: `${horarioStr}:00`,
                 ativo: true,
                 quantidade_por_dose: (antigo ? Number(antigo.quantidade_por_dose) : null) ?? quantidadePadrao,
-                ...(antigo?.dias_semana ? { dias_semana: antigo.dias_semana } : {}),
+                ...(diasNovos ? { dias_semana: diasNovos } : antigo?.dias_semana ? { dias_semana: antigo.dias_semana } : {}),
                 ...(antigo?.intervalo_dias ? { intervalo_dias: antigo.intervalo_dias, data_inicio: antigo.data_inicio } : {})
             });
         if (errSched) throw new Error(`Erro ao criar schedule: ${errSched.message}`);
     }
 
+    // P1/P3 (M3): a grade recriada deixa o tratamento ATIVO — estado explícito
+    // escrito também no caminho apenasHorarios (reativação com grade nova).
+    if (apenasHorarios) {
+        await escreverStatusTratamento(medicationId, 'ativo');
+    }
+
     console.log(`▶️ Schedules redefinidos — medication: ${medicationId}, horarios: ${horarios.join(', ')}`);
+}
+
+// MH-41 (M3 P2): dose pendente do horário antigo é CANCELADA no mesmo ato da
+// alteração/remoção — nunca mais follow-up cobrando horário que não existe.
+async function cancelarDosesPendentesDoHorario(medicationId, horario) {
+    const horaStr = String(horario).substring(0, 5);
+    const { data: logsPendentes } = await supabase
+        .from('dose_logs')
+        .select('id, scheduled_at, horario_agendado')
+        .eq('medication_id', medicationId)
+        .eq('status', 'pendente');
+
+    const idsParaCancelar = (logsPendentes || [])
+        .filter(log => {
+            if (log.horario_agendado) return String(log.horario_agendado).substring(0, 5) === horaStr;
+            const horaLog = new Date(log.scheduled_at).toLocaleTimeString('pt-BR', {
+                hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo'
+            });
+            return horaLog === horaStr;
+        })
+        .map(log => log.id);
+
+    if (idsParaCancelar.length > 0) {
+        const { error } = await supabase
+            .from('dose_logs')
+            .update({ status: 'pausado' })
+            .in('id', idsParaCancelar);
+        if (error) throw new Error(`Erro ao cancelar doses pendentes do horário ${horaStr}: ${error.message}`);
+        console.log(`🚫 [MH-41] ${idsParaCancelar.length} dose(s) pendente(s) das ${horaStr} cancelada(s) — medication: ${medicationId}`);
+    }
+    return idsParaCancelar.length;
 }
 
 export async function alterarHorarioSchedule(scheduleId, novoHorario) {
     const horarioFormatado = novoHorario.length === 5
         ? `${novoHorario}:00`
         : novoHorario;
+
+    // MH-41: o horário ANTIGO deixa de existir — a dose pendente dele morre junto.
+    const { data: scheduleAtual } = await supabase
+        .from('schedules')
+        .select('medication_id, horario')
+        .eq('id', scheduleId)
+        .single();
+    if (scheduleAtual) {
+        await cancelarDosesPendentesDoHorario(scheduleAtual.medication_id, scheduleAtual.horario);
+    }
+
     const { error } = await supabase
         .from('schedules')
         .update({ horario: horarioFormatado })
         .eq('id', scheduleId);
     if (error) throw new Error(`Erro ao alterar horário: ${error.message}`);
     console.log(`🕐 Horário alterado — schedule: ${scheduleId} → ${horarioFormatado}`);
+}
+
+// v44 M3 P2 — quantidade por dose de um tratamento já gravado, por ponto único.
+// `ajustes`: [{ horario: 'HH:MM', quantidade }] para horários específicos, ou
+// { quantidadeUnica } para todos os schedules ativos.
+export async function atualizarQuantidadePorDose(medicationId, { pares = null, quantidadeUnica = null }) {
+    const { data: schedules, error: errSel } = await supabase
+        .from('schedules')
+        .select('id, horario, quantidade_por_dose')
+        .eq('medication_id', medicationId)
+        .eq('ativo', true);
+    if (errSel) throw new Error(`Erro ao ler schedules: ${errSel.message}`);
+
+    const alterados = [];
+    for (const s of schedules || []) {
+        const horaStr = String(s.horario).substring(0, 5);
+        const novo = pares
+            ? pares.find(p => String(p.horario).substring(0, 5) === horaStr)?.quantidade ?? null
+            : quantidadeUnica;
+        if (novo === null || Number(novo) === Number(s.quantidade_por_dose)) continue;
+        const { error } = await supabase
+            .from('schedules')
+            .update({ quantidade_por_dose: Number(novo) })
+            .eq('id', s.id);
+        if (error) throw new Error(`Erro ao atualizar quantidade por dose: ${error.message}`);
+        alterados.push({ horario: horaStr, de: Number(s.quantidade_por_dose), para: Number(novo) });
+    }
+    console.log(`💊 Quantidade por dose atualizada — medication: ${medicationId} — ${JSON.stringify(alterados)}`);
+    return alterados;
 }
 
 export async function getCaregivers(userId) {

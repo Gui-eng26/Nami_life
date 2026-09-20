@@ -3,24 +3,167 @@ import {
     saveConversationState,
     getUserMedications,
     pausarMedicamento,
-    reativarMedicamento,
     encerrarTratamento,
     alterarHorarioSchedule,
     reativarComAtualizacao,
     removerSchedule,
     adicionarSchedule,
-    formatarHistoricoConversa
+    formatarHistoricoConversa,
+    getMedicationComSchedulesAtivos,
+    atualizarQuantidadePorDose,
+    registrarMovimentoEstoque,
+    verificarMedicamentoExistente
 } from '../database.js';
 import { isCancelamento, encontrarMedicamento, normalizar } from '../nlp_helpers.js';
 import { classificarComFerramenta } from '../validadores/llm.js';
-import { AINDA_NAO } from '../inventario.js';
+import { AINDA_NAO, respostaHonestaAindaNao } from '../inventario.js';
+import { executarCorrecao, executarCorrecaoPerfil, iniciarCadastroComNome } from '../runner.js';
+import { extrairHorariosCitados, interpretarRecorrencia } from '../validadores/recorrencia.js';
+import { classificarPosologia } from '../validadores/posologia.js';
+import { validarEstoque, subEtapaEstoque, calcularAlertaEstoqueCadastro } from '../validadores/estoque.js';
+import {
+    ACOES_DE_FALHA, renderizarPerguntaEstoque, renderizarFechamentoEstoque,
+    renderizarBloqueioRecorrencia, renderizarFotoComManterOuMudar,
+    renderizarPerguntaOQueMudar, renderizarReativacaoConcluida,
+    renderizarAvisoJaExiste, paresCongelados
+} from '../schemas/cadastro.js';
 
 // v44 §5.9: a fatia relevante para este agente deixou de ser posicional
 // (slice(0, 3)) e passou a ser declarada no próprio inventário (escopo:
-// 'configuracao') — dosagem/nome/duração de medicamento já cadastrado.
+// 'configuracao'). No M3 P2 a edição de nome/dosagem/quantidade/duração/
+// estoque virou capacidade (modo correção do runner) — o que resta no
+// escopo é o reagendamento pontual (MH-27, honestidade).
 const NAO_SUPORTADO_CONFIGURACAO = AINDA_NAO
     .filter(i => i.escopo === 'configuracao')
     .map(i => i.rotulo);
+
+// Mapa ação → campo do modo correção do runner (P2).
+const CAMPO_DA_ACAO_CORRIGIR = {
+    corrigir_nome: 'nome',
+    corrigir_dosagem: 'dosagem',
+    corrigir_quantidade: 'quantidade',
+    corrigir_duracao: 'duracao',
+    corrigir_estoque: 'estoque'
+};
+
+// ============================================================
+// REATIVAÇÃO EM 5 PASSOS (M3 P3): foto congelada → manter/mudar →
+// alterações via P2 → confirmação declarando os horários vigentes →
+// convite de estoque no MESMO template do cadastro.
+// ============================================================
+
+// Porta 2 (também usada por "reativar X" quando X foi encerrado): aviso +
+// foto + oferta reativar/recadastrar (BUG-61).
+async function oferecerReativacaoPorta2({ user, medicationId, statusAnterior }) {
+    const medCompleto = await getMedicationComSchedulesAtivos(medicationId);
+    const pares = paresCongelados(medCompleto);
+    await saveConversationState(user.id, {
+        state: 'configurando',
+        context: { etapa: 'reativ_oferta', medicationId, medicationNome: medCompleto.nome, statusAnterior }
+    });
+    return renderizarAvisoJaExiste({ med: medCompleto, pares, statusAnterior });
+}
+
+// Passos 1+2 (porta 1): foto congelada + "manter assim ou mudar algo?".
+async function iniciarReativacao({ user, med }) {
+    const medCompleto = await getMedicationComSchedulesAtivos(med.id);
+    const pares = paresCongelados(medCompleto);
+    await saveConversationState(user.id, {
+        state: 'configurando',
+        context: { etapa: 'reativ_manter_ou_mudar', medicationId: med.id, medicationNome: medCompleto.nome }
+    });
+    return renderizarFotoComManterOuMudar({ med: medCompleto, pares });
+}
+
+// Passos 4+5: reativa (com ou sem alterações), DECLARA os horários vigentes
+// (pós-escrita) e convida o estoque com o template do cadastro.
+async function concluirReativacao({ user, firstName, medicationId, horariosNovos = null, diasPorHorario = null, quantidadeUnica = null, paresQuantidade = null }) {
+    const medAntes = await getMedicationComSchedulesAtivos(medicationId);
+    const grade = (horariosNovos && horariosNovos.length > 0)
+        ? horariosNovos
+        : paresCongelados(medAntes).map(p => p.horario);
+
+    await reativarComAtualizacao({ medicationId, horarios: grade, apenasHorarios: true, diasPorHorario });
+    if (quantidadeUnica !== null || (paresQuantidade && paresQuantidade.length > 0)) {
+        await atualizarQuantidadePorDose(medicationId, { pares: paresQuantidade, quantidadeUnica });
+    }
+
+    const depois = await getMedicationComSchedulesAtivos(medicationId);
+    const pares = depois.schedulesAtivos
+        .map(s => ({
+            horario: String(s.horario).slice(0, 5),
+            quantidade: Number(s.quantidade_por_dose),
+            dias_semana: s.dias_semana ?? null,
+            intervalo_dias: s.intervalo_dias ?? null
+        }))
+        .sort((a, b) => a.horario.localeCompare(b.horario));
+
+    await saveConversationState(user.id, {
+        state: 'configurando',
+        context: { etapa: 'reativ_estoque_convite', medicationId, medicationNome: depois.nome, camposEstoque: {} }
+    });
+    console.log(`▶️ [P3] Reativação concluída — ${depois.nome} (${pares.map(p => p.horario).join(', ')}) — ${user.phone}`);
+
+    const camposConvite = { nome: depois.nome, unidade_dose: depois.unidade_dose, unidade_estoque: depois.unidade_estoque };
+    return `${renderizarReativacaoConcluida({ med: depois, pares, firstName })}\n\n${renderizarPerguntaEstoque('cad_estoque', camposConvite)}`;
+}
+
+// Passos 2/3: interpreta a resposta ao "manter ou mudar" — manter reativa a
+// grade congelada; horários/quantidade ditos são a alteração via P2.
+async function tratarManterOuMudar({ user, firstName, message, context, medicationsAtivos, historicoConversa }) {
+    if (isCancelamentoGenuino(message, medicationsAtivos)) {
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        return `Tudo bem, ${firstName}! O *${context.medicationNome}* segue como estava. Se precisar, é só me chamar 🌿`;
+    }
+
+    // Alteração de horários dita na resposta (com recorrência do M2).
+    const estrutura = interpretarRecorrencia(message);
+    if (estrutura && !estrutura.suportada) {
+        return renderizarBloqueioRecorrencia(extrairHorariosCitados(message), estrutura.padroes);
+    }
+    const horariosNovos = estrutura?.diasPorHorario
+        ? Object.keys(estrutura.diasPorHorario)
+        : extrairHorariosCitados(message);
+    if (horariosNovos.length > 0) {
+        return await concluirReativacao({
+            user, firstName, medicationId: context.medicationId,
+            horariosNovos, diasPorHorario: estrutura?.diasPorHorario ?? null
+        });
+    }
+
+    // "Manter"/"assim"/confirmação curta = reativar a grade congelada
+    // (BUG-36 morre aqui: "manter horários"/"manter" é confirmação de manutenção).
+    const msg = message.toLowerCase();
+    if (isConfirmacao(message) || /\bmanter\b|\bassim\b|\bcomo estava\b|\bigual\b|\bmesmos?\b/.test(msg)) {
+        return await concluirReativacao({ user, firstName, medicationId: context.medicationId });
+    }
+
+    // Quantidade dita na resposta ("2 comprimidos agora").
+    if (/\d/.test(message) || /\bmeio\b|\bmetade\b/.test(msg)) {
+        const cls = await classificarPosologia({
+            message, campoEsperado: 'quantidade', nomeMedicamento: context.medicationNome,
+            horariosJaColetados: [], historicoConversa
+        });
+        if (cls.quantidadeUnica || (cls.pares || []).length > 0) {
+            return await concluirReativacao({
+                user, firstName, medicationId: context.medicationId,
+                quantidadeUnica: cls.quantidadeUnica ?? null,
+                paresQuantidade: (cls.pares || []).length > 0 ? cls.pares : null
+            });
+        }
+    }
+
+    // "Mudar" sem dizer o quê: pergunta o alvo (uma pergunta, última linha).
+    if (/\bmudar\b|\btrocar\b|\balterar\b|\bajustar\b/.test(msg)) {
+        await saveConversationState(user.id, {
+            state: 'configurando',
+            context: { ...context, etapa: 'reativ_manter_ou_mudar' }
+        });
+        return renderizarPerguntaOQueMudar(context.medicationNome);
+    }
+
+    return { escalarParaRoteador: true };
+}
 
 // ============================================================
 // CLASSIFICAÇÃO VIA CLAUDE — única chamada LLM do agente
@@ -29,7 +172,13 @@ const NAO_SUPORTADO_CONFIGURACAO = AINDA_NAO
 const ACOES_CONFIGURACAO = [
     'pausar', 'reativar', 'encerrar', 'alterar_horario', 'remover_horario',
     'adicionar_horario', 'redefinir_horarios', 'esclarecer_pausar_encerrar',
-    'recusa_opcoes_oferecidas', 'nao_suportado'
+    'recusa_opcoes_oferecidas',
+    // M3 P2: edição via modo correção do runner.
+    'corrigir_nome', 'corrigir_dosagem', 'corrigir_quantidade',
+    'corrigir_duracao', 'corrigir_estoque', 'corrigir_dados_pessoais',
+    // MH-27 (P6.7): reconhecido para responder com honestidade.
+    'reagendar_dose_pontual',
+    'nao_suportado'
 ];
 
 async function classificarIntencao(message, medicamentosDisponiveis, historicoConversa = []) {
@@ -44,12 +193,10 @@ Medicamentos cadastrados: ${listaMeds}
 CONVERSA RECENTE:
 ${historicoTexto}
 
-Responda APENAS com JSON válido, sem markdown, sem explicações:
-{
-  "acao": "pausar" | "reativar" | "encerrar" | "alterar_horario" | "remover_horario" | "adicionar_horario" | "redefinir_horarios" | "esclarecer_pausar_encerrar" | "recusa_opcoes_oferecidas" | "nao_suportado",
-  "medicamentoMencionado": "nome mencionado ou null",
-  "novoHorario": "HH:MM ou null"
-}
+Registre a classificação pela ferramenta registrar_intencao:
+- acao: uma das ações definidas abaixo
+- medicamentoMencionado: nome mencionado (vazio se nenhum)
+- novoHorario: HH:MM (vazio se não houver)
 
 Definições:
 - pausar: parar lembretes temporariamente, com intenção de retomar.
@@ -85,18 +232,41 @@ Definições:
   nenhum assunto novo.
   Ex: "nenhum", "nenhuma", "nenhum dos dois", "nenhuma das opções", "nenhum desses", "nem um nem outro".
 
-- nao_suportado: pedidos que a configuração não faz — ${NAO_SUPORTADO_CONFIGURACAO.join(', ')}.
-  Ex: "mudar o tempo de tratamento", "alterar a dosagem", "trocar o nome do remédio", "mudar de 7 dias para 10 dias"
+- corrigir_nome: corrigir/trocar o NOME de um medicamento já cadastrado (digitou errado).
+  Ex: "o nome tá errado, é Keppra", "troca o nome do Kepra", "escrevi o nome errado"
+
+- corrigir_dosagem: alterar a DOSAGEM (concentração do produto) de um medicamento já cadastrado.
+  Ex: "a dosagem é 50mg, não 25", "mudou a dosagem do meu remédio", "agora é de 100mg"
+
+- corrigir_quantidade: alterar a QUANTIDADE POR DOSE (quanto se toma de cada vez).
+  Ex: "agora tomo 2 comprimidos", "na verdade são 20 gotas por vez", "passei a tomar meio"
+
+- corrigir_duracao: alterar a DURAÇÃO do tratamento (encurtar/prolongar/virar contínuo).
+  Ex: "mudar de 7 para 10 dias", "o médico estendeu por mais uma semana", "virou uso contínuo"
+
+- corrigir_estoque: corrigir/atualizar a quantidade em ESTOQUE de um medicamento.
+  Ex: "o estoque tá errado, tenho 20", "atualiza o estoque do Marevan pra 30"
+
+- corrigir_dados_pessoais: corrigir dados DA PESSOA (nome do usuário ou data de nascimento) —
+  nunca do remédio. Ex: "meu nome tá errado", "quero corrigir minha data de nascimento",
+  "me cadastrei com o nome errado"
+
+- reagendar_dose_pontual: ajustar o horário de UMA dose só de hoje/desta vez, SEM mudar o
+  horário fixo. Ex: "hoje vou tomar mais tarde", "só hoje pode ser às 15h?", "adia a dose de hoje"
+
+- nao_suportado: pedidos que a configuração não faz — ${NAO_SUPORTADO_CONFIGURACAO.join(', ') || 'fora das ações acima'}.
+  Ex: "exportar meu histórico", "conectar minha filha"
 
 REGRAS DE DECISÃO:
-1. Se o verbo é claro (encerrar, pausar, alterar, remover, adicionar, redefinir, reativar) → retorne a ação diretamente. NUNCA use esclarecer nesses casos.
+1. Se o verbo é claro (encerrar, pausar, alterar, remover, adicionar, redefinir, reativar, corrigir) → retorne a ação diretamente. NUNCA use esclarecer nesses casos.
 2. "Encerrar" sozinho = encerrar. "Pausar" sozinho = pausar. Não exija a palavra "tratamento".
 3. Se o usuário quer parar MAS dá pista temporal:
    - pista de definitivo ("já terminei", "acabou", "não preciso mais porque terminei") → encerrar
    - pista de temporário ("essa semana", "por uns dias", "por enquanto") → pausar
 4. Só use esclarecer_pausar_encerrar quando quer parar e NÃO há nenhuma pista temporal.
 5. Intenção de horário sem detalhes → classifique pelo tipo de operação, nunca esclarecer.
-6. Se o pedido é sobre algo que a configuração não suporta (dosagem, tempo de tratamento, nome do medicamento) → nao_suportado.
+6. Alterar o horário FIXO do lembrete = alterar_horario/redefinir_horarios; ajustar só a dose de
+   HOJE = reagendar_dose_pontual.
 7. Se a última pergunta da Nami ofereceu uma lista de opções (medicamentos, horários, ou
    pausar/encerrar/contínuo/temporário) e a resposta rejeita todas sem introduzir assunto novo
    → recusa_opcoes_oferecidas. NUNCA confunda com reafirmar a ação anterior.`;
@@ -342,8 +512,6 @@ function buildConfirmacaoMessage(firstName, ctx) {
     switch (acao) {
         case 'pausar':
             return `Só confirmar, ${firstName}: vou *pausar* todos os lembretes do *${medicationNome}*${horarios ? ` (${horarios})` : ''}.\n\nVocê pode reativar quando quiser. Confirmar?`;
-        case 'reativar':
-            return `Só confirmar: vou *reativar* os lembretes do *${medicationNome}*.\n\nEles voltarão a ser enviados nos horários cadastrados. Confirmar?`;
         case 'encerrar':
             return `Só confirmar: vou *encerrar o tratamento* com *${medicationNome}* e desativar todos os lembretes permanentemente.\n\nConfirmar?`;
         case 'alterar_horario':
@@ -374,11 +542,6 @@ async function executarAcao(user, firstName, ctx) {
             await saveConversationState(user.id, { state: 'idle', context: {} });
             await pausarMedicamento(medicationId);
             return `✅ Pronto, ${firstName}! Lembretes do *${medicationNome}*${horarios ? ` (${horarios})` : ''} pausados.\n\nQuando quiser retomar, é só me dizer *"reativar ${medicationNome}"* 🌿`;
-
-        case 'reativar':
-            await saveConversationState(user.id, { state: 'idle', context: {} });
-            await reativarMedicamento(medicationId);
-            return `✅ Pronto! Lembretes do *${medicationNome}* reativados. Vou voltar a te lembrar nos horários cadastrados 💊`;
 
         case 'encerrar':
             await saveConversationState(user.id, { state: 'idle', context: {} });
@@ -468,6 +631,18 @@ async function processarIntencaoOuEscalar({ user, firstName, message, medication
     }
     const { acao, medicamentoMencionado, novoHorario } = await classificarIntencao(message, medicationsAtivos, historicoConversa);
 
+    // MH-75 (P2): dados pessoais não dependem de medicamento cadastrado.
+    if (acao === 'corrigir_dados_pessoais') {
+        return await executarCorrecaoPerfil({ user, message, historicoConversa });
+    }
+
+    // MH-27 (P6.7): reagendar UMA dose pontual segue AINDA_NAO — honestidade
+    // com expectativa + o que já existe hoje.
+    if (acao === 'reagendar_dose_pontual') {
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        return `${respostaHonestaAindaNao('reagendar_dose_pontual')}\n\nO que já dá pra fazer: mudar o horário fixo do lembrete (vale pra todos os dias), ou tomar quando der e me confirmar depois — eu registro certinho. 🌿`;
+    }
+
     if (medicationsAtivos.length === 0) {
         await saveConversationState(user.id, { state: 'idle', context: {} });
         return `Você não tem nenhum medicamento cadastrado ainda, ${firstName}. Quer cadastrar um agora?`;
@@ -511,7 +686,7 @@ async function processarIntencaoOuEscalar({ user, firstName, message, medication
         : null;
     const med = medNaMensagemAtual || medDoContexto
         || (medicamentoMencionado ? encontrarMedicamento(medicamentoMencionado, medicationsAtivos) : null);
-    return await continuarComAcao({ user, firstName, acao, med, medicationsAtivos, medicamentosComSchedule, medicamentosPausados, novoHorario, message });
+    return await continuarComAcao({ user, firstName, acao, med, medicationsAtivos, medicamentosComSchedule, medicamentosPausados, novoHorario, message, historicoConversa, medicamentoMencionado });
 }
 
 // ============================================================
@@ -525,7 +700,9 @@ export async function handleConfiguracao({ user, message, state, context, histor
     const medicationsAtivos = medications.filter(m => m.ativo !== false);
     const temScheduleAtivo = m => (m.schedules || []).some(s => s.ativo);
     const medicamentosComSchedule = medications.filter(m => m.ativo && temScheduleAtivo(m));
-    const medicamentosPausados = medications.filter(m => m.ativo && !temScheduleAtivo(m));
+    // P1/P3: pausado é ESTADO explícito (fallback pela inferência antiga só
+    // para registro anterior ao backfill).
+    const medicamentosPausados = medications.filter(m => m.status === 'pausado' || (m.ativo && !temScheduleAtivo(m) && (m.schedules || []).length > 0));
 
     console.log(`⚙️ Configuração — etapa: ${etapa} — ${user.phone}`);
 
@@ -561,7 +738,7 @@ export async function handleConfiguracao({ user, message, state, context, histor
         }
 
         const { acao, novoHorario } = context;
-        return await continuarComAcao({ user, firstName, acao, med, medicationsAtivos, medicamentosComSchedule, medicamentosPausados, novoHorario, message, schedulesAtivos });
+        return await continuarComAcao({ user, firstName, acao, med, medicationsAtivos, medicamentosComSchedule, medicamentosPausados, novoHorario, message, schedulesAtivos, historicoConversa });
     }
 
     // ── ETAPA 4: Usuário especifica qual horário alterar ─────────────────────
@@ -704,144 +881,106 @@ export async function handleConfiguracao({ user, message, state, context, histor
         return await executarAcao(user, firstName, context);
     }
 
-    // ── ETAPA reativ_confirmar: usuário confirma se quer reativar ────────────
-    if (etapa === 'reativ_confirmar') {
-        if (isCancelamento(message) || /\b(não|nao|n)\b/i.test(message.toLowerCase())) {
-            await saveConversationState(user.id, { state: 'idle', context: {} });
-            return `Tudo bem, ${firstName}! Se precisar de algo, é só me chamar 🌿`;
-        }
+    // ── ETAPAS DA REATIVAÇÃO EM 5 PASSOS (M3 P3) ─────────────────────────────
 
-        if (!isConfirmacao(message)) {
-            if (isCancelamentoGenuino(message, medicationsAtivos)) {
-                await saveConversationState(user.id, { state: 'idle', context: {} });
-                return `Tudo bem, ${firstName}! Se precisar de algo, é só me chamar 🌿`;
-            }
-            return { escalarParaRoteador: true };
-        }
-
-        await saveConversationState(user.id, {
-            state: 'configurando',
-            context: { ...context, etapa: 'reativ_tipo_tratamento' }
-        });
-        return `Ótimo! Vamos atualizar as informações antes de reativar.\n\nO *${context.medicationNome}* é de uso contínuo (sem previsão de parada) ou tem prazo determinado, como um antibiótico ou anti-inflamatório?`;
+    // Passo 2/3: "manter assim ou mudar algo?" (também recebe o valor da mudança).
+    if (etapa === 'reativ_manter_ou_mudar') {
+        return await tratarManterOuMudar({ user, firstName, message, context, medicationsAtivos, historicoConversa });
     }
 
-    // ── ETAPA reativ_tipo_tratamento: coleta tipo e prazo ───────────────────
-    if (etapa === 'reativ_tipo_tratamento') {
+    // Porta 2: oferta reativar/recadastrar sobre med pausado ou encerrado.
+    if (etapa === 'reativ_oferta') {
         const msg = message.toLowerCase();
-        let tipo_tratamento = null;
-        let tratamento_dias = null;
-
-        if (/contínuo|continuo|sempre|sem prazo|permanente|crônico|cronico/.test(msg)) {
-            tipo_tratamento = 'continuo';
-        } else if (/temporar|prazo|dias|semana|antibiótico|antibiotico|anti-inflamatório|antiinflamatorio/.test(msg)) {
-            tipo_tratamento = 'temporario';
-            const diasMatch = msg.match(/(\d+)\s*dias?/);
-            tratamento_dias = diasMatch ? parseInt(diasMatch[1]) : null;
+        if (isCancelamento(message) || /\b(n[aã]o|nao|n)\b/.test(msg)) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return `Tudo bem, ${firstName}! Deixei o *${context.medicationNome}* como estava. Se precisar, é só me chamar 🌿`;
         }
+        const querRecadastrar = /recadastr|cadastrar|novo|do zero|de novo/.test(msg);
+        const querReativar = /reativ|volta|retoma|como estava|manter/.test(msg);
 
-        if (!tipo_tratamento) {
-            if (isCancelamentoGenuino(message, medicationsAtivos)) {
-                await saveConversationState(user.id, { state: 'idle', context: {} });
-                return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
-            }
-            return { escalarParaRoteador: true };
+        // "Sim"/"Isso" seco decide pelo caminho natural do gatilho: quem tentou
+        // CADASTRAR um encerrado quer o recadastro (BUG-61 morre aqui); quem
+        // estava com o tratamento pausado quer reativar.
+        const escolha = querRecadastrar ? 'recadastrar'
+            : querReativar ? 'reativar'
+            : isConfirmacao(message)
+                ? (context.statusAnterior === 'encerrado' ? 'recadastrar' : 'reativar')
+                : null;
+
+        if (escolha === 'recadastrar') {
+            console.log(`💊 [P3] Porta 2 — recadastro pós-${context.statusAnterior} (${context.medicationNome}) — ${user.phone}`);
+            return await iniciarCadastroComNome({ user, nome: context.medicationNome });
         }
-
-        if (tipo_tratamento === 'temporario' && !tratamento_dias) {
+        if (escolha === 'reativar') {
             await saveConversationState(user.id, {
                 state: 'configurando',
-                context: { ...context, etapa: 'reativ_tipo_tratamento', tipo_tratamento }
+                context: { etapa: 'reativ_manter_ou_mudar', medicationId: context.medicationId, medicationNome: context.medicationNome }
             });
-            return `Quantos dias dura esse tratamento?`;
+            return `Vamos reativar o *${context.medicationNome}* então! Quer manter tudo como estava, ou mudar algo antes (horários, quantidade)?`;
         }
-
-        await saveConversationState(user.id, {
-            state: 'configurando',
-            context: { ...context, etapa: 'reativ_estoque', tipo_tratamento, tratamento_dias }
-        });
-        return `Certo! Seu estoque anterior era de *${context.estoqueAtual} unidades*. Continua assim ou quer atualizar?`;
+        return { escalarParaRoteador: true };
     }
 
-    // ── ETAPA reativ_estoque: confirma ou atualiza estoque ──────────────────
-    if (etapa === 'reativ_estoque') {
-        const msg = message.toLowerCase().trim();
-        const confirmouEstoque = ['sim', 's', 'ok', 'continua', 'mesmo', 'igual', 'está certo', 'tá bom', 'pode'].some(t =>
-            msg === t || msg.startsWith(t + ' ')
-        );
+    // Passo 5: resposta ao convite de estoque (mesmo validador do cadastro).
+    if (etapa === 'reativ_estoque_convite') {
+        if (isCancelamentoGenuino(message, medicationsAtivos) || /\bn[aã]o sei\b|\bdepois\b/i.test(message)) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return `Tudo bem${firstName ? `, ${firstName}` : ''}! O estoque fica pra depois — quando souber, é só me mandar a quantidade. 🌿`;
+        }
+        const medAtual = await getMedicationComSchedulesAtivos(context.medicationId);
+        const camposEstoque = {
+            nome: medAtual.nome,
+            unidade_dose: medAtual.unidade_dose,
+            unidade_estoque: medAtual.unidade_estoque,
+            medication_id: context.medicationId,
+            ...(context.camposEstoque || {})
+        };
+        const v = await validarEstoque({ message, campos: camposEstoque, historicoConversa });
 
-        let novoEstoque = context.estoqueAtual;
-
-        if (!confirmouEstoque) {
-            const numMatch = message.match(/\d+/);
-            if (numMatch) {
-                novoEstoque = parseInt(numMatch[0]);
-            } else {
-                if (isCancelamentoGenuino(message, medicationsAtivos)) {
-                    await saveConversationState(user.id, { state: 'idle', context: {} });
-                    return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
-                }
-                return { escalarParaRoteador: true };
+        if (v.resolvido !== undefined && v.resolvido !== null) {
+            if (v.resolvido.valor === null) {
+                await saveConversationState(user.id, { state: 'idle', context: {} });
+                return renderizarFechamentoEstoque({ med: { ...medAtual, estoque_atual: null }, alerta: null, primeiroMedicamento: false, firstName });
             }
+            await registrarMovimentoEstoque({
+                medicationId: context.medicationId,
+                tipo: 'reativacao_com_estoque', origem: 'manual',
+                motivo: v.resolvido.motivo, estimado: v.resolvido.estimado,
+                valorAbsoluto: v.resolvido.valor
+            });
+            const medDepois = await getMedicationComSchedulesAtivos(context.medicationId);
+            const paresAtivos = medDepois.schedulesAtivos.map(sch => ({
+                horario: String(sch.horario).slice(0, 5),
+                quantidade: Number(sch.quantidade_por_dose),
+                dias_semana: sch.dias_semana ?? null
+            }));
+            const alerta = calcularAlertaEstoqueCadastro({
+                pares_posologia: paresAtivos,
+                unidade_dose: medDepois.unidade_dose,
+                unidade_estoque: medDepois.unidade_estoque,
+                gotas_por_ml: medDepois.gotas_por_ml,
+                tratamento_dias: medDepois.tratamento_dias
+            }, medDepois.estoque_atual);
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return renderizarFechamentoEstoque({ med: medDepois, alerta, primeiroMedicamento: false, firstName });
         }
 
-        const schedulesAnteriores = context.schedulesExistentes || [];
-        const horariosAnteriores = schedulesAnteriores
-            .map(s => `• ${s.horario.substring(0, 5)}`)
-            .join('\n');
+        if (ACOES_DE_FALHA.has(v.acao)) {
+            const camposNovos = { ...camposEstoque, ...(v.updates || {}) };
+            await saveConversationState(user.id, {
+                state: 'configurando',
+                context: { ...context, camposEstoque: { ...(context.camposEstoque || {}), ...(v.updates || {}) } }
+            });
+            return renderizarPerguntaEstoque(subEtapaEstoque(camposNovos), camposNovos, ACOES_DE_FALHA.has(v.acao) ? v.acao : null);
+        }
 
+        // Sub-etapa intermediária do líquido (status/volume/fração pendentes).
         await saveConversationState(user.id, {
             state: 'configurando',
-            context: { ...context, etapa: 'reativ_horarios', novoEstoque }
+            context: { ...context, camposEstoque: { ...(context.camposEstoque || {}), ...(v.updates || {}) } }
         });
-        return `Ótimo! Os horários anteriores eram:\n${horariosAnteriores || '(nenhum cadastrado)'}\n\nContinua igual ou quer definir novos horários?`;
-    }
-
-    // ── ETAPA reativ_horarios: confirma ou coleta novos horários ────────────
-    if (etapa === 'reativ_horarios') {
-        const msg = message.toLowerCase().trim();
-        const confirmouHorarios = ['sim', 's', 'ok', 'continua', 'mesmo', 'igual', 'está certo', 'tá bom', 'pode'].some(t =>
-            msg === t || msg.startsWith(t + ' ')
-        );
-
-        let horariosFinais;
-
-        if (confirmouHorarios) {
-            const schedulesAnteriores = context.schedulesExistentes || [];
-            horariosFinais = schedulesAnteriores.map(s => s.horario.substring(0, 5));
-        } else {
-            const matches = [...message.matchAll(/(\d{1,2})[:h](\d{2})?/g)].map(m => {
-                const h = m[1].padStart(2, '0');
-                const min = (m[2] || '00').padStart(2, '0');
-                return `${h}:${min}`;
-            });
-
-            if (matches.length === 0) {
-                if (isCancelamentoGenuino(message, medicationsAtivos)) {
-                    await saveConversationState(user.id, { state: 'idle', context: {} });
-                    return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
-                }
-                return { escalarParaRoteador: true };
-            }
-
-            horariosFinais = matches;
-        }
-
-        await reativarComAtualizacao({
-            medicationId: context.medicationId,
-            estoque: context.novoEstoque,
-            tipo_tratamento: context.tipo_tratamento,
-            tratamento_dias: context.tratamento_dias || null,
-            horarios: horariosFinais
-        });
-
-        const tipoLabel = context.tipo_tratamento === 'temporario'
-            ? `${context.tratamento_dias} dias`
-            : 'uso contínuo';
-        const horariosLabel = horariosFinais.join(', ');
-
-        await saveConversationState(user.id, { state: 'idle', context: {} });
-        return `✅ Pronto, ${firstName}! *${context.medicationNome}* reativado com sucesso 💊\n\nHorários: ${horariosLabel}\nEstoque: ${context.novoEstoque} unidades\nTratamento: ${tipoLabel}\n\nVou voltar a te lembrar nos horários certos!`;
+        const camposNovos = { ...camposEstoque, ...(v.updates || {}) };
+        return renderizarPerguntaEstoque(subEtapaEstoque(camposNovos), camposNovos);
     }
 
     // ── ETAPA pos_alteracao: usuário quer alterar outro horário? ─────────────
@@ -904,13 +1043,54 @@ export async function handleConfiguracao({ user, message, state, context, histor
         return `Qual desses você quer alterar?\n\n${lista}\n\nMe responda com o horário — por exemplo: *${schedulesRestantes[0]?.horario?.substring(0, 5)}*`;
     }
 
+    // ── ETAPAS DO MODO CORREÇÃO (M3 P2) ──────────────────────────────────────
+    if (etapa === 'corrigir_campo') {
+        if (isCancelamentoGenuino(message, medicationsAtivos)) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
+        }
+        return await executarCorrecao({
+            user, message,
+            campoAlvo: context.campoAlvo,
+            medicationId: context.medicationId,
+            historicoConversa,
+            jaPerguntou: true
+        });
+    }
+
+    if (etapa === 'corrigir_perfil') {
+        if (isCancelamento(message)) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return `Tudo bem, ${firstName}! Nada foi alterado. Se precisar de algo, é só me chamar 🌿`;
+        }
+        return await executarCorrecaoPerfil({
+            user, message,
+            campoAlvo: context.campoAlvo || null,
+            historicoConversa,
+            jaPerguntou: !!context.campoAlvo
+        });
+    }
+
+    // MH-79: oferta de novo tratamento para apresentação distinta.
+    if (etapa === 'corrigir_mh79_confirmar') {
+        if (isConfirmacao(message)) {
+            console.log(`🔀 [CONFIG] MH-79 aceito — novo cadastro: ${context.nomeQualificado} — ${user.phone}`);
+            return await iniciarCadastroComNome({ user, nome: context.nomeQualificado });
+        }
+        if (isCancelamento(message) || /\b(não|nao|n)\b/i.test(message.toLowerCase())) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return `Tudo bem, ${firstName}! Mantive o *${context.medicationNome}* como está. 🌿`;
+        }
+        return { escalarParaRoteador: true };
+    }
+
     // Fallback
     await saveConversationState(user.id, { state: 'idle', context: {} });
     return `Algo deu errado no fluxo de configuração, ${firstName}. Pode tentar novamente?`;
 }
 
 // ── HELPER: continua após intenção clara + medicamento opcional ──────────────
-async function continuarComAcao({ user, firstName, acao, med, medicationsAtivos, medicamentosComSchedule, medicamentosPausados, novoHorario, message, schedulesAtivos }) {
+async function continuarComAcao({ user, firstName, acao, med, medicationsAtivos, medicamentosComSchedule, medicamentosPausados, novoHorario, message, schedulesAtivos, historicoConversa = [], medicamentoMencionado = null }) {
     const acaoTexto = {
         'alterar_horario':    'alterar o horário de',
         'remover_horario':    'remover um horário de',
@@ -918,11 +1098,25 @@ async function continuarComAcao({ user, firstName, acao, med, medicationsAtivos,
         'redefinir_horarios': 'redefinir os horários de',
         'pausar':             'pausar',
         'reativar':           'reativar',
-        'encerrar':           'encerrar o tratamento de'
+        'encerrar':           'encerrar o tratamento de',
+        'corrigir_nome':      'corrigir o nome de',
+        'corrigir_dosagem':   'ajustar a dosagem de',
+        'corrigir_quantidade': 'ajustar a quantidade por dose de',
+        'corrigir_duracao':   'ajustar a duração do tratamento de',
+        'corrigir_estoque':   'atualizar o estoque de'
     };
 
     // Sem medicamento identificado
     if (!med) {
+        // P3: "reativar X" com X ENCERRADO — o registro não está na lista de
+        // ativos; a porta 2 assume com aviso + foto + oferta (BUG-61).
+        if (acao === 'reativar') {
+            const nomeBuscado = medicamentoMencionado || message;
+            const existente = await verificarMedicamentoExistente(user.id, nomeBuscado);
+            if (existente && (existente.status === 'encerrado' || existente.ativo === false)) {
+                return await oferecerReativacaoPorta2({ user, medicationId: existente.id, statusAnterior: 'encerrado' });
+            }
+        }
         const listaParaMostrar = acao === 'reativar' ? medicamentosPausados : medicamentosComSchedule;
         if (listaParaMostrar.length === 1) {
             med = listaParaMostrar[0];
@@ -934,6 +1128,23 @@ async function continuarComAcao({ user, firstName, acao, med, medicationsAtivos,
             });
             return `Qual medicamento você quer ${acaoTexto[acao] || 'configurar'}?\n\n${lista}`;
         }
+    }
+
+    // M3 P2 — edição = modo correção do runner (validador do schema + escrita
+    // por ponto único + confirmação ANTES → DEPOIS pós-escrita).
+    if (CAMPO_DA_ACAO_CORRIGIR[acao]) {
+        return await executarCorrecao({
+            user, message,
+            campoAlvo: CAMPO_DA_ACAO_CORRIGIR[acao],
+            medicationId: med.id,
+            historicoConversa
+        });
+    }
+
+    // M3 P3 — porta 1 da reativação: foto congelada + manter/mudar (o fluxo
+    // cego de confirmar-e-reativar morreu).
+    if (acao === 'reativar') {
+        return await iniciarReativacao({ user, med });
     }
 
     schedulesAtivos = schedulesAtivos || (med.schedules || []).filter(s => s.ativo);

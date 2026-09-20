@@ -37,13 +37,18 @@ import {
     registrarMovimentoEstoque,
     getMedicationComSchedulesAtivos,
     encerrarTratamento,
-    atualizarMedicamentoCampos
+    atualizarMedicamentoCampos,
+    atualizarQuantidadePorDose,
+    reativarComAtualizacao,
+    updateUser
 } from './database.js';
-import { detectarRecorrenciaNaoSuportada, interpretarRecorrencia, extrairHorariosCitados } from './validadores/recorrencia.js';
+import { extrairCampoSimples, ehDosagemPura, ehDosagemReconhecivel, classificarTipoTratamento } from './validadores/camposSimples.js';
+import { validarEstoque, calcularAlertaEstoqueCadastro } from './validadores/estoque.js';
+import { SCHEMA_PERFIL, renderizarPerfilAtualizado, renderizarPerguntaQualDadoPessoal, renderizarDataInvalida } from './schemas/perfil.js';
+import { detectarRecorrenciaNaoSuportada, interpretarRecorrencia, extrairHorariosCitados, rotuloDias } from './validadores/recorrencia.js';
 import { hojeBRT } from './dataReferencia.js';
 import { derivarUnidades } from './validadores/derivacoes.js';
 import { classificarIndeterminadoCadastro } from './validadores/falha.js';
-import { calcularAlertaEstoqueCadastro } from './validadores/estoque.js';
 import { extrairCadastroCompleto, mapearExtracaoParaCampos, aplicarExtracaoEmVazios } from './validadores/extratorCompleto.js';
 import { derivarFormaFarmaceutica, montarParesPosologia } from './validadores/derivacoes.js';
 import { classificarPosologia } from './validadores/posologia.js';
@@ -55,14 +60,16 @@ import {
     renderizarPrefacioDuvida, renderizarDeclarativa, renderizarResumoDoMedicamento,
     renderizarFechamentoEstoque, renderizarFechamentoCadastroJaGravado,
     renderizarCancelamentoSemGravacao, renderizarRecusaSemGravacao,
-    renderizarDuplicataAtiva, renderizarDuplicataPausada, renderizarPropostaReencadastro,
-    renderizarReencadastroRecusado, renderizarDuplicataNaGravacao, renderizarBloqueioRecorrencia,
+    renderizarDuplicataAtiva, renderizarDuplicataNaGravacao, renderizarBloqueioRecorrencia,
+    renderizarAvisoJaExiste, paresCongelados,
     renderizarPropostaLote, renderizarAberturaFila, renderizarPropostaDivisaoNome,
     renderizarTransicaoFila, renderizarFechamentoLote, renderizarRepeticaoPropostaLote,
     renderizarFechamentoAnterior, renderizarConviteEstoqueLote, renderizarDeclarativaCurta,
     renderizarDuplicataCurta, renderizarNotaConvencaoPo,
     renderizarNomeCorrigido, renderizarFechamentoEstoqueLote,
-    renderizarPerguntaQualEstoque, renderizarEstoqueLoteFicaPraDepois
+    renderizarPerguntaQualEstoque, renderizarEstoqueLoteFicaPraDepois,
+    renderizarPerguntaCorrecao, renderizarCorrecaoAplicada, renderizarOfertaNovaApresentacao,
+    SCHEMA_CADASTRO
 } from './schemas/cadastro.js';
 
 // Cancelamento determinístico — o LLM não decide transições.
@@ -558,28 +565,6 @@ export async function executarRunner({ schema, user, message, state, context, hi
 
     const firstName = user.name ? user.name.split(' ')[0] : null;
 
-    // Reencadastro pendente (medicamento encerrado → novo tratamento?).
-    if (etapaEntrada === 'cad_reencadastro_confirmar') {
-        const msg = String(message).toLowerCase().trim();
-        const confirmou = ['sim', 's', 'ok', 'pode', 'claro', 'quero', 'sim quero', 'vai', 'vamos'].some(t => msg === t || msg.startsWith(t + ' '));
-
-        if (!confirmou) {
-            await saveConversationState(user.id, { state: 'idle', context: {} });
-            return renderizarReencadastroRecusado();
-        }
-
-        // Novo tratamento, novo registro — entra na primeira pendência de verdade.
-        const camposReinicio = { sujeito: campos.sujeito, nome: campos.nome };
-        const pendReinicio = proximaPendencia(schema, camposReinicio);
-        await saveConversationState(user.id, {
-            state: schema.estadoConversa,
-            context: { ...camposReinicio, etapa: pendReinicio.etapa }
-        });
-        return montarPerguntaPendente({
-            pend: pendReinicio, campos: camposReinicio, userName: user.name, nomeRecemColetado: true
-        });
-    }
-
     // Resposta ao convite de estoque agregado (Commit 0 do M3). Mensagem que
     // propõe medicamento NOVO (não correção/menção de um pendente) segue o fluxo
     // normal de cadastro — o estoque dos anteriores fica pra depois.
@@ -923,34 +908,28 @@ async function processarTurno({ schema, user, mensagem, campos, historicoConvers
             const schedulesAtivos = schedules.filter(s => s.ativo);
             const todosInativos = schedules.length > 0 && schedulesAtivos.length === 0;
 
-            if (!existente.ativo) {
-                await saveConversationState(user.id, {
-                    state: schema.estadoConversa,
-                    context: {
-                        etapa: 'cad_reencadastro_confirmar',
-                        sujeito: campos.sujeito,
-                        nome: existente.nome,
-                        medicationId: existente.id
-                    }
-                });
-                return renderizarPropostaReencadastro(existente.nome);
-            }
-
-            if (todosInativos) {
+            // P3 porta 2 (M3): cadastrar medicamento PAUSADO ou ENCERRADO → a
+            // Nami avisa, mostra a foto congelada e oferece reativar/recadastrar
+            // (mata o BUG-61 — nunca registro duplicado silencioso).
+            const statusExistente = existente.status
+                || (!existente.ativo ? 'encerrado' : (todosInativos ? 'pausado' : 'ativo'));
+            if (statusExistente === 'pausado' || statusExistente === 'encerrado') {
+                const medCompleto = await getMedicationComSchedulesAtivos(existente.id);
                 await saveConversationState(user.id, {
                     state: 'configurando',
                     context: {
-                        etapa: 'reativ_confirmar',
+                        etapa: 'reativ_oferta',
                         medicationId: existente.id,
-                        medicationNome: existente.nome,
-                        estoqueAtual: existente.estoque_atual,
-                        tipo_tratamento: existente.tipo_tratamento,
-                        tratamento_dias: existente.tratamento_dias,
-                        schedulesExistentes: schedules,
-                        schedulesAtivos: schedulesAtivos
+                        medicationNome: medCompleto.nome,
+                        statusAnterior: statusExistente
                     }
                 });
-                return renderizarDuplicataPausada(existente, schedules.map(s => s.horario.substring(0, 5)));
+                console.log(`💊 [RUNNER→P3] Porta 2: cadastro de medicamento ${statusExistente} (${medCompleto.nome}) — oferta reativar/recadastrar — ${user.phone}`);
+                return renderizarAvisoJaExiste({
+                    med: medCompleto,
+                    pares: paresCongelados(medCompleto),
+                    statusAnterior: statusExistente
+                });
             }
 
             // Achado do replay 19/09 (Priscila/Vitamina D): mensagem sobre um
@@ -1127,6 +1106,295 @@ async function processarTurno({ schema, user, mensagem, campos, historicoConvers
         aberturaFila: emFilaNova,
         mensagemUsuario: mensagem
     });
+}
+
+// ============================================================
+// MODO CORREÇÃO (v44 M3 P2): edição de um tratamento JÁ GRAVADO é o
+// schema do cadastro em modo corrigir(campo) — cada campo usa o
+// validador que já existe; a escrita é por ponto único; a confirmação
+// é template pós-escrita declarando ANTES → DEPOIS (regra 2).
+// Campos: nome, dosagem, quantidade por dose, horários (com
+// recorrência do M2), duração (recalcula tratamento_fim — MH-43
+// parcial) e estoque.
+// ============================================================
+
+const FORMAS_LIQUIDAS = new Set(['gotas', 'colirio', 'xarope', 'ml']);
+const FORMAS_SOLIDAS = new Set(['comprimido', 'capsula']);
+
+function detectarFormaMencionada(message) {
+    const t = normalizar(message);
+    if (/\bgotas?\b|\bcolirio\b/.test(t)) return 'gotas';
+    if (/\bxarope\b|\bml\b|\bliquido\b/.test(t)) return 'xarope';
+    if (/\bcomprimidos?\b|\bcps?\b/.test(t)) return 'comprimido';
+    if (/\bcapsulas?\b/.test(t)) return 'capsula';
+    return null;
+}
+
+// MH-79: a edição indica PRODUTO DISTINTO quando a forma mencionada muda de
+// família (sólido ↔ líquido) em relação ao registro.
+function apresentacaoDistinta(formaMencionada, formaAtual) {
+    if (!formaMencionada || !formaAtual) return false;
+    const mencionadaLiquida = FORMAS_LIQUIDAS.has(formaMencionada);
+    const atualLiquida = FORMAS_LIQUIDAS.has(formaAtual);
+    const mencionadaSolida = FORMAS_SOLIDAS.has(formaMencionada);
+    const atualSolida = FORMAS_SOLIDAS.has(formaAtual);
+    return (mencionadaLiquida && atualSolida) || (mencionadaSolida && atualLiquida);
+}
+
+function formatarDataBRDeISO(iso) {
+    if (!iso) return null;
+    const [ano, mes, dia] = String(iso).split('-');
+    return `${dia}/${mes}/${ano}`;
+}
+
+async function aplicarCorrecao({ user, medicationId, campoAlvo, medicationNome, antes, depois }) {
+    await saveConversationState(user.id, { state: 'idle', context: {} });
+    return renderizarCorrecaoAplicada({ campoAlvo, medicationNome, antes, depois });
+}
+
+async function perguntarValorDaCorrecao({ user, campoAlvo, med }) {
+    await saveConversationState(user.id, {
+        state: 'configurando',
+        context: { etapa: 'corrigir_campo', campoAlvo, medicationId: med.id, medicationNome: med.nome }
+    });
+    return renderizarPerguntaCorrecao({ campoAlvo, medicationNome: med.nome });
+}
+
+// Modo corrigir(campo): valida a mensagem com o validador do campo; resolvida,
+// escreve por ponto único e declara ANTES → DEPOIS pós-escrita; sem o valor,
+// pergunta (uma vez) com o template do schema; na segunda falha, devolve ao
+// roteador (contrato universal).
+export async function executarCorrecao({ user, message, campoAlvo, medicationId, historicoConversa = [], jaPerguntou = false }) {
+    const med = await getMedicationComSchedulesAtivos(medicationId);
+    if (!med) {
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        return { escalarParaRoteador: true };
+    }
+    const naoResolveu = async () => {
+        if (jaPerguntou) return { escalarParaRoteador: true };
+        return await perguntarValorDaCorrecao({ user, campoAlvo, med });
+    };
+
+    if (campoAlvo === 'nome') {
+        const c = await extrairCampoSimples({ campo: 'nome', message, historicoConversa });
+        if (c.categoria === 'valor' && !ehDosagemPura(c.valor) && normalizar(c.valor) !== normalizar(med.nome)) {
+            await atualizarMedicamentoCampos({ medicationId, campos: { nome: c.valor } });
+            const { med: depois } = await lerMedicamentoGravado(medicationId);
+            console.log(`✏️ [CORRECAO] Nome: ${med.nome} → ${depois.nome} — ${user.phone}`);
+            return await aplicarCorrecao({ user, medicationId, campoAlvo, medicationNome: med.nome, antes: med.nome, depois: depois.nome });
+        }
+        return await naoResolveu();
+    }
+
+    if (campoAlvo === 'dosagem') {
+        // MH-79: forma de outra família = apresentação nova → oferta de cadastro
+        // próprio com nome qualificado, nunca sobrescrita silenciosa.
+        const formaMencionada = detectarFormaMencionada(message);
+        if (apresentacaoDistinta(formaMencionada, med.forma_farmaceutica)) {
+            const nomeQualificado = `${med.nome} (${formaMencionada})`;
+            await saveConversationState(user.id, {
+                state: 'configurando',
+                context: { etapa: 'corrigir_mh79_confirmar', medicationId, medicationNome: med.nome, nomeQualificado }
+            });
+            console.log(`🔀 [CORRECAO] MH-79: apresentação distinta (${med.forma_farmaceutica} → ${formaMencionada}) — oferta de novo tratamento — ${user.phone}`);
+            return renderizarOfertaNovaApresentacao({ medicationNome: med.nome, nomeQualificado });
+        }
+
+        const c = await extrairCampoSimples({ campo: 'dosagem', message, historicoConversa });
+        if (c.categoria === 'valor' && ehDosagemReconhecivel(c.valor)) {
+            await atualizarMedicamentoCampos({ medicationId, campos: { dosagem: c.valor } });
+            const { med: depois } = await lerMedicamentoGravado(medicationId);
+            return await aplicarCorrecao({ user, medicationId, campoAlvo, medicationNome: med.nome, antes: med.dosagem || 'não informada', depois: depois.dosagem });
+        }
+        return await naoResolveu();
+    }
+
+    if (campoAlvo === 'quantidade') {
+        const horariosAtivos = med.schedulesAtivos.map(s => String(s.horario).slice(0, 5));
+        const cls = await classificarPosologia({
+            message, campoEsperado: 'quantidade', nomeMedicamento: med.nome,
+            horariosJaColetados: horariosAtivos, historicoConversa, emCorrecao: true,
+            unidadeDoseContexto: med.unidade_dose
+        });
+        const paresNovos = (cls.pares || []).length > 0 ? cls.pares : null;
+        const quantidadeUnica = cls.quantidadeUnica ?? null;
+        if (paresNovos || quantidadeUnica) {
+            const alterados = await atualizarQuantidadePorDose(medicationId, { pares: paresNovos, quantidadeUnica });
+            if (alterados.length === 0) {
+                await saveConversationState(user.id, { state: 'idle', context: {} });
+                return `A quantidade do *${med.nome}* já estava assim — nada precisou mudar. 🌿`;
+            }
+            const { med: medDepois, pares } = await lerMedicamentoGravado(medicationId);
+            const rotuloUnidade = medDepois.unidade_dose === 'unidade' ? '' : ` ${medDepois.unidade_dose}`;
+            const depoisTexto = pares.map(p => `${p.horario} — ${p.quantidade}${rotuloUnidade}`).join(', ');
+            const antesTexto = alterados.map(a => `${a.de}`).join('/');
+            return await aplicarCorrecao({ user, medicationId, campoAlvo, medicationNome: med.nome, antes: antesTexto, depois: depoisTexto });
+        }
+        return await naoResolveu();
+    }
+
+    if (campoAlvo === 'horarios') {
+        const estrutura = interpretarRecorrencia(message);
+        if (estrutura && !estrutura.suportada) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return renderizarBloqueioRecorrencia(extrairHorariosCitados(message), estrutura.padroes);
+        }
+        const horariosNovos = estrutura?.diasPorHorario
+            ? Object.keys(estrutura.diasPorHorario)
+            : extrairHorariosCitados(message);
+        if (horariosNovos.length > 0) {
+            const antesTexto = med.schedulesAtivos
+                .map(s => `${String(s.horario).slice(0, 5)}${rotuloDias(s.dias_semana) ? ` (${rotuloDias(s.dias_semana)})` : ''}`)
+                .sort().join(', ');
+            // MH-41 dentro do ponto único: pendentes dos horários que saem morrem juntos.
+            await reativarComAtualizacao({
+                medicationId, horarios: horariosNovos, apenasHorarios: true,
+                diasPorHorario: estrutura?.diasPorHorario ?? null
+            });
+            const { med: medDepois, pares } = await lerMedicamentoGravado(medicationId);
+            const depoisTexto = pares
+                .map(p => `${p.horario}${rotuloDias(p.dias_semana) ? ` (${rotuloDias(p.dias_semana)})` : ''}`)
+                .join(', ');
+            return await aplicarCorrecao({ user, medicationId, campoAlvo, medicationNome: medDepois.nome, antes: antesTexto, depois: depoisTexto });
+        }
+        return await naoResolveu();
+    }
+
+    if (campoAlvo === 'duracao') {
+        const t = await classificarTipoTratamento({ message, nomeMedicamento: med.nome, aguardandoDias: false, historicoConversa });
+        const antesTexto = med.tipo_tratamento === 'temporario' ? `${med.tratamento_dias} dias` : 'contínuo';
+        if (t.categoria === 'continuo') {
+            await atualizarMedicamentoCampos({ medicationId, campos: { tipo_tratamento: 'continuo', tratamento_dias: null } });
+            return await aplicarCorrecao({ user, medicationId, campoAlvo, medicationNome: med.nome, antes: antesTexto, depois: 'uso contínuo' });
+        }
+        if (t.categoria === 'dias' && t.dias) {
+            // Encurtar/prolongar recalcula tratamento_fim (MH-43 parcial: prorrogação).
+            await atualizarMedicamentoCampos({ medicationId, campos: { tipo_tratamento: 'temporario', tratamento_dias: t.dias } });
+            const { med: medDepois } = await lerMedicamentoGravado(medicationId);
+            const fimBR = formatarDataBRDeISO(medDepois.tratamento_fim);
+            return await aplicarCorrecao({
+                user, medicationId, campoAlvo, medicationNome: med.nome,
+                antes: antesTexto, depois: `${t.dias} dias${fimBR ? ` (até ${fimBR})` : ''}`
+            });
+        }
+        return await naoResolveu();
+    }
+
+    if (campoAlvo === 'estoque') {
+        const v = await validarEstoque({
+            message,
+            campos: { nome: med.nome, unidade_estoque: med.unidade_estoque, medication_id: medicationId },
+            historicoConversa
+        });
+        if (v.resolvido !== undefined && v.resolvido !== null) {
+            if (v.resolvido.valor === null) {
+                await saveConversationState(user.id, { state: 'idle', context: {} });
+                return `Tudo bem! O estoque do *${med.nome}* fica como está — quando souber, é só me mandar a quantidade. 🌿`;
+            }
+            await registrarMovimentoEstoque({
+                medicationId, tipo: 'correcao_set', origem: 'manual',
+                motivo: v.resolvido.motivo, estimado: v.resolvido.estimado,
+                valorAbsoluto: v.resolvido.valor
+            });
+            const { med: medDepois } = await lerMedicamentoGravado(medicationId);
+            const unidadeLabel = medDepois.unidade_estoque === 'ml' ? 'ml' : 'unidades';
+            return await aplicarCorrecao({
+                user, medicationId, campoAlvo, medicationNome: med.nome,
+                antes: med.estoque_atual !== null ? `${med.estoque_atual} ${unidadeLabel}` : 'não informado',
+                depois: `${medDepois.estoque_atual} ${unidadeLabel}`
+            });
+        }
+        return await naoResolveu();
+    }
+
+    return { escalarParaRoteador: true };
+}
+
+// Cadastro novo a partir da oferta MH-79 (nome qualificado já decidido):
+// entra direto na pendência de posologia, pelo caminho normal do runner.
+export async function iniciarCadastroComNome({ user, nome }) {
+    const campos = { sujeito: 'usuario', nome };
+    const pend = proximaPendencia(SCHEMA_CADASTRO, campos);
+    await saveConversationState(user.id, {
+        state: SCHEMA_CADASTRO.estadoConversa,
+        context: { ...campos, etapa: pend.etapa }
+    });
+    return montarPerguntaPendente({ pend, campos, userName: user.name, nomeRecemColetado: true });
+}
+
+// ============================================================
+// CORREÇÃO DE DADOS PESSOAIS (MH-75) — SCHEMA_PERFIL no mesmo runner.
+// ============================================================
+
+export async function executarCorrecaoPerfil({ user, message, campoAlvo = null, historicoConversa = [], jaPerguntou = false }) {
+    const campos = SCHEMA_PERFIL.campos;
+
+    // Sem alvo declarado: a própria mensagem decide — data reconhecível vence;
+    // menção a nome com valor plausível também resolve; senão, pergunta qual.
+    let campo = campoAlvo ? campos.find(c => c.nome === campoAlvo) : null;
+    if (!campo) {
+        const campoData = campos.find(c => c.nome === 'data_nascimento');
+        const rData = campoData.validador({ message });
+        if (rData.acao === 'valor' || rData.acao === 'data_invalida') {
+            campo = campoData;
+        } else if (/\bnome\b|\bme chamo\b|\bchamar\b/i.test(message)) {
+            campo = campos.find(c => c.nome === 'nome_usuario');
+        } else if (/\bnascimento\b|\bdata\b|\bidade\b/i.test(message)) {
+            campo = campoData;
+        }
+    }
+    if (!campo) {
+        await saveConversationState(user.id, {
+            state: 'configurando',
+            context: { etapa: 'corrigir_perfil', campoAlvo: null }
+        });
+        return renderizarPerguntaQualDadoPessoal();
+    }
+
+    const resultado = campo.validador({ message });
+
+    if (resultado.acao === 'valor') {
+        if (campo.nome === 'nome_usuario') {
+            const novoNome = resultado.updates.nome_usuario;
+            // "corrigir meu nome" sem o nome novo: o valor extraído não pode ser
+            // só o pedido — exige diferença real do nome atual.
+            if (normalizar(novoNome) === normalizar(user.name || '')) {
+                return await perguntarValorPerfil({ user, campo, jaPerguntou });
+            }
+            await updateUser(user.id, { name: novoNome });
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            console.log(`✏️ [CORRECAO-PERFIL] Nome: ${user.name} → ${novoNome} — ${user.phone}`);
+            return renderizarPerfilAtualizado({ campo: 'nome_usuario', antes: user.name, depois: novoNome });
+        }
+        const novaData = resultado.updates.data_nascimento;
+        await updateUser(user.id, { data_nascimento: novaData });
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        console.log(`✏️ [CORRECAO-PERFIL] Data de nascimento atualizada — ${user.phone}`);
+        return renderizarPerfilAtualizado({
+            campo: 'data_nascimento',
+            antes: formatarDataBRDeISO(user.data_nascimento),
+            depois: formatarDataBRDeISO(novaData)
+        });
+    }
+
+    if (resultado.acao === 'data_invalida') {
+        await saveConversationState(user.id, {
+            state: 'configurando',
+            context: { etapa: 'corrigir_perfil', campoAlvo: campo.nome }
+        });
+        return renderizarDataInvalida();
+    }
+
+    return await perguntarValorPerfil({ user, campo, jaPerguntou });
+}
+
+async function perguntarValorPerfil({ user, campo, jaPerguntou }) {
+    if (jaPerguntou) return { escalarParaRoteador: true };
+    await saveConversationState(user.id, {
+        state: 'configurando',
+        context: { etapa: 'corrigir_perfil', campoAlvo: campo.nome }
+    });
+    return campo.pergunta();
 }
 
 // ------------------------------------------------------------

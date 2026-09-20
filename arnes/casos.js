@@ -1159,5 +1159,282 @@ export const CASOS = [
             });
             return checks;
         }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A26',
+        marco: 'M3',
+        titulo: 'Edição = schema em modo correção (P2): nome, dosagem, qtd/dose, duração, horário (MH-41) e perfil (MH-75)',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Editor', onboarded: true, nascimento: '1980-01-01', estado: 'idle' });
+            const { med, schedules } = await seeds.criarMedicamento({
+                userId: user.id, nome: 'Enalapril', dosagem: '10mg',
+                estoque: 30, horarios: ['08:00'], quantidadePorDose: 1
+            });
+
+            // 1. NOME — antes → depois pós-escrita.
+            const r1 = await turno(ctx, user, 'O nome do Enalapril tá errado, o certo é Enalapril Maleato');
+            checagensDeForma(checks, 'nome', r1);
+            let m = (await medicamentos(ctx.db, user.id))[0];
+            checks.push({
+                nome: 'nome corrigido no banco (Enalapril → Enalapril Maleato)',
+                ok: /^enalapril maleato$/i.test(m?.nome || ''),
+                detalhe: `nome: ${m?.nome}`
+            });
+            checks.push({ nome: 'nome: declara antes → depois', ok: /enalapril/i.test(r1) && /maleato/i.test(r1) && /atualizad|corrig/i.test(r1), detalhe: r1.slice(0, 140) });
+
+            // 2. DOSAGEM.
+            const r2 = await turno(ctx, user, 'A dosagem do Enalapril Maleato na verdade é 20mg');
+            checagensDeForma(checks, 'dosagem', r2);
+            m = (await medicamentos(ctx.db, user.id))[0];
+            checks.push({ nome: 'dosagem corrigida no banco (10mg → 20mg)', ok: m?.dosagem === '20mg', detalhe: `dosagem: ${m?.dosagem}` });
+            checks.push({ nome: 'dosagem: declara antes → depois', ok: /10mg/.test(r2) && /20mg/.test(r2), detalhe: r2.slice(0, 140) });
+
+            // 3. QUANTIDADE POR DOSE.
+            const r3 = await turno(ctx, user, 'Agora eu tomo 2 comprimidos do Enalapril Maleato por vez');
+            checagensDeForma(checks, 'quantidade', r3);
+            m = (await medicamentos(ctx.db, user.id))[0];
+            const qtds = (m?.schedules || []).filter(s => s.ativo).map(s => Number(s.quantidade_por_dose));
+            checks.push({ nome: 'quantidade por dose atualizada (1 → 2)', ok: qtds.length === 1 && qtds[0] === 2, detalhe: `quantidades: ${qtds.join(', ')}` });
+
+            // 4. DURAÇÃO — recalcula tratamento_fim (MH-43 parcial).
+            const r4 = await turno(ctx, user, 'O tratamento do Enalapril Maleato agora é por 10 dias');
+            checagensDeForma(checks, 'duração', r4);
+            m = (await medicamentos(ctx.db, user.id))[0];
+            const fimEsperado = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+            checks.push({
+                nome: 'duração: temporário de 10 dias com tratamento_fim recalculada',
+                ok: m?.tipo_tratamento === 'temporario' && Number(m?.tratamento_dias) === 10 && m?.tratamento_fim === fimEsperado,
+                detalhe: `tipo: ${m?.tipo_tratamento}, dias: ${m?.tratamento_dias}, fim: ${m?.tratamento_fim} (esperado ${fimEsperado})`
+            });
+
+            // 5. HORÁRIO — MH-41: dose pendente do horário antigo CANCELADA no ato.
+            const dosePendente = await seeds.criarDosePendente({
+                medicationId: med.id, scheduleId: schedules[0].id, horario: '08:00', minutosAtras: 60
+            });
+            await turno(ctx, user, 'Muda o lembrete do Enalapril Maleato das 8 para as 9 da manhã');
+            const r5 = await turno(ctx, user, 'Sim');
+            m = (await medicamentos(ctx.db, user.id))[0];
+            const horariosAtivos = (m?.schedules || []).filter(s => s.ativo).map(s => String(s.horario).slice(0, 5));
+            checks.push({ nome: 'horário alterado no banco (08:00 → 09:00)', ok: horariosAtivos.length === 1 && horariosAtivos[0] === '09:00', detalhe: `horários: ${horariosAtivos.join(', ')}` });
+            const logs = await doseLogs(ctx.db, med.id);
+            const dosePos = logs.find(d => d.id === dosePendente.id);
+            checks.push({
+                nome: 'MH-41: dose pendente das 08:00 CANCELADA no mesmo ato',
+                ok: dosePos?.status === 'pausado',
+                detalhe: `status da dose antiga: ${dosePos?.status}`
+            });
+
+            // 6. PERFIL (MH-75): data de nascimento em dois turnos.
+            const r6 = await turno(ctx, user, 'Quero corrigir minha data de nascimento');
+            checagensDeForma(checks, 'perfil pergunta', r6);
+            checks.push({ nome: 'perfil: pede a data (nunca ignora o pedido)', ...contem(r6, /data de nascimento|nascimento/i, 'pergunta da data') });
+            const r7 = await turno(ctx, user, '19/03/1985');
+            checagensDeForma(checks, 'perfil valor', r7);
+            const { data: userDepois } = await ctx.db.from('users').select('data_nascimento').eq('id', user.id).single();
+            checks.push({
+                nome: 'MH-75: data de nascimento atualizada no banco',
+                ok: userDepois?.data_nascimento === '1985-03-19',
+                detalhe: `data_nascimento: ${userDepois?.data_nascimento}`
+            });
+            checks.push({ nome: 'perfil: declara antes → depois', ok: /19\/03\/1985/.test(r7), detalhe: r7.slice(0, 140) });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A30',
+        marco: 'M3',
+        titulo: 'BUG-86 em duas partes — dupla pendência: vence a pergunta feita por último (P6.1)',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+
+            // (a) Cenário registrado de 01/08: fluxo de configuração aberto, o
+            // follow-up da dose chega DEPOIS da pergunta → "Sim" é da DOSE.
+            const userA = await seeds.criarUsuario({ nome: 'Parte A', onboarded: true, estado: 'idle' });
+            const { med: cataflamA } = await seeds.criarMedicamento({ userId: userA.id, nome: 'Cataflam', horarios: ['08:00'] });
+            const { med: omegaA, schedules: schedOmegaA } = await seeds.criarMedicamento({ userId: userA.id, nome: 'Ômega 3', horarios: ['12:00'] });
+
+            const r1 = await turno(ctx, userA, 'Quero pausar o Cataflam');
+            checks.push({ nome: '(a) setup: pergunta de confirmação do pausar', ...contem(r1, /pausar|confirmar/i, 'pergunta de confirmação') });
+            // Follow-up da dose chega DEPOIS da pergunta do fluxo (fora da janela
+            // de ambiguidade): a dose é o evento mais recente.
+            await seeds.criarDosePendente({ medicationId: omegaA.id, scheduleId: schedOmegaA[0].id, horario: '12:00', minutosAtras: -3 });
+
+            const r2 = await turno(ctx, userA, 'Sim');
+            checagensDeForma(checks, '(a) "Sim"', r2);
+            const logsOmegaA = await doseLogs(ctx.db, omegaA.id);
+            checks.push({
+                nome: '(a) dose do Ômega 3 confirmada (o follow-up era a pergunta mais recente)',
+                ok: logsOmegaA.some(d => d.confirmed === true),
+                detalhe: `status: ${logsOmegaA.map(d => d.status).join(', ')}`
+            });
+            const { data: cataflamDepoisA } = await ctx.db.from('medications')
+                .select('status, schedules(ativo)').eq('id', cataflamA.id).single();
+            checks.push({
+                nome: '(a) Cataflam NÃO foi pausado pelo "Sim" da dose',
+                ok: cataflamDepoisA?.status !== 'pausado' && (cataflamDepoisA?.schedules || []).some(s => s.ativo),
+                detalhe: `status: ${cataflamDepoisA?.status}, schedules ativos: ${(cataflamDepoisA?.schedules || []).filter(s => s.ativo).length}`
+            });
+
+            // (b) O inverso: a dose chegou ANTES; a pergunta do fluxo é a mais
+            // recente → "Sim" é da AÇÃO; a dose segue pendente.
+            const userB = await seeds.criarUsuario({ nome: 'Parte B', onboarded: true, estado: 'idle' });
+            const { med: cataflamB } = await seeds.criarMedicamento({ userId: userB.id, nome: 'Cataflam', horarios: ['08:00'] });
+            const { med: omegaB, schedules: schedOmegaB } = await seeds.criarMedicamento({ userId: userB.id, nome: 'Ômega 3', horarios: ['12:00'] });
+            const doseB = await seeds.criarDosePendente({ medicationId: omegaB.id, scheduleId: schedOmegaB[0].id, horario: '12:00', minutosAtras: 10 });
+
+            await turno(ctx, userB, 'Quero pausar o Cataflam');
+            const r4 = await turno(ctx, userB, 'Sim');
+            checagensDeForma(checks, '(b) "Sim"', r4);
+            const { data: cataflamDepoisB } = await ctx.db.from('medications')
+                .select('status, schedules(ativo)').eq('id', cataflamB.id).single();
+            checks.push({
+                nome: '(b) Cataflam PAUSADO (a pergunta do fluxo era a mais recente) — status explícito P1',
+                ok: cataflamDepoisB?.status === 'pausado' && (cataflamDepoisB?.schedules || []).every(s => !s.ativo),
+                detalhe: `status: ${cataflamDepoisB?.status}, schedules ativos: ${(cataflamDepoisB?.schedules || []).filter(s => s.ativo).length}`
+            });
+            const doseBDepois = (await doseLogs(ctx.db, omegaB.id)).find(d => d.id === doseB.id);
+            checks.push({
+                nome: '(b) dose do Ômega 3 segue pendente (o "Sim" não era dela)',
+                ok: doseBDepois?.confirmed === false && doseBDepois?.status === 'pendente',
+                detalhe: `confirmed: ${doseBDepois?.confirmed}, status: ${doseBDepois?.status}`
+            });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A24',
+        marco: 'M3',
+        titulo: 'Reativação em 5 passos — porta 1 ("reativar X"): foto congelada, manter/mudar, horários declarados, convite de estoque',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Reativa', onboarded: true, estado: 'idle' });
+            const { med } = await seeds.criarMedicamento({
+                userId: user.id, nome: 'Sertralina', dosagem: '50mg',
+                estoque: null, horarios: ['07:00', '19:00'], quantidadePorDose: 2
+            });
+            // Pausa pelo fluxo real (escreve o status explícito do P1).
+            await turno(ctx, user, 'Pausar a Sertralina');
+            await turno(ctx, user, 'Sim');
+            const { data: medPausado } = await ctx.db.from('medications').select('status').eq('id', med.id).single();
+            if (medPausado?.status !== 'pausado') {
+                return [{ nome: 'setup: Sertralina pausada com status explícito', ok: false, detalhe: `status: ${medPausado?.status}` }];
+            }
+
+            // Porta 1 — passo 1+2: foto congelada + manter ou mudar.
+            const r1 = await turno(ctx, user, 'Quero reativar a Sertralina');
+            checagensDeForma(checks, 'passo 1+2', r1);
+            checks.push({ nome: 'foto congelada: horários preservados exibidos (07:00 e 19:00)', ok: /07:00/.test(r1) && /19:00/.test(r1), detalhe: r1.slice(0, 200) });
+            checks.push({ nome: 'foto congelada: posologia exibida (2 por horário)', ...contem(r1, /2 comprimidos|2 unidades/i, 'quantidade da foto') });
+            checks.push({ nome: 'passo 2: pergunta "manter ou mudar"', ...contem(r1, /manter|mudar/i, 'manter ou mudar') });
+
+            // Passo 3: alteração de horário via P2, dita na resposta.
+            const r2 = await turno(ctx, user, 'Muda pra 8h e 20h');
+            checagensDeForma(checks, 'passo 3+4', r2);
+            const { data: medDepois } = await ctx.db.from('medications')
+                .select('status, schedules(horario, ativo, quantidade_por_dose)').eq('id', med.id).single();
+            const ativos = (medDepois?.schedules || []).filter(s => s.ativo)
+                .map(s => ({ h: String(s.horario).slice(0, 5), q: Number(s.quantidade_por_dose) }))
+                .sort((a, b) => a.h.localeCompare(b.h));
+            checks.push({
+                nome: 'passo 4: reativado com a grade NOVA (08:00 e 20:00), quantidade preservada (2)',
+                ok: medDepois?.status === 'ativo' && ativos.length === 2
+                    && ativos[0].h === '08:00' && ativos[1].h === '20:00'
+                    && ativos.every(s => s.q === 2),
+                detalhe: `status: ${medDepois?.status}, schedules: ${JSON.stringify(ativos)}`
+            });
+            checks.push({ nome: 'passo 4: confirmação DECLARA os horários vigentes', ok: /08:00/.test(r2) && /20:00/.test(r2), detalhe: r2.slice(0, 200) });
+            checks.push({ nome: 'passo 5: convite de estoque no template do cadastro (com porta de saída)', ok: /📦/.test(r2) && /tudo bem/i.test(r2), detalhe: r2.slice(-200) });
+
+            // Passo 5: estoque respondido fecha pelo template pós-escrita.
+            const r3 = await turno(ctx, user, '30');
+            checagensDeForma(checks, 'passo 5', r3);
+            const { data: medFinal } = await ctx.db.from('medications').select('estoque_atual').eq('id', med.id).single();
+            checks.push({ nome: 'estoque do convite gravado (30)', ok: Number(medFinal?.estoque_atual) === 30, detalhe: `estoque_atual: ${medFinal?.estoque_atual}` });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A25',
+        marco: 'M3',
+        titulo: 'Porta 2 — cadastrar medicamento pausado/encerrado: aviso + foto + oferta (BUG-61 morre)',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+
+            // (1) PAUSADO: cadastrar de novo → aviso + foto + oferta; "sim" reativa.
+            const userP = await seeds.criarUsuario({ nome: 'Porta Dois', onboarded: true, estado: 'idle' });
+            const { med: medP } = await seeds.criarMedicamento({
+                userId: userP.id, nome: 'Atorvastatina', dosagem: '20mg', horarios: ['22:00'], quantidadePorDose: 1
+            });
+            await turno(ctx, userP, 'Pausar a Atorvastatina');
+            await turno(ctx, userP, 'Sim');
+
+            const r1 = await turno(ctx, userP, 'Quero cadastrar Atorvastatina');
+            checagensDeForma(checks, 'pausado: aviso', r1);
+            checks.push({ nome: 'pausado: avisa que já existe e mostra a foto (22:00)', ok: /pausad/i.test(r1) && /22:00/.test(r1), detalhe: r1.slice(0, 220) });
+            checks.push({ nome: 'pausado: oferece reativar/recadastrar', ok: /reativ/i.test(r1) && /cadastrar/i.test(r1), detalhe: r1.slice(-160) });
+            const medsP = await medicamentos(ctx.db, userP.id, { nomeIlike: 'Atorvastatina%' });
+            checks.push({ nome: 'pausado: NUNCA registro duplicado silencioso', ok: medsP.length === 1, detalhe: `${medsP.length} registro(s)` });
+
+            const r2 = await turno(ctx, userP, 'Sim');
+            checagensDeForma(checks, 'pausado: escolha', r2);
+            const r3 = await turno(ctx, userP, 'Manter assim');
+            const { data: medPDepois } = await ctx.db.from('medications')
+                .select('status, schedules(horario, ativo)').eq('id', medP.id).single();
+            checks.push({
+                nome: 'pausado: "sim" → reativação com a grade congelada (22:00 ativa)',
+                ok: medPDepois?.status === 'ativo'
+                    && (medPDepois?.schedules || []).some(s => s.ativo && String(s.horario).slice(0, 5) === '22:00'),
+                detalhe: `status: ${medPDepois?.status}, resposta: ${String(r3).slice(0, 120)}`
+            });
+
+            // (2) ENCERRADO (BUG-61): cadastrar de novo avança para novo tratamento.
+            const userE = await seeds.criarUsuario({ nome: 'Encerrou', onboarded: true, estado: 'idle' });
+            await seeds.criarMedicamento({ userId: userE.id, nome: 'Amoxicilina', horarios: ['08:00'] });
+            await turno(ctx, userE, 'Encerrar a Amoxicilina');
+            await turno(ctx, userE, 'Sim');
+            const { data: medE } = await ctx.db.from('medications')
+                .select('id, status').eq('user_id', userE.id).single();
+            if (medE?.status !== 'encerrado') {
+                checks.push({ nome: 'setup: Amoxicilina encerrada', ok: false, detalhe: `status: ${medE?.status}` });
+                return checks;
+            }
+
+            const r4 = await turno(ctx, userE, 'Quero cadastrar Amoxicilina de novo');
+            checagensDeForma(checks, 'encerrado: aviso', r4);
+            checks.push({ nome: 'encerrado: avisa o encerramento e mostra a foto', ok: /encerrad/i.test(r4) && /08:00/.test(r4), detalhe: r4.slice(0, 220) });
+
+            // BUG-61: a confirmação curta ("Isso") AVANÇA o recadastro.
+            const r5 = await turno(ctx, userE, 'Isso');
+            checagensDeForma(checks, 'encerrado: "Isso"', r5);
+            checks.push({ nome: 'BUG-61: "Isso" avança (pede a posologia do novo tratamento)', ...contem(r5, /quanto|hor[áa]rio/i, 'pergunta de posologia') });
+            checks.push({ nome: 'encerrado: não repergunta o nome', ...naoContem(r5, /qual o \*?nome\*?/i, 'repergunta de nome') });
+
+            const r6 = await turno(ctx, userE, '1 comprimido às 9h por 7 dias');
+            checagensDeForma(checks, 'encerrado: posologia', r6);
+            const medsE = await medicamentos(ctx.db, userE.id, { nomeIlike: 'Amoxicilina%' });
+            const novo = medsE.find(m => m.status === 'ativo' || m.ativo === true);
+            const antigo = medsE.find(m => m.id === medE.id);
+            checks.push({
+                nome: 'BUG-61: novo tratamento gravado (registro NOVO), encerrado preservado no histórico (MH-31)',
+                ok: medsE.length === 2 && !!novo && novo.id !== medE.id && antigo?.status === 'encerrado',
+                detalhe: `${medsE.length} registro(s); novo: ${novo?.id !== medE.id}; antigo: ${antigo?.status}`
+            });
+            const horariosNovo = (novo?.schedules || []).filter(s => s.ativo).map(s => String(s.horario).slice(0, 5));
+            checks.push({
+                nome: 'recadastro: schedule 09:00 e tratamento de 7 dias',
+                ok: horariosNovo.length === 1 && horariosNovo[0] === '09:00' && Number(novo?.tratamento_dias) === 7,
+                detalhe: `horários: ${horariosNovo.join(', ')}; dias: ${novo?.tratamento_dias}`
+            });
+            return checks;
+        }
     }
 ];

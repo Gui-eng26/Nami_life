@@ -61,9 +61,12 @@ export const CAPACIDADES = [
   {
     agente: 'configuracao',
     titulo: 'Configuração de tratamento',
-    descricao: 'pausar, reativar, encerrar tratamento; alterar/remover/adicionar/redefinir horário de lembrete',
-    limites: 'só horário e status do tratamento — dosagem, nome e duração de um ' +
-      'medicamento já cadastrado ainda não podem ser alterados'
+    descricao: 'pausar, reativar, encerrar tratamento; alterar/remover/adicionar/redefinir horário ' +
+      'de lembrete; corrigir nome, dosagem, quantidade por dose, duração do tratamento e estoque ' +
+      'de um medicamento já cadastrado (M3 P2); corrigir dados pessoais do usuário — nome e data ' +
+      'de nascimento (MH-75)',
+    limites: 'ajustar o horário de UMA dose pontual (só hoje/só desta vez) ainda não — o que dá ' +
+      'é mudar o horário fixo ou confirmar a dose depois'
   },
   {
     agente: 'principal',
@@ -93,9 +96,9 @@ export const AINDA_NAO = [
   { chave: 'foto', rotulo: 'entender fotos e imagens' },
   { chave: 'conectar_cuidador', rotulo: 'conectar um cuidador ou familiar' },
   { chave: 'ciclos_complexos', rotulo: 'ciclos de tratamento por semanas (a cada 3 semanas, 21 dias sim / 7 não)' },
-  { chave: 'alterar_dosagem', rotulo: 'alterar dosagem de um medicamento já cadastrado', escopo: 'configuracao' },
-  { chave: 'alterar_nome', rotulo: 'alterar nome de um medicamento já cadastrado', escopo: 'configuracao' },
-  { chave: 'alterar_duracao', rotulo: 'alterar tempo/duração de um tratamento já cadastrado', escopo: 'configuracao' },
+  // M3 P2: alterar dosagem/nome/duração saíram daqui — viraram capacidade
+  // (modo correção do runner). MH-27 entra com honestidade (P6.7).
+  { chave: 'reagendar_dose_pontual', rotulo: 'ajustar o horário de uma dose pontual (só hoje / só desta vez)', escopo: 'configuracao' },
   { chave: 'sintomas_medidas', rotulo: 'registrar sintomas, pressão, glicemia ou outros dados de saúde' },
   { chave: 'exportar_historico', rotulo: 'exportar histórico em arquivo' },
   { chave: 'falar_com_medico', rotulo: 'falar com médico, agendar consulta' }

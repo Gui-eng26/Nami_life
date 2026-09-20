@@ -58,6 +58,16 @@ async function temDosePendente(userId) {
     return filtrarDosesPendentes(doses).length > 0;
 }
 
+// P6.1 (BUG-86): etapas em que a pergunta de fluxo aberta é de SIM/NÃO — só
+// nelas um "sim" curto disputa com a dose pendente (pela pergunta mais
+// recente). Pergunta ABERTA de coleta (posologia, estoque, nome) não é
+// respondida com "sim" — a dose vence como sempre (regra 5, caso A4).
+const ETAPAS_COM_CONFIRMACAO_DE_FLUXO = new Set([
+    'confirm_acao', 'reativ_confirmar', 'cad_lote_confirmar',
+    'corrigir_mh79_confirmar', 'pos_alteracao', 'reativ_oferta', 'reativ_manter_ou_mudar'
+]);
+const JANELA_AMBIGUIDADE_DUPLA_PENDENCIA_MS = 90_000;
+
 // ============================================================
 // ALERTA/CONVITE DE ESTOQUE PÓS-CONFIRMAÇÃO — ponto único (P30)
 // Mesma decisão nos três caminhos determinísticos de confirmação
@@ -868,12 +878,49 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         // ---- FAST-PATHS DETERMINÍSTICOS (§5.4) ----
 
         // Dose vence qualquer fluxo pendente (regra 5) — inclusive coleta.
+        //
+        // P6.1 (M3, BUG-86 resíduo): com DUPLA pendência (pergunta de fluxo
+        // aberta E dose pendente), vence a PERGUNTA FEITA POR ÚLTIMO. Na
+        // ambiguidade genuína (as duas na mesma janela), pergunta de
+        // desambiguação de uma linha — nunca escolha silenciosa.
         if (detectarConfirmacaoDose(message)) {
-            if (await temDosePendente(user.id)) {
-                const confirmacao = await confirmarDosePendenteDeterministico(user, state);
-                if (confirmacao) {
-                    agentName = 'fast_path_dose';
-                    response = confirmacao;
+            const dosesPendentesAgora = filtrarDosesPendentes(await getRecentDoses(user.id, 1));
+            if (dosesPendentesAgora.length > 0) {
+                const maisRecente = dosesPendentesAgora[0];
+                const tDose = new Date(
+                    maisRecente.ultima_tentativa_at || maisRecente.reminder_sent_at || maisRecente.scheduled_at
+                ).getTime();
+
+                let venceFluxo = false;
+                let ambiguo = false;
+                if (ETAPAS_COM_CONFIRMACAO_DE_FLUXO.has(state?.context?.etapa)) {
+                    const tPergunta = new Date(historicoConversa.at(-1)?.created_at ?? 0).getTime();
+                    if (tPergunta > 0) {
+                        const delta = tPergunta - tDose;
+                        if (Math.abs(delta) <= JANELA_AMBIGUIDADE_DUPLA_PENDENCIA_MS) ambiguo = true;
+                        else if (delta > 0) venceFluxo = true;
+                    }
+                }
+
+                if (ambiguo) {
+                    const firstName = user.name ? user.name.split(' ')[0] : null;
+                    const nomeDose = maisRecente.medications?.nome || 'seu remédio';
+                    const assuntoFluxo = state?.context?.medicationNome
+                        ? `o ajuste do *${state.context.medicationNome}*`
+                        : 'o que a gente estava combinando';
+                    agentName = 'desambiguacao_dupla_pendencia';
+                    console.log(`❓ [P6.1] Dupla pendência na mesma janela — desambiguação — ${user.phone}`);
+                    response = `Só pra eu não errar${firstName ? `, ${firstName}` : ''}: esse "sim" é pra dose do *${nomeDose}*, ou pra ${assuntoFluxo}? 😊`;
+                } else if (venceFluxo) {
+                    console.log(`⚖️ [P6.1] Dupla pendência — pergunta do fluxo é mais recente, "sim" segue para o fluxo — ${user.phone}`);
+                    // cai para a porta/fluxo normal — a dose continua pendente e
+                    // será cobrada pelo follow-up de sempre.
+                } else {
+                    const confirmacao = await confirmarDosePendenteDeterministico(user, state);
+                    if (confirmacao) {
+                        agentName = 'fast_path_dose';
+                        response = confirmacao;
+                    }
                 }
             } else {
                 // Resposta tardia ao esgotamento (BUG-035)
