@@ -27,6 +27,43 @@ export function medicamentoDiferente(medicamentosPropostos, nomeEmAndamento) {
     });
 }
 
+// Commit 0 do M3 (caso Evandro): "Keppra" dito na etapa de estoque do "Kepra"
+// é CORREÇÃO de grafia, nunca medicamento novo. Palavra a palavra: mesmo número
+// de palavras e cada par ou é igual ou difere por edição pequena (≤2) em palavra
+// com corpo (≥4 letras) — "Vitamina C" vs "Vitamina D" NÃO é correção (a
+// diferença é uma palavra inteira de 1 letra), "Kepra" vs "Keppra" é.
+function distanciaEdicao(a, b) {
+    const m = a.length, n = b.length;
+    if (Math.abs(m - n) > 2) return 3;
+    let prev = Array.from({ length: n + 1 }, (_, j) => j);
+    for (let i = 1; i <= m; i++) {
+        const cur = [i];
+        for (let j = 1; j <= n; j++) {
+            cur[j] = Math.min(
+                prev[j] + 1,
+                cur[j - 1] + 1,
+                prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+            );
+        }
+        prev = cur;
+    }
+    return prev[n];
+}
+
+export function nomeCorrigidoParecido(nomeAtual, nomeNovo) {
+    if (!nomeAtual || !nomeNovo) return false;
+    const palavrasA = normalizar(nomeAtual).trim().split(/\s+/);
+    const palavrasB = normalizar(nomeNovo).trim().split(/\s+/);
+    if (palavrasA.length !== palavrasB.length) return false;
+    if (palavrasA.join(' ') === palavrasB.join(' ')) return false; // igual não é correção
+    return palavrasA.every((pa, i) => {
+        const pb = palavrasB[i];
+        if (pa === pb) return true;
+        if (pa.length < 4 || pb.length < 4) return false;
+        return distanciaEdicao(pa, pb) <= 2;
+    });
+}
+
 export function encontrarMedicamento(texto, medications) {
     if (!texto) return null;
     const t = normalizar(texto);

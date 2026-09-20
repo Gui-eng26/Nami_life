@@ -565,6 +565,49 @@ export function renderizarConviteEstoqueLote() {
     return `📦 *Estoque:* se você souber quantos tem em casa de cada um, é só me falar — eu te aviso quando estiver acabando.\nSe não souber agora, tudo bem também. 🌿`;
 }
 
+// ------------------------------------------------------------
+// ESTOQUE AGREGADO (Commit 0 do M3 — caso Evandro): a resposta ao
+// convite "de cada um" tem atribuição por nome; número seco só com
+// um único pendente; tudo lido pós-escrita (P56).
+// ------------------------------------------------------------
+
+// Correção de grafia aplicada no meio da coleta (BUG-103, célula "nome").
+export function renderizarNomeCorrigido(nomeNovo) {
+    return `Corrigi o nome: *${nomeNovo}*. 😊`;
+}
+
+export function renderizarFechamentoEstoqueLote({ itens, restantes = [] }) {
+    const linhas = itens.map(({ med }) => {
+        const rotulo = med.unidade_estoque === 'ml'
+            ? 'ml'
+            : pluralizarRotulo(rotuloDaDose(med.unidade_dose, med.forma_farmaceutica), Number(med.estoque_atual));
+        return `• *${med.nome}* — ${med.estoque_atual} ${rotulo}`;
+    }).join('\n');
+
+    const partes = [`📦 Estoque anotado:\n${linhas}`];
+    for (const { med, alerta } of itens) {
+        if (alerta?.dias_restantes !== undefined && alerta?.dias_restantes !== null) {
+            partes.push(`⚠️ O estoque de *${med.nome}* dura aproximadamente *${alerta.dias_restantes}* ${Number(alerta.dias_restantes) === 1 ? 'dia' : 'dias'} — bom já planejar a recompra! 💊`);
+        }
+    }
+    if (restantes.length > 0) {
+        partes.push(`O estoque de ${restantes.map(r => `*${r.nome}*`).join(' e ')} fica pra depois — quando souber, é só me mandar. 🌿`);
+    } else if (itens.every(i => !i.alerta)) {
+        partes.push('Quando algum estiver acabando, eu te aviso pra você comprar antes de ficar sem. 🌿');
+    }
+    return partes.join('\n\n');
+}
+
+// Número seco com mais de um pendente: UMA pergunta, na última linha (regra 8).
+export function renderizarPerguntaQualEstoque(pendentes, valor) {
+    const nomes = pendentes.map(p => `*${p.nome}*`).join(' ou ');
+    return `Anotei o número — só falta saber de quem é. 😊\n\nEsse ${valor} é do ${nomes}?`;
+}
+
+export function renderizarEstoqueLoteFicaPraDepois(firstName) {
+    return `Tudo bem${firstName ? `, ${firstName}` : ''}! O estoque fica pra depois — quando souber, é só me mandar as quantidades. 🌿`;
+}
+
 // Repetição da proposta de lote (falha da camada 1 na confirmação).
 export function renderizarRepeticaoPropostaLote(candidatos) {
     return `Só me confirma uma coisa 😊\n\n${renderizarPropostaLote(candidatos)}`;

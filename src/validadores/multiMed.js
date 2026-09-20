@@ -31,8 +31,10 @@ function escapeRegex(s) {
 
 // Continência com FRONTEIRA de palavra — "vitamina d" NUNCA casa dentro de
 // "vitamina de a a z" (achado do replay da Priscila, 19/09: a Vitamina D caía
-// no grupo da Vitamina de A a Z e herdava a posologia dela).
-function contemComFronteira(linhaNorm, alvoNorm) {
+// no grupo da Vitamina de A a Z e herdava a posologia dela). Exportada: a
+// resposta ao convite de estoque agregado atribui número a nome com a MESMA
+// fronteira (Commit 0 do M3).
+export function contemComFronteira(linhaNorm, alvoNorm) {
     if (!alvoNorm) return false;
     return new RegExp(`(?:^|[^a-z0-9])${escapeRegex(alvoNorm)}(?:$|[^a-z0-9])`).test(linhaNorm);
 }

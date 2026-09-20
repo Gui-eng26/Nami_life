@@ -1029,5 +1029,128 @@ export const CASOS = [
             });
             return checks;
         }
+    },
+
+    // --------------------------------------------------------
+    // Marco M2 de propósito: é a correção quente do Commit 0 do M3 (defeito de
+    // produção do M2) — precisa gatear a promoção já, antes do restante do M3.
+    {
+        id: 'A32',
+        marco: 'M2',
+        titulo: 'Evandro 20/09 12:51 (produção) — "às 17hs" em duas linhas: lote + estoque agregado + correção de nome (Commit 0 do M3)',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+
+            // 0. Determinístico: variantes reais de sufixo de horário (a lacuna que
+            // deixou o arnês verde com produção falhando — A16 usa ":").
+            const { extrairHorariosCitados } = await import('../src/validadores/recorrencia.js');
+            const variantes = { 'às 17hs': '17:00', '17hrs': '17:00', '17hr': '17:00', '17 horas': '17:00', 'às 19 hs': '19:00' };
+            const variantesOk = Object.entries(variantes).every(([txt, hhmm]) => {
+                const r = extrairHorariosCitados(txt);
+                return r.length === 1 && r[0] === hhmm;
+            });
+            const intervaloNaoViraHorario = extrairHorariosCitados('1cp 12/12 hrs').length === 0;
+            checks.push({
+                nome: 'regex: "17hs"/"17hrs"/"17hr"/"17 horas" viram horário; "12/12 hrs" segue intervalo',
+                ok: variantesOk && intervaloNaoViraHorario,
+                detalhe: `variantes: ${variantesOk}, 12/12: ${JSON.stringify(extrairHorariosCitados('1cp 12/12 hrs'))}`
+            });
+
+            // 1. Input real do Evandro: lote dispara, os DOIS com o horário da sua linha.
+            const user = await seeds.criarUsuario({ nome: 'Evandro', onboarded: true, estado: 'post_onboarding' });
+            const r1 = await turno(ctx, user, 'Marevan 1 comprimido às 17hs\nKepra 1 comprimido às 19hs');
+            checagensDeForma(checks, 'turno 1', r1);
+            checks.push({ nome: 'turno 1: reconhece Marevan', ...contem(r1, /marevan/i, 'Marevan') });
+            checks.push({ nome: 'turno 1: reconhece Kepra', ...contem(r1, /kepp?ra/i, 'Kepra') });
+            checks.push({ nome: 'turno 1: zero repergunta de dado presente (horário)', ...naoContem(r1, /quais .{0,12}hor[áa]rios/i, 'repergunta de horários') });
+            checks.push({ nome: 'turno 1: zero repergunta de dado presente (quantidade)', ...naoContem(r1, /quanto você toma ou usa/i, 'repergunta de quantidade') });
+
+            const r2 = await turno(ctx, user, 'Sim');
+            checagensDeForma(checks, 'turno 2', r2);
+            const meds = await medicamentos(ctx.db, user.id);
+            const horarioDe = (m) => (m?.schedules || []).filter(s => s.ativo).map(s => String(s.horario).slice(0, 5)).join(',');
+            const marevan = meds.find(m => /marevan/i.test(m.nome));
+            const kepra = meds.find(m => /kepp?ra/i.test(m.nome));
+            checks.push({
+                nome: 'turno 2: os DOIS gravados, cada um com o horário da SUA linha (17:00/19:00)',
+                ok: meds.length === 2 && horarioDe(marevan) === '17:00' && horarioDe(kepra) === '19:00',
+                detalhe: `${meds.length} med(s): ${meds.map(m => `${m.nome}@${horarioDe(m)}`).join(' | ') || 'nenhum'}`
+            });
+            checks.push({ nome: 'turno 2: convite de estoque agregado ("de cada um")', ...contem(r2, /de cada um/i, 'convite agregado') });
+
+            // 2. Correção de grafia na resposta ao convite (Kepra → Keppra) — a que
+            // foi engolida em produção.
+            const r3 = await turno(ctx, user, 'Keppra');
+            checagensDeForma(checks, 'turno 3', r3);
+            const medsPosCorrecao = await medicamentos(ctx.db, user.id);
+            const keppra = medsPosCorrecao.find(m => /^keppra$/i.test(m.nome));
+            checks.push({
+                nome: 'turno 3: correção aplicada — renomeado para Keppra, sem registro novo',
+                ok: medsPosCorrecao.length === 2 && !!keppra,
+                detalhe: `${medsPosCorrecao.length} med(s): ${medsPosCorrecao.map(m => m.nome).join(' | ')}`
+            });
+            checks.push({ nome: 'turno 3: declara a correção', ...contem(r3, /keppra/i, 'nome corrigido') });
+
+            // 3. Forma nomeada: "Marevan 30, Keppra 29" — atribuição por nome.
+            const r4 = await turno(ctx, user, 'Marevan 30, Keppra 29');
+            checagensDeForma(checks, 'turno 4', r4);
+            const medsFinal = await medicamentos(ctx.db, user.id);
+            const estoqueDe = (re) => medsFinal.find(m => re.test(m.nome))?.estoque_atual;
+            checks.push({
+                nome: 'turno 4: estoque atribuído por NOME (Marevan=30, Keppra=29)',
+                ok: Number(estoqueDe(/marevan/i)) === 30 && Number(estoqueDe(/keppra/i)) === 29,
+                detalhe: `Marevan: ${estoqueDe(/marevan/i)}, Keppra: ${estoqueDe(/keppra/i)}`
+            });
+            checks.push({ nome: 'turno 4: fechamento pós-escrita declara os dois valores', ok: /30/.test(r4) && /29/.test(r4), detalhe: r4.slice(0, 160) });
+
+            // 4. Número seco com DOIS pendentes → pergunta de qual é (uma pergunta,
+            // última linha), sem gravação às cegas.
+            const user2 = await seeds.criarUsuario({ nome: 'Evandro Dois', onboarded: true, estado: 'post_onboarding' });
+            await turno(ctx, user2, 'Dipirona 1 comprimido às 8hs\nOmeprazol 1 comprimido às 21hs');
+            await turno(ctx, user2, 'Sim');
+            const r5 = await turno(ctx, user2, '30');
+            checagensDeForma(checks, 'número seco', r5);
+            const meds2 = await medicamentos(ctx.db, user2.id);
+            checks.push({
+                nome: 'número seco com 2 pendentes: NADA gravado às cegas',
+                ok: meds2.length === 2 && meds2.every(m => m.estoque_atual === null),
+                detalhe: `estoques: ${meds2.map(m => `${m.nome}=${m.estoque_atual}`).join(', ')}`
+            });
+            checks.push({ nome: 'número seco: pergunta de qual medicamento é', ...contem(r5, /qual|é d[oa]/i, 'pergunta de desambiguação') });
+
+            const r6 = await turno(ctx, user2, 'Do Omeprazol');
+            checagensDeForma(checks, 'desambiguação', r6);
+            const meds2b = await medicamentos(ctx.db, user2.id);
+            const est2 = (re) => meds2b.find(m => re.test(m.nome))?.estoque_atual;
+            checks.push({
+                nome: 'desambiguação: número guardado aplicado ao nomeado (Omeprazol=30, Dipirona segue NULL)',
+                ok: Number(est2(/omeprazol/i)) === 30 && est2(/dipirona/i) === null,
+                detalhe: `Omeprazol: ${est2(/omeprazol/i)}, Dipirona: ${est2(/dipirona/i)}`
+            });
+
+            // 5. Matriz do A9 completa (célula "nome" do BUG-103): correção de grafia
+            // na pergunta de estoque do fluxo de UM medicamento.
+            const user3 = await seeds.criarUsuario({ nome: 'Evandro Três', onboarded: true, estado: 'post_onboarding' });
+            await turno(ctx, user3, 'Kepra 1 comprimido às 19h');
+            const r7 = await turno(ctx, user3, 'Keppra');
+            checagensDeForma(checks, 'correção single', r7);
+            const meds3 = await medicamentos(ctx.db, user3.id);
+            checks.push({
+                nome: 'correção single: renomeado para Keppra no banco, um registro só',
+                ok: meds3.length === 1 && /^keppra$/i.test(meds3[0].nome),
+                detalhe: `${meds3.length} med(s): ${meds3.map(m => m.nome).join(' | ')}`
+            });
+            checks.push({ nome: 'correção single: declara e segue no estoque', ...contem(r7, /keppra/i, 'nome corrigido') });
+
+            const r8 = await turno(ctx, user3, '29');
+            checagensDeForma(checks, 'estoque single', r8);
+            const meds3b = await medicamentos(ctx.db, user3.id);
+            checks.push({
+                nome: 'estoque single: 29 gravado para o nome certo',
+                ok: Number(meds3b[0]?.estoque_atual) === 29,
+                detalhe: `estoque_atual: ${meds3b[0]?.estoque_atual}`
+            });
+            return checks;
+        }
     }
 ];

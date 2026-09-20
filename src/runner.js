@@ -36,7 +36,8 @@ import {
     getUserMedications,
     registrarMovimentoEstoque,
     getMedicationComSchedulesAtivos,
-    encerrarTratamento
+    encerrarTratamento,
+    atualizarMedicamentoCampos
 } from './database.js';
 import { detectarRecorrenciaNaoSuportada, interpretarRecorrencia, extrairHorariosCitados } from './validadores/recorrencia.js';
 import { hojeBRT } from './dataReferencia.js';
@@ -46,8 +47,8 @@ import { calcularAlertaEstoqueCadastro } from './validadores/estoque.js';
 import { extrairCadastroCompleto, mapearExtracaoParaCampos, aplicarExtracaoEmVazios } from './validadores/extratorCompleto.js';
 import { derivarFormaFarmaceutica, montarParesPosologia } from './validadores/derivacoes.js';
 import { classificarPosologia } from './validadores/posologia.js';
-import { dividirCandidatos, dividirNomeComposto, todosComHorario } from './validadores/multiMed.js';
-import { medicamentoDiferente } from './nlp_helpers.js';
+import { dividirCandidatos, dividirNomeComposto, todosComHorario, contemComFronteira } from './validadores/multiMed.js';
+import { medicamentoDiferente, nomeCorrigidoParecido, normalizar } from './nlp_helpers.js';
 import {
     ACOES_DE_FALHA,
     renderizarPerguntaNome, renderizarPerguntaPosologia, renderizarPerguntaEstoque,
@@ -59,7 +60,9 @@ import {
     renderizarPropostaLote, renderizarAberturaFila, renderizarPropostaDivisaoNome,
     renderizarTransicaoFila, renderizarFechamentoLote, renderizarRepeticaoPropostaLote,
     renderizarFechamentoAnterior, renderizarConviteEstoqueLote, renderizarDeclarativaCurta,
-    renderizarDuplicataCurta, renderizarNotaConvencaoPo
+    renderizarDuplicataCurta, renderizarNotaConvencaoPo,
+    renderizarNomeCorrigido, renderizarFechamentoEstoqueLote,
+    renderizarPerguntaQualEstoque, renderizarEstoqueLoteFicaPraDepois
 } from './schemas/cadastro.js';
 
 // Cancelamento determinístico — o LLM não decide transições.
@@ -245,6 +248,150 @@ async function gravarLote({ itens, user, sujeito }) {
     return { gravados, duplicatas, primeiroMedicamento };
 }
 
+// ------------------------------------------------------------
+// ESTOQUE AGREGADO (Commit 0 do M3 — caso Evandro): o convite "de
+// cada um" no fim do lote/fila deixa um estado leve com os pendentes,
+// para a resposta ("Marevan 30, Kepra 29" ou número seco) ter destino.
+// ------------------------------------------------------------
+
+function pendenciasDeEstoque(gravados) {
+    return (gravados || [])
+        .filter(g => g.med.estoque_atual === null || g.med.estoque_atual === undefined)
+        .map(g => ({ medicationId: g.med.id, nome: g.med.nome }));
+}
+
+// Fecha o lote/fila: com pendentes de estoque, o estado guarda a lista para o
+// convite agregado; sem pendentes, idle.
+async function salvarEstadoPosLote({ schema, user, sujeito, pendentes }) {
+    if ((pendentes || []).length > 0) {
+        await saveConversationState(user.id, {
+            state: schema.estadoConversa,
+            context: { sujeito, etapa: 'cad_estoque_lote', estoque_lote: pendentes }
+        });
+        return;
+    }
+    await saveConversationState(user.id, { state: 'idle', context: {} });
+}
+
+// Registro do estoque de um pendente pelo ponto único + leitura pós-escrita.
+async function registrarEstoqueDePendente(pendente, valor) {
+    await registrarMovimentoEstoque({
+        medicationId: pendente.medicationId,
+        tipo: 'cadastro_inicial',
+        origem: 'manual',
+        valorAbsoluto: valor
+    });
+    const { med, pares } = await lerMedicamentoGravado(pendente.medicationId);
+    const alerta = calcularAlertaEstoqueCadastro({
+        pares_posologia: pares,
+        unidade_dose: med.unidade_dose,
+        unidade_estoque: med.unidade_estoque,
+        gotas_por_ml: med.gotas_por_ml,
+        tratamento_dias: med.tratamento_dias
+    }, med.estoque_atual);
+    return { med, alerta };
+}
+
+const RE_NAO_SEI_ESTOQUE = /\bn[ãa]o sei\b|\bn[ãa]o fa[çc]o ideia\b|\bdepois (eu )?(vejo|falo|mando|conto)\b/i;
+
+// Resposta ao convite de estoque agregado. Devolve null quando a mensagem
+// claramente NÃO é sobre o estoque pendente (o chamador segue o fluxo normal).
+async function tratarEstoqueLote({ schema, user, message, campos, historicoConversa, firstName }) {
+    const pendentes = campos.estoque_lote;
+    const sujeito = campos.sujeito;
+
+    const fecharSemEstoque = async () => {
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        return renderizarEstoqueLoteFicaPraDepois(firstName);
+    };
+
+    if (ehCancelamento(message) || ehNegativoSimples(message) || RE_NAO_SEI_ESTOQUE.test(message)) {
+        return await fecharSemEstoque();
+    }
+
+    // Correção de grafia de um pendente ("Keppra" sobre "Kepra") — BUG-103 "nome".
+    const mensagemSemNumero = !/\d/.test(message);
+    if (mensagemSemNumero && campos.estoque_lote_numero_pendente == null) {
+        const alvo = pendentes.find(p => nomeCorrigidoParecido(p.nome, message.trim()));
+        if (alvo) {
+            await atualizarMedicamentoCampos({ medicationId: alvo.medicationId, campos: { nome: message.trim() } });
+            const novosPendentes = pendentes.map(p => p === alvo ? { ...p, nome: message.trim() } : p);
+            await saveConversationState(user.id, {
+                state: schema.estadoConversa,
+                context: { ...campos, estoque_lote: novosPendentes }
+            });
+            console.log(`✏️ [RUNNER] Nome corrigido no convite agregado: ${alvo.nome} → ${message.trim()} — ${user.phone}`);
+            return `${renderizarNomeCorrigido(message.trim())}\n\n${renderizarConviteEstoqueLote()}`;
+        }
+    }
+
+    // Resposta à pergunta "esse N é de qual?": nome seco fecha com o número guardado.
+    if (campos.estoque_lote_numero_pendente != null && mensagemSemNumero) {
+        const alvo = pendentes.find(p =>
+            contemComFronteira(normalizar(message), normalizar(p.nome)) || nomeCorrigidoParecido(p.nome, message.trim()));
+        if (alvo) {
+            const item = await registrarEstoqueDePendente(alvo, campos.estoque_lote_numero_pendente);
+            const restantes = pendentes.filter(p => p !== alvo);
+            await salvarEstadoPosLote({ schema, user, sujeito, pendentes: restantes });
+            return renderizarFechamentoEstoqueLote({ itens: [item], restantes });
+        }
+    }
+
+    // Forma nomeada ("Marevan 30, Kepra 29"): atribuição por nome com a MESMA
+    // fronteira de palavra da divisão multi-med; grafia corrigida também casa.
+    const segmentos = String(message).split(/[,;\n]|\s+e\s+/i).map(s => s.trim()).filter(Boolean);
+    const atribuicoes = [];
+    for (const pendente of pendentes) {
+        const alvoNorm = normalizar(pendente.nome);
+        const segmento = segmentos.find(seg => {
+            const segNorm = normalizar(seg);
+            if (contemComFronteira(segNorm, alvoNorm)) return true;
+            const nomeCandidato = seg.replace(/\d+(?:[.,]\d+)?/g, '').replace(/\b(cps?|comprimidos?|c[áa]psulas?|gotas?|unidades?|ml|caixas?)\b/gi, '').trim();
+            return nomeCandidato && nomeCorrigidoParecido(pendente.nome, nomeCandidato);
+        });
+        if (!segmento) continue;
+        const mNum = segmento.match(/\d+(?:[.,]\d+)?/);
+        if (!mNum) continue;
+        atribuicoes.push({ pendente, valor: parseFloat(mNum[0].replace(',', '.')) });
+    }
+
+    if (atribuicoes.length > 0) {
+        const itens = [];
+        for (const { pendente, valor } of atribuicoes) {
+            itens.push(await registrarEstoqueDePendente(pendente, valor));
+        }
+        const atribuidos = new Set(atribuicoes.map(a => a.pendente));
+        const restantes = pendentes.filter(p => !atribuidos.has(p));
+        await salvarEstadoPosLote({ schema, user, sujeito, pendentes: restantes });
+        console.log(`📦 [RUNNER] Estoque agregado: ${atribuicoes.length} atribuição(ões) por nome, ${restantes.length} restante(s) — ${user.phone}`);
+        return renderizarFechamentoEstoqueLote({ itens, restantes });
+    }
+
+    // Número seco: só resolve sozinho com UM pendente; com mais, pergunta de qual é.
+    const numeros = [...String(message).matchAll(/\d+(?:[.,]\d+)?/g)].map(m => parseFloat(m[0].replace(',', '.')));
+    if (numeros.length === 1) {
+        if (pendentes.length === 1) {
+            const item = await registrarEstoqueDePendente(pendentes[0], numeros[0]);
+            await salvarEstadoPosLote({ schema, user, sujeito, pendentes: [] });
+            return renderizarFechamentoEstoqueLote({ itens: [item], restantes: [] });
+        }
+        await saveConversationState(user.id, {
+            state: schema.estadoConversa,
+            context: { ...campos, estoque_lote_numero_pendente: numeros[0] }
+        });
+        return renderizarPerguntaQualEstoque(pendentes, numeros[0]);
+    }
+
+    // Camada 2 — contrato universal.
+    const motivo = await classificarIndeterminadoCadastro({
+        message, etapa: 'cad_estoque_lote', nomeMedicamento: pendentes.map(p => p.nome).join(', '), historicoConversa
+    });
+    if (motivo === 'nova_intencao') return { escalarParaRoteador: true };
+    if (motivo === 'recusa') return await fecharSemEstoque();
+    const prefixo = motivo === 'duvida' ? `${renderizarPrefacioDuvida()}\n\n` : '';
+    return `${prefixo}${renderizarConviteEstoqueLote()}`;
+}
+
 // Campos de um candidato da fila quando NÃO há mensagem nova a validar
 // (transição de fila, lote recusado) — dados determinísticos da divisão.
 const FORMA_EXPLICITA_LOTE = { comprimido: 'comprimido', capsula: 'capsula', gota: 'gotas' };
@@ -276,9 +423,10 @@ function montarCamposDoCandidato({ sujeito, candidato, fila }) {
 // Avança a fila após uma gravação: grava em cadeia os candidatos já completos
 // e para no primeiro incompleto (transição com a pergunta dele). Fila vazia →
 // convite de estoque agregado e fechamento.
-async function avancarFila({ schema, user, sujeito, fila, partesIniciais }) {
+async function avancarFila({ schema, user, sujeito, fila, partesIniciais, pendentesEstoque = [] }) {
     let resto = [...fila];
     const partes = [...partesIniciais];
+    const pendentes = [...pendentesEstoque];
 
     while (resto.length > 0) {
         const candidato = resto[0];
@@ -292,6 +440,7 @@ async function avancarFila({ schema, user, sujeito, fila, partesIniciais }) {
             } else {
                 const { med, pares } = await lerMedicamentoGravado(r.med.id);
                 partes.push(renderizarDeclarativaCurta(med, pares));
+                pendentes.push(...pendenciasDeEstoque([{ med }]));
             }
             resto = resto.slice(1);
             continue;
@@ -299,14 +448,14 @@ async function avancarFila({ schema, user, sujeito, fila, partesIniciais }) {
 
         await saveConversationState(user.id, {
             state: schema.estadoConversa,
-            context: { ...camposC, etapa: pendC.etapa }
+            context: { ...camposC, etapa: pendC.etapa, estoque_pendentes: pendentes }
         });
         partes.push(renderizarTransicaoFila({ proximo: candidato }));
         return partes.join('\n\n');
     }
 
-    await saveConversationState(user.id, { state: 'idle', context: {} });
-    partes.push(renderizarConviteEstoqueLote());
+    await salvarEstadoPosLote({ schema, user, sujeito, pendentes });
+    if (pendentes.length > 0) partes.push(renderizarConviteEstoqueLote());
     return partes.join('\n\n');
 }
 
@@ -324,7 +473,10 @@ async function tratarConfirmacaoLote({ schema, user, message, campos, historicoC
             pares: montarParesPosologia(c.horarios, c.quantidade ?? quantidadePadrao ?? 1)
         }));
         const resultado = await gravarLote({ itens, user, sujeito: campos.sujeito });
-        await saveConversationState(user.id, { state: 'idle', context: {} });
+        await salvarEstadoPosLote({
+            schema, user, sujeito: campos.sujeito,
+            pendentes: pendenciasDeEstoque(resultado.gravados)
+        });
         return renderizarFechamentoLote(resultado);
     };
 
@@ -428,6 +580,24 @@ export async function executarRunner({ schema, user, message, state, context, hi
         });
     }
 
+    // Resposta ao convite de estoque agregado (Commit 0 do M3). Mensagem que
+    // propõe medicamento NOVO (não correção/menção de um pendente) segue o fluxo
+    // normal de cadastro — o estoque dos anteriores fica pra depois.
+    if (etapaEntrada === 'cad_estoque_lote' && Array.isArray(campos?.estoque_lote) && campos.estoque_lote.length > 0) {
+        const pendentesLote = campos.estoque_lote;
+        const propostoEhPendente = (m) => pendentesLote.some(p => {
+            const a = normalizar(p.nome), b = normalizar(m);
+            return a === b || a.includes(b) || b.includes(a) || nomeCorrigidoParecido(p.nome, m);
+        });
+        const trazMedicamentoNovo = (camposPorta?.medicamentos || []).some(m => !propostoEhPendente(m));
+
+        if (!trazMedicamentoNovo) {
+            return await tratarEstoqueLote({ schema, user, message, campos, historicoConversa, firstName });
+        }
+        console.log(`💊 [RUNNER] Cadastro novo sobre o convite de estoque agregado — pendentes ficam pra depois — ${user.phone}`);
+        campos = { sujeito: campos.sujeito };
+    }
+
     // Cancelamento determinístico. Com o medicamento JÁ gravado (gravação
     // antecipada), recusar o que resta NÃO é cancelar (evidência A6).
     if (ehCancelamento(message)) {
@@ -444,6 +614,31 @@ export async function executarRunner({ schema, user, message, state, context, hi
     const prefixos = [];
     let mensagem = message;
     let emFilaNova = false;
+
+    // Commit 0 do M3 (BUG-103, célula "nome"): nome QUASE igual ao em andamento
+    // é correção de grafia ("Keppra" sobre "Kepra"), nunca medicamento novo —
+    // renomeia (no banco, se já gravado) e repete a pendência com o nome certo.
+    const propostos0 = camposPorta?.medicamentos || [];
+    if (campos?.nome && propostos0.length === 1 && nomeCorrigidoParecido(campos.nome, propostos0[0])) {
+        const nomeCorrigido = propostos0[0];
+        console.log(`✏️ [RUNNER] Correção de grafia na coleta: ${campos.nome} → ${nomeCorrigido} — ${user.phone}`);
+        if (campos.medication_id) {
+            await atualizarMedicamentoCampos({ medicationId: campos.medication_id, campos: { nome: nomeCorrigido } });
+        }
+        campos = { ...campos, nome: nomeCorrigido };
+        const pendCorrecao = proximaPendencia(schema, campos);
+        if (pendCorrecao.acao === 'perguntar') {
+            await saveConversationState(user.id, {
+                state: schema.estadoConversa,
+                context: { ...campos, etapa: pendCorrecao.etapa }
+            });
+            return juntarPartes(
+                renderizarNomeCorrigido(nomeCorrigido),
+                montarPerguntaPendente({ pend: pendCorrecao, campos, userName: user.name })
+            );
+        }
+        // Nada mais pendente de pergunta: segue o turno com o nome corrigido.
+    }
 
     // MH-83 (M2 §2.4): medicamento DIFERENTE citado no meio de um cadastro é um
     // cadastro NOVO — o anterior (se gravado) fecha pela verdade do banco e
@@ -529,6 +724,45 @@ async function processarTurno({ schema, user, mensagem, campos, historicoConvers
 
         // 4. QUANDO DEVOLVER — contrato universal (camada 2 só na falha da camada 1).
         if (ACOES_DE_FALHA.has(resultado.acao)) {
+            // Commit 0 do M3 (caso Evandro/BUG-103): mensagem não-numérica na
+            // pergunta de estoque passa pela interpretação ANTES do repergunta —
+            // correção de NOME ("Keppra") e de TIPO ("na verdade é por 7 dias")
+            // são aplicadas e o fluxo segue, nunca engolidas.
+            if (pend.campo.nome === 'estoque' && campos?.medication_id) {
+                const candidatoNome = String(mensagem).trim();
+                if (!/\d/.test(candidatoNome) && nomeCorrigidoParecido(campos?.nome, candidatoNome)) {
+                    console.log(`✏️ [RUNNER] Correção de grafia na etapa de estoque: ${campos.nome} → ${candidatoNome} — ${user.phone}`);
+                    await atualizarMedicamentoCampos({ medicationId: campos.medication_id, campos: { nome: candidatoNome } });
+                    const camposCorrigidos = { ...campos, nome: candidatoNome };
+                    await saveConversationState(user.id, {
+                        state: schema.estadoConversa,
+                        context: { ...camposCorrigidos, etapa: pend.etapa }
+                    });
+                    return juntarPartes(
+                        renderizarNomeCorrigido(candidatoNome),
+                        renderizarPerguntaEstoque(pend.etapa, camposCorrigidos)
+                    );
+                }
+                const mTipo = mensagem.match(/\b(?:por|durante)\s+(\d+)\s+dias?\b/i);
+                if (mTipo && !campos?.tipo_tratamento) {
+                    const dias = Number(mTipo[1]);
+                    console.log(`🔄 [RUNNER] Tratamento corrigido na etapa de estoque: temporário de ${dias} dias — ${user.phone}`);
+                    await atualizarMedicamentoCampos({
+                        medicationId: campos.medication_id,
+                        campos: { tipo_tratamento: 'temporario', tratamento_dias: dias }
+                    });
+                    const camposComTipo = { ...campos, tipo_tratamento: 'temporario', tratamento_dias: dias };
+                    await saveConversationState(user.id, {
+                        state: schema.estadoConversa,
+                        context: { ...camposComTipo, etapa: pend.etapa }
+                    });
+                    return juntarPartes(
+                        `Anotei: tratamento por ${dias} dias. 🌿`,
+                        renderizarPerguntaEstoque(pend.etapa, camposComTipo)
+                    );
+                }
+            }
+
             const motivo = await classificarIndeterminadoCadastro({
                 message: mensagem,
                 etapa: pend.etapa,
@@ -783,14 +1017,19 @@ async function processarTurno({ schema, user, mensagem, campos, historicoConvers
                 ...membrosDoGrupo.map(f => ({ nome: f.nome, dosagem: f.dosagem ?? null, formaExplicita: null, pares: camposNovos.pares_posologia }))
             ];
             const resultadoLote = await gravarLote({ itens, user, sujeito: camposNovos.sujeito });
+            const pendentesGrupo = [
+                ...(camposNovos.estoque_pendentes || []),
+                ...pendenciasDeEstoque(resultadoLote.gravados)
+            ];
             const filaRestante = (camposNovos.fila || []).filter(f => !membrosDoGrupo.includes(f));
             if (filaRestante.length > 0) {
                 return await avancarFila({
                     schema, user, sujeito: camposNovos.sujeito, fila: filaRestante,
-                    partesIniciais: [renderizarFechamentoLote({ ...resultadoLote, primeiroMedicamento: false })]
+                    partesIniciais: [renderizarFechamentoLote({ ...resultadoLote, primeiroMedicamento: false })],
+                    pendentesEstoque: pendentesGrupo
                 });
             }
-            await saveConversationState(user.id, { state: 'idle', context: {} });
+            await salvarEstadoPosLote({ schema, user, sujeito: camposNovos.sujeito, pendentes: pendentesGrupo });
             return renderizarFechamentoLote(resultadoLote);
         }
 
@@ -829,11 +1068,16 @@ async function processarTurno({ schema, user, mensagem, campos, historicoConvers
         const resumo = juntarPartes(renderizarResumoDoMedicamento(medGravado, pares), notaPo);
 
         // Fila pendente (MH-96): o próximo da fila assume — o convite de estoque
-        // fica para o fim da fila (agregado).
+        // fica para o fim da fila (agregado), acumulando os pendentes desta e das
+        // gravações anteriores da mesma fila.
         if ((camposNovos.fila || []).length > 0) {
             return await avancarFila({
                 schema, user, sujeito: camposNovos.sujeito, fila: camposNovos.fila,
-                partesIniciais: [`${declarativa}\n\n${resumo}`]
+                partesIniciais: [`${declarativa}\n\n${resumo}`],
+                pendentesEstoque: [
+                    ...(camposNovos.estoque_pendentes || []),
+                    ...pendenciasDeEstoque([{ med: medGravado }])
+                ]
             });
         }
 
@@ -895,6 +1139,9 @@ export async function repetirPergunta({ schema, context, userName }) {
     const campos = { ...(context || {}) };
     if (Array.isArray(campos.lote) && campos.lote.length > 0) {
         return renderizarRepeticaoPropostaLote(campos.lote);
+    }
+    if (Array.isArray(campos.estoque_lote) && campos.estoque_lote.length > 0) {
+        return renderizarConviteEstoqueLote();
     }
     const pend = proximaPendencia(schema, campos);
     if (pend.acao !== 'perguntar') {

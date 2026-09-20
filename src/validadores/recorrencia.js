@@ -46,7 +46,14 @@ export function detectarRecorrenciaNaoSuportada(texto) {
 
 // Horários citados na mensagem, com índice de posição (para associar cada
 // horário ao grupo de dias que o precede).
-const RE_HORARIO = /\b([01]?\d|2[0-3])\s*(?::|h)\s*([0-5]\d)?\b/gi;
+// Commit 0 do M3 (caso Evandro, produção 20/09): os sufixos reais de horário
+// incluem "hs", "hrs", "hr" e "horas" — "às 17hs" não casava com (?::|h) e o
+// lote inteiro deixava de disparar. UM lugar só: multi-med, recorrência e a
+// interpretação estruturada derivam daqui.
+// O lookbehind (?<![\d/]) impede que o "12" de "12/12 hrs" (notação de
+// intervalo de receita) seja lido como horário 12:00.
+const SUFIXO_HORA = '(?::|h(?:oras?|rs?|s)?)';
+const RE_HORARIO = new RegExp(`(?<![\\d/])\\b([01]?\\d|2[0-3])\\s*${SUFIXO_HORA}\\s*([0-5]\\d)?\\b`, 'gi');
 
 export function extrairHorariosCitados(texto) {
     const achados = [];
@@ -181,8 +188,8 @@ export function interpretarRecorrencia(texto) {
         }
         if (token === 'e') continue;
 
-        // Horário: fecha o grupo corrente sobre ele.
-        const hm = token.match(/^([01]?\d|2[0-3])\s*(?::|h)\s*([0-5]\d)?$/);
+        // Horário: fecha o grupo corrente sobre ele (mesmo sufixo da RE_HORARIO).
+        const hm = token.match(new RegExp(`^([01]?\\d|2[0-3])\\s*${SUFIXO_HORA}\\s*([0-5]\\d)?$`));
         if (hm) {
             const hhmm = `${String(hm[1]).padStart(2, '0')}:${hm[2] || '00'}`;
             if (grupoAtual.length > 0) {
