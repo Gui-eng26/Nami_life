@@ -95,35 +95,51 @@ async function validarCampoPosologia({ message, campos, historicoConversa }) {
     const mencionaConcentracao = campoEsperado === 'quantidade' && decisao.acao === 'indeterminado'
         && /\d+(?:[.,]\d+)?\s*(mg|mcg|g|%|mg\/ml)\b/i.test(message);
 
-    corrigirDoseEmGramas(message, decisao, campos);
+    corrigirDoseEmGramas(message, decisao);
 
     return { ...decisao, mencionaConcentracao };
 }
 
-// Achado do replay 19/09 (Priscila, "5gr às 10h"): dose em GRAMAS não é
-// representável — nem "5ml" nem "5 unidades". Convenção da micro-entrega
-// (MH-93): 1 unidade por horário, com o tamanho da dose preservado como
-// dosagem ("5g"). Coerção determinística, nunca do LLM.
-export function corrigirDoseEmGramas(message, decisao, campos) {
+// Replay 19/09 (Priscila "5gr às 10h"; creatina do Felipe "1 scoop às 10h,
+// 10grs às 11h, 1 sachê às 20h"): gramas na fala são POSOLOGIA — quanto se
+// toma naquele horário — nunca dosagem do produto (correção de Guilherme,
+// 20/09: dosagem é uma por medicamento; a posologia varia por horário).
+//
+// Como o schema só representa dose em unidade|ml|gota (CHECK no banco),
+// vale a convenção da micro-entrega até o MH-93: cada dose de pó = 1
+// unidade — COERÇÃO POR VALOR (só os horários cuja quantidade veio dos
+// gramas viram 1; "1 scoop" e "1 sachê" já chegam certos), e a resposta
+// AVISA a convenção (regra 7: nunca conversão em silêncio).
+export function corrigirDoseEmGramas(message, decisao) {
     const pares = decisao.updates?.pares_posologia;
     if (!pares?.length) return;
     if (/\b(mg|mcg|kg)\b/i.test(message)) return;
 
-    const mGramas = String(message).match(/\b(\d+(?:[.,]\d+)?)\s*(?:g|gr|gramas?)\b/i);
-    if (!mGramas) return;
+    const valoresEmGramas = new Set(
+        [...String(message).matchAll(/\b(\d+(?:[.,]\d+)?)\s*(?:g|grs?|gramas?)\b/gi)]
+            .map(m => Number(m[1].replace(',', '.')))
+    );
+    if (valoresEmGramas.size === 0) return;
 
-    const valorG = Number(mGramas[1].replace(',', '.'));
-    const doseVeioDosGramas = decisao.updates.unidade_dose === 'ml'
-        || pares.every(p => Number(p.quantidade) === valorG);
-    if (!doseVeioDosGramas) return;
+    const algumParVeioDosGramas = pares.some(p => valoresEmGramas.has(Number(p.quantidade)));
+    if (!algumParVeioDosGramas && decisao.updates.unidade_dose !== 'ml') return;
 
-    console.log(`⚖️ [CADASTRO] Dose em gramas ("${mGramas[0]}") — convenção MH-93: 1 unidade por horário, dosagem "${mGramas[1]}g"`);
-    decisao.updates.pares_posologia = pares.map(p => ({ ...p, quantidade: 1 }));
+    const rotulo = [...valoresEmGramas].map(v => `${String(v).replace('.', ',')}g`).join(', ');
+    console.log(`⚖️ [CADASTRO] Dose em gramas (${rotulo}) é posologia — convenção pré-MH-93: cada dose = 1 unidade`);
+    decisao.updates.pares_posologia = pares.map(p =>
+        (valoresEmGramas.has(Number(p.quantidade)) || !algumParVeioDosGramas)
+            ? { ...p, quantidade: 1 }
+            : p
+    );
     Object.assign(decisao.updates, derivarUnidades('unidade'));
     decisao.updates.forma_explicita = null;
-    if (!campos?.dosagem && !decisao.updates.dosagem) {
-        decisao.updates.dosagem = `${mGramas[1]}g`;
-    }
+    // Sinal para a resposta pós-gravação declarar a convenção (regra 7).
+    decisao.updates.convencao_po_gramas = rotulo;
+}
+
+// Nota de honestidade da convenção de pó — sai junto da mensagem pós-gravação.
+export function renderizarNotaConvencaoPo(rotuloGramas) {
+    return `Só uma nota: dose em gramas (${rotuloGramas}) eu ainda registro como 1 unidade por vez — a medida exata em gramas é algo que está chegando. 🌿`;
 }
 
 async function validarCampoEstoque({ message, campos, historicoConversa }) {

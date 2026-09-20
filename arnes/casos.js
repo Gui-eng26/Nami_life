@@ -138,22 +138,38 @@ export const CASOS = [
                 detalhe: `grupos: ${JSON.stringify(divisaoA19.candidatos.map(c => c.grupo))}`
             });
 
-            // Replay 19/09 (Priscila, "5gr às 10h"): dose em gramas nunca vira
-            // "5ml" nem "5 unidades" — 1 unidade por horário + dosagem "5g".
+            // Replay 19/09-20/09 (Priscila "5gr às 10h"; correção de Guilherme):
+            // gramas são POSOLOGIA, nunca dosagem do produto. Convenção pré-MH-93:
+            // cada dose em gramas = 1 unidade, POR VALOR (horários com scoop/sachê
+            // não são tocados), sem NENHUMA escrita em dosagem.
             const { corrigirDoseEmGramas } = await import('../src/schemas/cadastro.js');
             const decisaoGr = { updates: { pares_posologia: [{ horario: '10:00', quantidade: 5 }], unidade_dose: 'ml', unidade_estoque: 'ml', gotas_por_ml: null } };
-            corrigirDoseEmGramas('5gr as 10hrs', decisaoGr, { nome: 'Curcuma C' });
+            corrigirDoseEmGramas('5gr as 10hrs', decisaoGr);
             checks.push({
-                nome: 'dose em gramas: "5gr às 10h" vira 1 unidade às 10:00 com dosagem "5g"',
+                nome: 'gramas são posologia: "5gr às 10h" vira 1 unidade às 10:00, SEM tocar dosagem',
                 ok: decisaoGr.updates.pares_posologia[0].quantidade === 1
                     && decisaoGr.updates.unidade_dose === 'unidade'
-                    && decisaoGr.updates.dosagem === '5g',
+                    && decisaoGr.updates.dosagem === undefined
+                    && decisaoGr.updates.convencao_po_gramas === '5g',
                 detalhe: JSON.stringify(decisaoGr.updates)
             });
-            const decisaoMg = { updates: { pares_posologia: [{ horario: '08:00', quantidade: 2 }], unidade_dose: 'unidade' } };
-            corrigirDoseEmGramas('2 comprimidos de 500mg as 8h', decisaoMg, {});
+            // Caso da creatina (Felipe, produção): posologia mista por horário —
+            // só o horário cuja quantidade veio dos gramas é coagido.
+            const decisaoCreatina = { updates: { pares_posologia: [
+                { horario: '10:00', quantidade: 1 }, { horario: '11:00', quantidade: 10 }, { horario: '20:00', quantidade: 1 }
+            ], unidade_dose: 'unidade' } };
+            corrigirDoseEmGramas('1 scoop às 10h, 10grs às 11h e 1 sachê às 20h', decisaoCreatina);
             checks.push({
-                nome: 'dose em gramas: mg/quantidade legítima NÃO são tocados pela coerção',
+                nome: 'gramas por valor: "1 scoop, 10grs, 1 sachê" → só o de 10g vira 1 unidade',
+                ok: decisaoCreatina.updates.pares_posologia.every(p => p.quantidade === 1)
+                    && decisaoCreatina.updates.pares_posologia.length === 3
+                    && decisaoCreatina.updates.dosagem === undefined,
+                detalhe: JSON.stringify(decisaoCreatina.updates.pares_posologia)
+            });
+            const decisaoMg = { updates: { pares_posologia: [{ horario: '08:00', quantidade: 2 }], unidade_dose: 'unidade' } };
+            corrigirDoseEmGramas('2 comprimidos de 500mg as 8h', decisaoMg);
+            checks.push({
+                nome: 'gramas: mg/quantidade legítima NÃO são tocados pela coerção',
                 ok: decisaoMg.updates.pares_posologia[0].quantidade === 2 && decisaoMg.updates.dosagem === undefined,
                 detalhe: JSON.stringify(decisaoMg.updates)
             });

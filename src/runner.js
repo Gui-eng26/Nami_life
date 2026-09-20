@@ -59,7 +59,7 @@ import {
     renderizarPropostaLote, renderizarAberturaFila, renderizarPropostaDivisaoNome,
     renderizarTransicaoFila, renderizarFechamentoLote, renderizarRepeticaoPropostaLote,
     renderizarFechamentoAnterior, renderizarConviteEstoqueLote, renderizarDeclarativaCurta,
-    renderizarDuplicataCurta
+    renderizarDuplicataCurta, renderizarNotaConvencaoPo
 } from './schemas/cadastro.js';
 
 // Cancelamento determinístico — o LLM não decide transições.
@@ -821,7 +821,12 @@ async function processarTurno({ schema, user, mensagem, campos, historicoConvers
         // resumo lido do banco (P56) + pergunta/fechamento de estoque.
         const { med: medGravado, pares } = await lerMedicamentoGravado(resultadoGravacao.med.id);
         const declarativa = renderizarDeclarativa(medGravado, user.name);
-        const resumo = renderizarResumoDoMedicamento(medGravado, pares);
+        // Convenção de pó (regra 7): gramas viraram "1 unidade" — a resposta
+        // declara a conversão, nunca em silêncio.
+        const notaPo = camposNovos.convencao_po_gramas
+            ? renderizarNotaConvencaoPo(camposNovos.convencao_po_gramas)
+            : null;
+        const resumo = juntarPartes(renderizarResumoDoMedicamento(medGravado, pares), notaPo);
 
         // Fila pendente (MH-96): o próximo da fila assume — o convite de estoque
         // fica para o fim da fila (agregado).
