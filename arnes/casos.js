@@ -670,5 +670,153 @@ export const CASOS = [
             checks.push({ marco: 'M3', nome: 'M3: nunca pede para escolher UM de cada vez', ...naoContem(r1, /qual (deles|medicamento|rem[ée]dio|tratamento) você (quer|deseja)/i, 'seleção um-a-um') });
             return checks;
         }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A21',
+        marco: 'M2',
+        titulo: 'MH-30 — conclusão automática de tratamento agudo (tratamento_fim vencido)',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Tantin', onboarded: true, estado: 'idle' });
+
+            // Horário do schedule = AGORA em Brasília, para exercitar a janela da RPC.
+            const agoraHHMM = new Date().toLocaleTimeString('pt-BR', {
+                hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo'
+            });
+            const ontem = new Date(Date.now() - 24 * 60 * 60 * 1000)
+                .toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+
+            // Vencido: tratamento de 3 dias que terminou ontem, ainda ativo (estado
+            // que o job diário deve encontrar e concluir).
+            const { med, schedules } = await seeds.criarMedicamento({
+                userId: user.id, nome: 'Amoxicilina', dosagem: '500mg',
+                estoque: 10, horarios: [agoraHHMM], quantidadePorDose: 1
+            });
+            await ctx.db.from('medications')
+                .update({ tipo_tratamento: 'temporario', tratamento_dias: 3, tratamento_fim: ontem })
+                .eq('id', med.id);
+            const dosePendente = await seeds.criarDosePendente({
+                medicationId: med.id, scheduleId: schedules[0]?.id ?? null, horario: agoraHHMM, minutosAtras: 600
+            });
+
+            // Controle positivo: um contínuo no MESMO horário aparece na RPC —
+            // prova que a janela casou e que a ausência do vencido é o filtro.
+            const { med: medControle } = await seeds.criarMedicamento({
+                userId: user.id, nome: 'Losartana Controle', estoque: 30, horarios: [agoraHHMM]
+            });
+
+            const { data: reminders } = await ctx.db.rpc('get_pending_reminders');
+            const idsNaRPC = (reminders || []).map(r => r.medication_id);
+            checks.push({
+                nome: 'controle: medicamento contínuo no mesmo horário APARECE na RPC',
+                ok: idsNaRPC.includes(medControle.id),
+                detalhe: `janela da RPC ${idsNaRPC.includes(medControle.id) ? 'casou' : 'NÃO casou — checagem seguinte seria vácua'}`
+            });
+            checks.push({
+                nome: 'dose NÃO nasce após tratamento_fim (filtro na RPC, antes do job)',
+                ok: !idsNaRPC.includes(med.id),
+                detalhe: `medication vencido ${idsNaRPC.includes(med.id) ? 'AINDA aparece' : 'ausente'} em get_pending_reminders`
+            });
+
+            // Job diário: desativa, pausa pendentes e avisa PELO FUNIL.
+            const antes = ctx.enviosCapturados.length;
+            await ctx.concluirTratamentosVencidos();
+
+            const { data: medDepois } = await ctx.db.from('medications')
+                .select('ativo, schedules(ativo)').eq('id', med.id).single();
+            checks.push({
+                nome: 'job: medicamento e schedules desativados',
+                ok: medDepois?.ativo === false && (medDepois?.schedules || []).every(s => s.ativo === false),
+                detalhe: `ativo: ${medDepois?.ativo}, schedules ativos: ${(medDepois?.schedules || []).filter(s => s.ativo).length}`
+            });
+
+            const logsDose = await doseLogs(ctx.db, med.id);
+            const doseDepois = logsDose.find(d => d.id === dosePendente.id);
+            checks.push({
+                nome: 'job: dose pendente pausada (nenhum follow-up cobra tratamento concluído)',
+                ok: doseDepois?.status === 'pausado',
+                detalhe: `status: ${doseDepois?.status}`
+            });
+
+            const enviados = ctx.enviosCapturados.slice(antes).filter(e => e.phone === user.phone);
+            checks.push({ nome: 'mensagem de conclusão sai PELO FUNIL', ok: enviados.length === 1, detalhe: `${enviados.length} envio(s) capturado(s)` });
+            if (enviados.length === 1) {
+                checagensDeForma(checks, 'conclusão', enviados[0].texto);
+                checks.push({ nome: 'conclusão nomeia o medicamento e o fim do tratamento', ...contem(enviados[0].texto, /amoxicilina/i, 'nome do medicamento') });
+                checks.push({ nome: 'conclusão avisa que os lembretes pararam', ...contem(enviados[0].texto, /lembretes/i, 'aviso dos lembretes') });
+                checks.push({ nome: 'conclusão aponta o caminho se o médico estender', ...contem(enviados[0].texto, /cadastrar de novo|estender/i, 'caminho de extensão') });
+            }
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A22',
+        marco: 'M2',
+        titulo: 'MH-49 — alerta de estoque de temporário compara com os dias RESTANTES do tratamento',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Tramal', onboarded: true, estado: 'idle' });
+
+            const emTresDias = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000)
+                .toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+
+            // medA: estoque cobre além do fim do tratamento (5 dias de estoque
+            // pós-débito vs ~3 restantes) — o limiar fixo de contínuo (<=5)
+            // alertaria ERRADO; o de temporário não pode alertar.
+            const { med: medA, schedules: schedA } = await seeds.criarMedicamento({
+                userId: user.id, nome: 'Prednisona', estoque: 6, horarios: ['08:00'], quantidadePorDose: 1
+            });
+            await ctx.db.from('medications')
+                .update({ tipo_tratamento: 'temporario', tratamento_dias: 5, tratamento_fim: emTresDias })
+                .eq('id', medA.id);
+
+            // medB: estoque NÃO cobre os dias restantes (1 dia pós-débito vs ~3) — alerta.
+            const { med: medB, schedules: schedB } = await seeds.criarMedicamento({
+                userId: user.id, nome: 'Azitromicina', estoque: 2, horarios: ['12:00'], quantidadePorDose: 1
+            });
+            await ctx.db.from('medications')
+                .update({ tipo_tratamento: 'temporario', tratamento_dias: 5, tratamento_fim: emTresDias })
+                .eq('id', medB.id);
+
+            await seeds.criarDosePendente({ medicationId: medA.id, scheduleId: schedA[0].id, horario: '08:00', minutosAtras: 120 });
+            await seeds.criarDosePendente({ medicationId: medB.id, scheduleId: schedB[0].id, horario: '12:00', minutosAtras: 10 });
+
+            // 1º "Sim" confirma o grupo mais recente (medB): estoque insuficiente
+            // para os dias restantes → alerta, com número pós-débito (autor único).
+            const r1 = await turno(ctx, user, 'Sim');
+            checagensDeForma(checks, 'turno 1', r1);
+            checks.push({ nome: 'turno 1: confirma a dose do grupo mais recente (Azitromicina)', ...contem(r1, /azitromicina/i, 'Azitromicina') });
+            checks.push({
+                nome: 'turno 1: estoque que NÃO cobre os dias restantes ALERTA',
+                ok: blocosDeEstoque(r1) === 1,
+                detalhe: `${blocosDeEstoque(r1)} bloco(s) de estoque`
+            });
+            const { data: medBDepois } = await ctx.db.from('medications').select('estoque_atual').eq('id', medB.id).single();
+            checks.push({ nome: 'turno 1: número do alerta == leitura pós-débito', ...numeroDeEstoqueConfere(r1, medBDepois?.estoque_atual) });
+
+            // 2º turno confirma medA: estoque cobre até o fim do tratamento →
+            // NUNCA "compre mais" para tratamento que acaba antes do estoque.
+            const r2 = await turno(ctx, user, 'Tomei');
+            checagensDeForma(checks, 'turno 2', r2);
+            checks.push({ nome: 'turno 2: confirma a dose da Prednisona', ...contem(r2, /prednisona/i, 'Prednisona') });
+            checks.push({
+                nome: 'turno 2: estoque que cobre o fim do tratamento NÃO alerta recompra',
+                ok: blocosDeEstoque(r2) === 0,
+                detalhe: `${blocosDeEstoque(r2)} bloco(s) de estoque (esperado 0 — tratamento acaba antes do estoque)`
+            });
+
+            const logsA = await doseLogs(ctx.db, medA.id);
+            const logsB = await doseLogs(ctx.db, medB.id);
+            checks.push({
+                nome: 'as duas doses confirmadas no banco',
+                ok: logsA.some(d => d.confirmed === true) && logsB.some(d => d.confirmed === true),
+                detalhe: `A: ${logsA.map(d => d.status).join(',')} | B: ${logsB.map(d => d.status).join(',')}`
+            });
+            return checks;
+        }
     }
 ];

@@ -228,7 +228,8 @@ const ROTULOS_EVENTO_PROATIVO = {
     follow_up: 'follow-up de dose',
     alerta_estoque_zerado: 'aviso de estoque zerado',
     alerta_estoque_nao_informado: 'aviso de estoque (dose não confirmada)',
-    resumo_semanal: 'resumo semanal de adesão'
+    resumo_semanal: 'resumo semanal de adesão',
+    conclusao_tratamento: 'aviso de conclusão de tratamento'
 };
 
 function renderizarHistorico(historicoConversa, contextoProativo) {

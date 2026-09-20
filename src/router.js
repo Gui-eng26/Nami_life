@@ -79,6 +79,7 @@ async function montarAlertaEstoquePosConfirmacao(medicationId) {
             diasRestantes: estoqueInfo.diasRestantes,
             tipo_tratamento: estoqueInfo.tipo_tratamento,
             tratamento_dias: estoqueInfo.tratamento_dias,
+            diasRestantesTratamento: estoqueInfo.diasRestantesTratamento,
             confirmacoesDoDia
         });
         return deveAlertar ? buildAlertaEstoquePosConfirmacao(estoqueInfo) : '';

@@ -27,8 +27,9 @@ export const CAPACIDADES = [
       'semana (ex: seg-sex 6h e sáb-dom 10h), dia sim/dia não e 1x por semana com o dia ' +
       'nomeado — ciclos por semanas (a cada 3 semanas, 21/7) ainda não; formas ' +
       'comprimido/cápsula/líquido (gotas/ml)/unidade; estoque opcional (contagem ou ' +
-      'frascos); tratamento contínuo ou por X dias; VÁRIOS medicamentos numa mensagem ' +
-      'são aceitos (cada um com seus próprios horários)'
+      'frascos); tratamento contínuo ou por X dias (no fim do prazo os lembretes param ' +
+      'sozinhos, com aviso); VÁRIOS medicamentos numa mensagem são aceitos (cada um ' +
+      'com seus próprios horários)'
   },
   {
     agente: 'relatorios',
@@ -97,8 +98,7 @@ export const AINDA_NAO = [
   { chave: 'alterar_duracao', rotulo: 'alterar tempo/duração de um tratamento já cadastrado', escopo: 'configuracao' },
   { chave: 'sintomas_medidas', rotulo: 'registrar sintomas, pressão, glicemia ou outros dados de saúde' },
   { chave: 'exportar_historico', rotulo: 'exportar histórico em arquivo' },
-  { chave: 'falar_com_medico', rotulo: 'falar com médico, agendar consulta' },
-  { chave: 'parada_automatica_uso_agudo', rotulo: 'parar lembretes sozinha no fim de um tratamento por X dias (campo existe; comportamento a confirmar no M2)' }
+  { chave: 'falar_com_medico', rotulo: 'falar com médico, agendar consulta' }
 ];
 
 // NUNCA FARÁ — fronteira de segurança, SEM "ainda". Redireciona a

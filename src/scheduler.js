@@ -2,7 +2,7 @@ import cron from 'node-cron';
 import 'dotenv/config';
 import { getPendingReminders, getPendingFollowUps, createDoseLog,
     getUsuariosAtivos, updateDoseLogTentativa, registrarEventoProativo,
-    vincularDosesAoEnvio } from './database.js';
+    vincularDosesAoEnvio, getTratamentosVencidos, concluirTratamento } from './database.js';
 import { enviarAoUsuario } from './funil.js';
 import { handleFollowUp } from './agentes/lembrete.js';
 import { enviarResumoSemanal } from './agentes/relatorios.js';
@@ -53,6 +53,88 @@ export function startScheduler() {
         console.log('⚖️ Rodando juiz offline...');
         await executarJuizOffline();
     }, { timezone: 'America/Sao_Paulo' });
+
+    // MH-30 (v44 M2) — conclusão automática de tratamento agudo — 09:00 BRT
+    // (mensagem proativa também é conversa, regra 10: horário civilizado).
+    cron.schedule('0 9 * * *', async () => {
+        console.log('🏁 Verificando tratamentos vencidos...');
+        await concluirTratamentosVencidos();
+    }, { timezone: 'America/Sao_Paulo' });
+}
+
+// ============================================================
+// MH-30 — CONCLUSÃO AUTOMÁTICA DE TRATAMENTO AGUDO (v44 M2)
+// tratamento_fim < hoje E ativo → desativa medicamento e schedules,
+// pausa doses pendentes e avisa PELO FUNIL com tom de celebração leve.
+// A RPC get_pending_reminders também filtra tratamento_fim — dose de
+// tratamento vencido nunca nasce, mesmo antes deste job rodar.
+// ============================================================
+
+export async function concluirTratamentosVencidos() {
+    try {
+        const vencidos = await getTratamentosVencidos();
+        if (vencidos.length === 0) return;
+
+        console.log(`🏁 ${vencidos.length} tratamento(s) vencido(s) para concluir...`);
+
+        for (const med of vencidos) {
+            try {
+                await concluirTratamento(med.id);
+
+                const usuario = med.users;
+                if (!usuario?.phone) continue;
+
+                const firstName = usuario.name ? usuario.name.split(' ')[0] : 'você';
+                const message = buildConclusaoTratamentoMessage(firstName, med);
+                await enviarAoUsuario({
+                    phone: usuario.phone,
+                    userId: usuario.id ?? null,
+                    texto: message,
+                    origem: 'proativo:conclusao_tratamento'
+                });
+                await registrarEventoProativo({
+                    userId: usuario.id,
+                    tipo: 'conclusao_tratamento',
+                    medicationId: med.id
+                });
+
+                console.log(`🏁 Conclusão de tratamento enviada para ${usuario.phone} — ${med.nome}`);
+                await sleep(1000);
+            } catch (e) {
+                console.error(`❌ Erro ao concluir tratamento ${med.id} (${med.nome}):`, e.message);
+                await registrarEvento({
+                    tipo: 'erro_tecnico',
+                    severidade: 'alta',
+                    origem: 'scheduler',
+                    agent: 'scheduler',
+                    titulo: tituloEstavel(e, 'Erro no scheduler (concluirTratamento)'),
+                    payload: { message: e.message, stack: e.stack, funcao: 'concluirTratamentosVencidos', medication_id: med.id }
+                });
+            }
+        }
+    } catch (error) {
+        console.error('❌ Erro ao verificar tratamentos vencidos:', error.message);
+        await registrarEvento({
+            tipo: 'erro_tecnico',
+            severidade: 'alta',
+            origem: 'scheduler',
+            agent: 'scheduler',
+            titulo: tituloEstavel(error, 'Erro no scheduler (concluirTratamentosVencidos)'),
+            payload: { message: error.message, stack: error.stack, funcao: 'concluirTratamentosVencidos' }
+        });
+    }
+}
+
+// Template determinístico (regra 2: fato pós-escrita; tom de celebração leve).
+function buildConclusaoTratamentoMessage(firstName, med) {
+    const duracao = med.tratamento_dias
+        ? ` — ${med.tratamento_dias} ${Number(med.tratamento_dias) === 1 ? 'dia' : 'dias'} completinhos`
+        : '';
+    return (
+        `🎉 ${firstName}, o tratamento com *${med.nome}* chegou ao fim${duracao}!\n\n` +
+        `Já desliguei os lembretes dele pra você.\n\n` +
+        `Se o médico estender o tratamento, é só me pedir pra cadastrar de novo. 🌿`
+    );
 }
 
 // ============================================================

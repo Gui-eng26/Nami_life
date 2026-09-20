@@ -1146,6 +1146,44 @@ export async function encerrarTratamento(medicationId) {
     console.log(`🔴 Tratamento encerrado — medication: ${medicationId}`);
 }
 
+// ============================================================
+// MH-30 — CONCLUSÃO AUTOMÁTICA DE TRATAMENTO AGUDO (v44 M2)
+// ============================================================
+
+// Tratamentos temporários vencidos (tratamento_fim < hoje em Brasília) ainda
+// ativos — candidatos do job diário de conclusão.
+export async function getTratamentosVencidos() {
+    const { data, error } = await supabase
+        .from('medications')
+        .select('id, nome, tratamento_dias, tratamento_fim, users(id, phone, name)')
+        .eq('ativo', true)
+        .eq('tipo_tratamento', 'temporario')
+        .not('tratamento_fim', 'is', null)
+        .lt('tratamento_fim', hojeBRT());
+
+    if (error) {
+        console.error('Erro ao buscar tratamentos vencidos:', error.message);
+        return [];
+    }
+    return data || [];
+}
+
+// Conclui um tratamento vencido: desativa medicamento + schedules (mesmo
+// caminho de encerrarTratamento) e pausa dose_logs pendentes — nenhum
+// follow-up cobra dose de tratamento concluído.
+export async function concluirTratamento(medicationId) {
+    await encerrarTratamento(medicationId);
+
+    const { error } = await supabase
+        .from('dose_logs')
+        .update({ status: 'pausado' })
+        .eq('medication_id', medicationId)
+        .eq('status', 'pendente');
+    if (error) throw new Error(`Erro ao pausar doses pendentes na conclusão: ${error.message}`);
+
+    console.log(`🏁 Tratamento concluído automaticamente — medication: ${medicationId}`);
+}
+
 export async function removerSchedule(scheduleId, medicationId, horario) {
     const horaStr = String(horario).substring(0, 5);
 
@@ -1774,7 +1812,7 @@ export async function getUsuariosAtivos() {
 export async function getEstoqueInfoParaAlerta(medicationId) {
     const { data: med } = await supabase
         .from('medications')
-        .select('nome, estoque_atual, tipo_tratamento, tratamento_dias, forma_farmaceutica, unidade_estoque')
+        .select('nome, estoque_atual, tipo_tratamento, tratamento_dias, tratamento_fim, forma_farmaceutica, unidade_estoque')
         .eq('id', medicationId)
         .single();
 
@@ -1792,6 +1830,15 @@ export async function getEstoqueInfoParaAlerta(medicationId) {
     // estoqueDesconhecido, nunca por diasRestantes/novoEstoque sozinhos.
     const estoqueDesconhecido = med.estoque_atual === null || med.estoque_atual === undefined;
 
+    // MH-49 (v44 M2): dias que FALTAM do tratamento temporário — o alerta de
+    // estoque compara com eles, nunca com o limiar fixo de contínuo. Mesma
+    // semântica de data de calcularProgressoTratamento (meia-noite UTC).
+    let diasRestantesTratamento = null;
+    if (med.tipo_tratamento === 'temporario' && med.tratamento_fim) {
+        const fim = new Date(med.tratamento_fim);
+        diasRestantesTratamento = Math.max(0, Math.ceil((fim - new Date()) / 86400000));
+    }
+
     return {
         medNome: med.nome,
         medForma: med.forma_farmaceutica,
@@ -1802,7 +1849,8 @@ export async function getEstoqueInfoParaAlerta(medicationId) {
         consumoDiario,
         diasRestantes: estoqueDesconhecido ? null : Math.floor(Number(med.estoque_atual) / consumoDiario),
         tipo_tratamento: med.tipo_tratamento || 'continuo',
-        tratamento_dias: med.tratamento_dias || null
+        tratamento_dias: med.tratamento_dias || null,
+        diasRestantesTratamento
     };
 }
 
@@ -1865,18 +1913,26 @@ export function classificarNivelEstoquePorDias({ novoEstoque, diasRestantes }) {
 
 // Decide se deve enviar alerta de estoque após confirmação
 // Retorna false se não deve alertar, ou true se deve
-export function calcularAlertaEstoque({ diasRestantes, tipo_tratamento, tratamento_dias, confirmacoesDoDia }) {
-    // Agudo com tratamento curto (<=5 dias): ignora faixa 2-5, só alerta no último dia
-    const limiteAlerta = (tipo_tratamento === 'agudo' && tratamento_dias && tratamento_dias <= 5)
-        ? 1
-        : 5;
+//
+// MH-49 (v44 M2): para tratamento TEMPORÁRIO, o limiar é os dias que FALTAM do
+// tratamento — estoque que cobre até o fim nunca gera "compre mais" (o
+// tratamento acaba antes do estoque). O limiar fixo de 5 dias é só do contínuo.
+// (O valor antigo comparava tipo === 'agudo', que nunca existiu no CHECK da
+// coluna — o ramo temporário era inalcançável por construção.)
+export function calcularAlertaEstoque({ diasRestantes, tipo_tratamento, tratamento_dias, diasRestantesTratamento = null, confirmacoesDoDia }) {
+    if (tipo_tratamento === 'temporario') {
+        const restanteTratamento = diasRestantesTratamento ?? tratamento_dias ?? 0;
+        if (diasRestantes >= restanteTratamento) return false;
+        if (diasRestantes === 0) return true;
+        return confirmacoesDoDia <= 1;
+    }
 
-    if (diasRestantes > limiteAlerta) return false;
+    if (diasRestantes > 5) return false;
 
     // diasRestantes = 0: alerta sempre (último comprimido tomado)
     if (diasRestantes === 0) return true;
 
-    // diasRestantes 1-5 (ou 1 para agudo curto): só na 1ª confirmação do dia
+    // diasRestantes 1-5: só na 1ª confirmação do dia
     return confirmacoesDoDia <= 1;
 }
 

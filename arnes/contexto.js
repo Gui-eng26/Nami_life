@@ -67,6 +67,8 @@ export async function prepararContexto() {
     // Import do app SÓ depois do ambiente pronto.
     const { routeMessage } = await import('../src/router.js');
     const { handleIncomingMessage } = await import('../src/agent.js');
+    // v44 M2 (A21): o job de conclusão é exercitado diretamente pelo caso.
+    const { concluirTratamentosVencidos } = await import('../src/scheduler.js');
 
     // Ponto de mock: o funil (§5.5). Enquanto o funil não existir (baseline do M0),
     // a captura fica só no valor de retorno de routeMessage.
@@ -85,5 +87,5 @@ export async function prepararContexto() {
         // src/funil.js ainda não existe — baseline pré-§5.5.
     }
 
-    return { db, routeMessage, handleIncomingMessage, enviosCapturados, funilMockado };
+    return { db, routeMessage, handleIncomingMessage, concluirTratamentosVencidos, enviosCapturados, funilMockado };
 }
