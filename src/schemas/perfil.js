@@ -21,12 +21,20 @@ export function nomePessoaPlausivel(texto) {
     return /^[a-zà-úA-ZÀ-Ú][a-zà-úA-ZÀ-Ú'\- ]+$/.test(t);
 }
 
+// Palavras de PEDIDO, nunca de nome — "Corrigir meu nome" virou o nome do
+// usuário no replay de 20/09 (João → "Corrigir meu nome"); o candidato passa
+// por este veto SEMPRE, mesmo vindo de marcador.
+const RE_NAO_E_NOME = /\b(corrig\w*|mudar?|trocar?|alterar?|atualizar?|nome|cadastr\w*|errad\w*|quero|dados?|nascimento|perfil)\b/i;
+
 // Validador do campo nome (contrato dos validadores de campo do runner).
-function validarNomePessoa({ message }) {
-    // "me chamo X" / "meu nome é X" / "para X" — o valor é o que vem depois.
-    const m = String(message).match(/(?:me chamo|meu nome (?:é|e)|para|pra|por)\s+(.+)$/i);
-    const candidato = (m ? m[1] : message).trim().replace(/[.!]+$/, '');
-    if (nomePessoaPlausivel(candidato)) {
+// O valor SÓ é aceito de um marcador explícito ("me chamo X", "meu nome é X",
+// "pode me chamar de X", "para X") — ou da mensagem inteira quando a Nami
+// ACABOU de perguntar o nome (valorLivre). Sem isso, pergunta — nunca escreve
+// por dedução.
+function validarNomePessoa({ message, valorLivre = false }) {
+    const m = String(message).match(/(?:me chamo|meu nome (?:é|e)|(?:pode )?me chamar? de|para|pra)\s+(.+)$/i);
+    const candidato = (m ? m[1] : (valorLivre ? String(message) : '')).trim().replace(/[.!]+$/, '');
+    if (candidato && nomePessoaPlausivel(candidato) && !RE_NAO_E_NOME.test(candidato)) {
         return { acao: 'valor', updates: { nome_usuario: candidato } };
     }
     return { acao: 'indeterminado', updates: {} };

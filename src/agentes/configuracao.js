@@ -121,9 +121,14 @@ async function tratarManterOuMudar({ user, firstName, message, context, medicati
     if (estrutura && !estrutura.suportada) {
         return renderizarBloqueioRecorrencia(extrairHorariosCitados(message), estrutura.padroes);
     }
+    // Replay 20/09 ("Vou tomar 5gr as 10 e as 20hrs"): "às N" sem sufixo
+    // também é horário — o número precedido de "às/as" nunca é quantidade.
+    const horariosComPreposicao = [...String(message).matchAll(/\b[àa]s?\s+(\d{1,2})\b(?!\s*(?:mg|mcg|gr?s?|ml|cps?|comprimidos?|c[áa]psulas?|gotas?|unidades?|dias?)\b)(?!\s*[:h])/gi)]
+        .map(m => `${String(m[1]).padStart(2, '0')}:00`)
+        .filter(h => Number(h.slice(0, 2)) <= 23);
     const horariosNovos = estrutura?.diasPorHorario
         ? Object.keys(estrutura.diasPorHorario)
-        : extrairHorariosCitados(message);
+        : [...new Set([...extrairHorariosCitados(message), ...horariosComPreposicao])].sort();
     if (horariosNovos.length > 0) {
         return await concluirReativacao({
             user, firstName, medicationId: context.medicationId,

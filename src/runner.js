@@ -1176,12 +1176,26 @@ export async function executarCorrecao({ user, message, campoAlvo, medicationId,
     };
 
     if (campoAlvo === 'nome') {
-        const c = await extrairCampoSimples({ campo: 'nome', message, historicoConversa });
-        if (c.categoria === 'valor' && !ehDosagemPura(c.valor) && normalizar(c.valor) !== normalizar(med.nome)) {
-            await atualizarMedicamentoCampos({ medicationId, campos: { nome: c.valor } });
+        const aplicarNome = async (novoNome) => {
+            await atualizarMedicamentoCampos({ medicationId, campos: { nome: novoNome } });
             const { med: depois } = await lerMedicamentoGravado(medicationId);
             console.log(`✏️ [CORRECAO] Nome: ${med.nome} → ${depois.nome} — ${user.phone}`);
             return await aplicarCorrecao({ user, medicationId, campoAlvo, medicationNome: med.nome, antes: med.nome, depois: depois.nome });
+        };
+
+        // Replay 20/09: "corrige o nome da Vitamina b12 pra Vitamina B32" — o
+        // "pra Y" é determinístico e resolve na hora, nunca é reperguntado.
+        const mPara = String(message).match(/\b(?:para|pra)\s+["'*]?([a-zà-ú0-9][^,.!?"'*]*)/i);
+        const candidatoPara = mPara ? mPara[1].trim() : null;
+        if (candidatoPara && /[a-zà-ú]/i.test(candidatoPara)
+            && !ehDosagemPura(candidatoPara)
+            && normalizar(candidatoPara) !== normalizar(med.nome)) {
+            return await aplicarNome(candidatoPara);
+        }
+
+        const c = await extrairCampoSimples({ campo: 'nome', message, historicoConversa });
+        if (c.categoria === 'valor' && !ehDosagemPura(c.valor) && normalizar(c.valor) !== normalizar(med.nome)) {
+            return await aplicarNome(c.valor);
         }
         return await naoResolveu();
     }
@@ -1351,13 +1365,16 @@ export async function executarCorrecaoPerfil({ user, message, campoAlvo = null, 
         return renderizarPerguntaQualDadoPessoal();
     }
 
-    const resultado = campo.validador({ message });
+    // valorLivre só quando a Nami ACABOU de perguntar este campo (campoAlvo
+    // veio do contexto) — replay 20/09: sem isso, "Corrigir meu nome" virava o
+    // próprio nome.
+    const resultado = campo.validador({ message, valorLivre: !!campoAlvo });
 
     if (resultado.acao === 'valor') {
         if (campo.nome === 'nome_usuario') {
             const novoNome = resultado.updates.nome_usuario;
-            // "corrigir meu nome" sem o nome novo: o valor extraído não pode ser
-            // só o pedido — exige diferença real do nome atual.
+            // O valor extraído não pode ser só o pedido — exige diferença real
+            // do nome atual.
             if (normalizar(novoNome) === normalizar(user.name || '')) {
                 return await perguntarValorPerfil({ user, campo, jaPerguntou });
             }

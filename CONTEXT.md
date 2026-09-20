@@ -994,9 +994,25 @@ A32 marcado M2 de propósito (correção quente gateia a promoção já). Casos 
 A24–A32. Flakiness conhecida: casos multi-turno com LLM real oscilam raramente —
 rerun individual confirma.
 
-**Replay manual pendente (Guilherme, critério de aceite 3):** reativar com alteração
-de horário · corrigir nome digitado errado · "quais remédios eu tomei terça?" ·
-pergunta sobre um medicamento específico · "encerrar todos" · alguém com <7 dias NÃO
-recebe o semanal de domingo.
+**Replay manual (Guilherme, 20/09 ~19h30, staging):** 4 defeitos encontrados e
+corrigidos na mesma sessão (todos travados no arnês):
+1. Lista de medicamentos mostrava só horários → agora mostra a POSOLOGIA
+   (quantidade por dose + recorrência) — A27.
+2. "Corrigir meu nome" virou o próprio nome do usuário (João → "Corrigir meu
+   nome") → o valor do nome só é aceito de marcador explícito ("me chamo X",
+   "pode me chamar de X") ou depois da pergunta; lista de vetos de palavras de
+   pedido — A26.
+3. "Corrige o nome da Vitamina b12 pra Vitamina B32" reperguntava → o "pra Y"
+   é determinístico e aplica em um turno — A26.
+4. Mudança de horário no meio da reativação ("Vou tomar 5gr as 10 e as 20hrs")
+   vazava para o cadastro e reperguntava o nome → no meio de fluxo de
+   configuração com pergunta aberta, mensagem de posologia SEM medicamento novo
+   é continuação; "às N" sem sufixo também é horário — A24.
+
+**Achado do replay SEM correção (decisão de Guilherme: aceitável por enquanto,
+sem item novo por governança):** `verificarMedicamentoExistente` usa ilike sem
+normalizar acento — "Cúrcuma C" não casa com "Curcuma C" e abre cadastro novo.
+
+**Replay pendente:** "encerrar todos" (Guilherme testa após estas correções).
 
 

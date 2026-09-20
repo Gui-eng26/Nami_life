@@ -38,6 +38,7 @@ import {
     extrairExpressaoData, extrairIntervalo, diasDoIntervalo
 } from '../dataReferencia.js';
 import { rotuloDias } from '../validadores/recorrencia.js';
+import { rotuloDaDose, pluralizarRotulo } from '../validadores/derivacoes.js';
 import {
     montarBlocoFactual, resumirSituacao, molduraPadrao, montarCabecalhoData,
     TEXTO_FORA_DA_JANELA, TEXTO_DATA_FUTURA, TEXTO_DATA_NAO_RECONHECIDA
@@ -441,19 +442,39 @@ async function relatorioMeusRemedios({ user, message, params }) {
 
     const linhaDoMedicamento = (med, i, semLembretes = false) => {
         const horariosAtivos = (med.schedules || []).filter(s => s.ativo);
-        // A-2 (v25): horários também ordenados — antes saíam na ordem do banco ("21:00 e 09:00").
-        const horarios = semLembretes
-            ? 'lembretes pausados'
-            : horariosAtivos.length > 0
-                ? horariosAtivos
-                    .map(s => s.horario.substring(0, 5))
-                    .sort((x, y) => x.localeCompare(y))
-                    .join(' e ')
-                : 'sem horário cadastrado';
+        // Replay 20/09 (correção de Guilherme): a lista mostra a POSOLOGIA
+        // (quanto em cada horário, com recorrência), não só os horários.
+        // A-2 (v25): sempre ordenados — antes saíam na ordem do banco.
+        let posologia;
+        if (semLembretes) {
+            posologia = 'lembretes pausados';
+        } else if (horariosAtivos.length === 0) {
+            posologia = 'sem horário cadastrado';
+        } else {
+            const rotulo = rotuloDaDose(med.unidade_dose, med.forma_farmaceutica);
+            const pares = horariosAtivos
+                .map(s => ({
+                    h: String(s.horario).substring(0, 5),
+                    q: Number(s.quantidade_por_dose) || 1,
+                    dias: rotuloDias(s.dias_semana)
+                }))
+                .sort((a, b) => a.h.localeCompare(b.h));
+            const quantidadesIguais = new Set(pares.map(par => par.q)).size === 1;
+            const diasIguais = new Set(pares.map(par => par.dias || '')).size === 1;
+            if (quantidadesIguais && diasIguais) {
+                const q = pares[0].q;
+                posologia = `${q} ${pluralizarRotulo(rotulo, q)} às ${pares.map(par => par.h).join(' e às ')}`
+                    + (pares[0].dias ? ` (${pares[0].dias})` : '');
+            } else {
+                posologia = pares
+                    .map(par => `${par.h} — ${par.q} ${pluralizarRotulo(rotulo, par.q)}${par.dias ? ` (${par.dias})` : ''}`)
+                    .join(' · ');
+            }
+        }
         const forma = med.forma_farmaceutica || 'unidade';
         // A-4 (v25): dosagem nula era exibida literalmente como "null".
         const dosagem = med.dosagem || 'dosagem não informada';
-        return `${i}. *${med.nome}* — ${dosagem} (${forma})\n   ⏰ ${horarios}\n\n`;
+        return `${i}. *${med.nome}* — ${dosagem} (${forma})\n   ⏰ ${posologia}\n\n`;
     };
 
     let msg = `💊 Seus remédios cadastrados, ${firstName}:\n\n`;

@@ -68,6 +68,13 @@ const ETAPAS_COM_CONFIRMACAO_DE_FLUXO = new Set([
 ]);
 const JANELA_AMBIGUIDADE_DUPLA_PENDENCIA_MS = 90_000;
 
+// Etapas de configuração com pergunta ABERTA em que uma mensagem de posologia
+// sem medicamento novo é continuação do fluxo, nunca cadastro do zero.
+const ETAPAS_DE_FLUXO_DE_CONFIGURACAO = new Set([
+    'reativ_manter_ou_mudar', 'reativ_oferta', 'reativ_estoque_convite',
+    'corrigir_campo', 'corrigir_perfil', 'corrigir_mh79_confirmar', 'confirm_acao_lote'
+]);
+
 // ============================================================
 // ALERTA/CONVITE DE ESTOQUE PÓS-CONFIRMAÇÃO — ponto único (P30)
 // Mesma decisão nos três caminhos determinísticos de confirmação
@@ -613,6 +620,22 @@ async function despacharPorProposta({ proposta, user, message, image, state, cur
     }
     if (intencao === 'principal' && currentState === 'configurando') {
         intencao = 'configuracao';
+    }
+    // Replay 20/09 (reativação do Curcuma C): no meio de um fluxo de
+    // configuração com pergunta aberta (reativação/correção/lote), mensagem de
+    // posologia SEM medicamento novo ("Vou tomar 5gr as 10 e as 20hrs") é a
+    // RESPOSTA do fluxo — nunca um cadastro do zero que repergunta o nome.
+    if (intencao === 'cadastro' && currentState === 'configurando'
+        && ETAPAS_DE_FLUXO_DE_CONFIGURACAO.has(state?.context?.etapa)) {
+        const nomeContexto = state?.context?.medicationNome || null;
+        const propostos = campos.medicamentos || [];
+        const trazMedicamentoNovo = propostos.length > 0
+            && (!nomeContexto || medicamentoDiferente(propostos, nomeContexto))
+            && !(nomeContexto && propostos.length === 1 && nomeCorrigidoParecido(nomeContexto, propostos[0]));
+        if (!trazMedicamentoNovo) {
+            console.log(`⚙️ [DESPACHO] Continuação do fluxo de configuração (etapa ${state.context.etapa}) — ${user.phone}`);
+            intencao = 'configuracao';
+        }
     }
     // Commit 0/M3 (achado do portão): no convite de estoque agregado, mensagem
     // que toca um PENDENTE (número, nome ou grafia corrigida — "Keppra") é

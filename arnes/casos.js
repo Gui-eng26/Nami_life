@@ -1241,6 +1241,38 @@ export const CASOS = [
                 detalhe: `status da dose antiga: ${dosePos?.status}`
             });
 
+            // 5b. NOME com "de → para" na MESMA mensagem (replay 20/09): o "pra Y"
+            // resolve na hora — nunca repergunta.
+            const r5b = await turno(ctx, user, 'Troca o nome do Enalapril Maleato pra Enalapril Max');
+            checagensDeForma(checks, 'nome pra', r5b);
+            m = (await medicamentos(ctx.db, user.id))[0];
+            checks.push({
+                nome: '"pra Y" aplicado em UM turno (Enalapril Maleato → Enalapril Max)',
+                ok: /^enalapril max$/i.test(m?.nome || ''),
+                detalhe: `nome: ${m?.nome}`
+            });
+            checks.push({ nome: '"pra Y": nunca repergunta o nome certo', ...naoContem(r5b, /qual o nome certo/i, 'repergunta') });
+
+            // 5c. PERFIL — nome do usuário (replay 20/09: "Corrigir meu nome"
+            // virou o nome!): sem valor claro, PERGUNTA; nunca escreve dedução.
+            const r5c = await turno(ctx, user, 'Quero corrigir meu nome');
+            checagensDeForma(checks, 'perfil nome pergunta', r5c);
+            const { data: userMeio } = await ctx.db.from('users').select('name').eq('id', user.id).single();
+            checks.push({
+                nome: 'pedido sem valor NÃO altera o nome (pergunta primeiro)',
+                ok: userMeio?.name === 'Editor',
+                detalhe: `name: ${userMeio?.name}`
+            });
+            checks.push({ nome: 'pergunta como quer ser chamado', ...contem(r5c, /chame|chamar|nome/i, 'pergunta do nome') });
+            const r5d = await turno(ctx, user, 'Pode me chamar de Eduardo');
+            checagensDeForma(checks, 'perfil nome valor', r5d);
+            const { data: userFim } = await ctx.db.from('users').select('name').eq('id', user.id).single();
+            checks.push({
+                nome: 'nome do usuário atualizado (Editor → Eduardo)',
+                ok: userFim?.name === 'Eduardo',
+                detalhe: `name: ${userFim?.name}`
+            });
+
             // 6. PERFIL (MH-75): data de nascimento em dois turnos.
             const r6 = await turno(ctx, user, 'Quero corrigir minha data de nascimento');
             checagensDeForma(checks, 'perfil pergunta', r6);
@@ -1348,9 +1380,11 @@ export const CASOS = [
             checks.push({ nome: 'foto congelada: posologia exibida (2 por horário)', ...contem(r1, /2 comprimidos|2 unidades/i, 'quantidade da foto') });
             checks.push({ nome: 'passo 2: pergunta "manter ou mudar"', ...contem(r1, /manter|mudar/i, 'manter ou mudar') });
 
-            // Passo 3: alteração de horário via P2, dita na resposta.
-            const r2 = await turno(ctx, user, 'Muda pra 8h e 20h');
+            // Passo 3: alteração de horário via P2, dita na resposta — na forma
+            // REAL do replay 20/09 ("as 8" sem sufixo), que vazava pro cadastro.
+            const r2 = await turno(ctx, user, 'Vou tomar as 8 e as 20hrs');
             checagensDeForma(checks, 'passo 3+4', r2);
+            checks.push({ nome: 'passo 3: a resposta fica no fluxo (nunca repergunta o nome do medicamento)', ...naoContem(r2, /qual o \*?nome\*?/i, 'repergunta de nome') });
             const { data: medDepois } = await ctx.db.from('medications')
                 .select('status, schedules(horario, ativo, quantidade_por_dose)').eq('id', med.id).single();
             const ativos = (medDepois?.schedules || []).filter(s => s.ativo)
@@ -1469,6 +1503,16 @@ export const CASOS = [
             checks.push({ nome: 'nunca a lista completa (Losartana fora)', ...naoContem(r1, /losartana/i, 'outro medicamento') });
             checks.push({ nome: 'dados do banco: posologia (2 por vez) e estoque não informado', ok: /2 por vez|2 unidades|— 2\b/.test(r1) && /n[ãa]o informado/i.test(r1), detalhe: r1.slice(0, 260) });
             checks.push({ nome: 'status explícito exibido (ativo)', ...contem(r1, /ativo/i, 'status') });
+
+            // Replay 20/09 (correção de Guilherme): a LISTA mostra a posologia,
+            // não só os horários.
+            const r2 = await turno(ctx, user, 'Mostra meus remédios');
+            checagensDeForma(checks, 'lista', r2);
+            checks.push({
+                nome: 'lista com POSOLOGIA: quantidade por dose em cada linha',
+                ok: /1 comprimido às 08:00/i.test(r2) && /2 comprimidos às 12:00/i.test(r2),
+                detalhe: r2.slice(0, 300)
+            });
             return checks;
         }
     },
