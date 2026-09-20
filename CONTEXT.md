@@ -4,7 +4,7 @@
 > Atualizado no encerramento de cada sessão. O backlog **não** vive aqui — vive em
 > `backlog_items` no Supabase.
 
-**Última atualização:** 19/09/2026 (encerramento da sessão v44-M2 — runner+schema VALIDADO EM STAGING, ver §12.7)
+**Última atualização:** 19/09/2026 (promoção do v44 M2 — runner+schema EM PRODUÇÃO, ver §12.7)
 
 ---
 
@@ -40,7 +40,7 @@ Anthropic Claude API · node-cron (agendamento).
 | Agente | Responsabilidade |
 |---|---|
 | `recepcionista` | Primeiro contato, onboarding, consentimento |
-| `cadastro` | Cadastro e alteração de medicamentos |
+| `cadastro` | Cadastro de medicamentos — desde o M2 (v44) é runner + schema (`src/runner.js` + `src/schemas/cadastro.js`), sem arquivo de agente próprio |
 | `principal` | Conversa geral, confirmação de dose |
 | `lembrete` | Follow-up de doses não confirmadas |
 | `relatorios` | Relatórios de adesão e balanço |
@@ -64,7 +64,10 @@ follow-ups.
 | `src/porta.js` | **NOVO v44** — porta única de interpretação (tool-use, 1 chamada/turno; proposta, nunca decisão) |
 | `src/funil.js` | **NOVO v44** — funil único de saída (`enviarAoUsuario`): todo envio + log em `funil_envios` |
 | `src/validadores/recorrencia.js` | **NOVO v44** — validador determinístico de recorrência (dias da semana/frequência) |
-| `arnes/` | **NOVO v44** — arnês de regressão (`npm run arnes`): 20 casos-ouro de conversas reais |
+| `src/schemas/cadastro.js` | **NOVO v44 M2** — schema do cadastro como dado + TODAS as perguntas/mensagens de coleta renderizadas em código (grep-guard: pergunta de coleta só aqui) |
+| `src/runner.js` | **NOVO v44 M2** — runner de coleta genérico (pendência única, absorção, gravação por ponto único, contrato de devolução); referência para M3/M4 |
+| `src/validadores/` | **v44 M2** — classificadores especializados do cadastro (posologia, estoque, campos simples, extrator completo, falha, multi-med, recorrência) — mudaram de endereço, não de lógica |
+| `arnes/` | **NOVO v44** — arnês de regressão (`npm run arnes`): 24 casos-ouro (A0–A23) de conversas reais + guardas de construção |
 
 ---
 
@@ -72,6 +75,9 @@ follow-ups.
 
 ### 3.1 Entregue e validado
 
+- **v44 M2 (19/09/2026, EM PRODUÇÃO)** — runner + schema: cadastro declarativo,
+  multi-medicamento (MH-96), recorrência (MH-77), conclusão automática (MH-30),
+  limiar de temporário (MH-49), estoque líquido composto (MH-86). Ver §12.7.
 - **v44 M0+M1 (19/09/2026, EM PRODUÇÃO)** — arnês de regressão + arquitetura da porta
   única (porta, funil, autoria única de fatos, inventário três listas, citação). Ver §12.
 - **MH-009 (v39)** — dashboard de indicadores do Ciclo 2, em produção como serviço
@@ -675,7 +681,8 @@ novo sem migração.
 
 `src/templates/composicao.js` é ponto único (mesmo padrão do P55): curto não é cru, itens em
 linhas próprias com emoji semântico, negrito do WhatsApp com UM asterisco, pergunta sozinha
-na última linha. Aplicado em `recepcionista.js`, `data_nascimento.js` e `cadastro.js`.
+na última linha. Aplicado em `recepcionista.js` e `data_nascimento.js`; o cadastro (M2)
+não gera texto por LLM — as mensagens vivem em código no schema e seguem o guia à mão.
 
 **Ainda NÃO aplicado** em `principal.js`, `configuracao.js`, `relatorios.js`, `lembrete.js` e
 `exclusaoConta.js` — esses agentes ainda podem emitir `**`. Mensagens renderizadas em código
@@ -690,9 +697,9 @@ na última linha. Aplicado em `recepcionista.js`, `data_nascimento.js` e `cadast
 | 2 verdade no roteamento | entregue (BUG-104, MH-090) |
 | 3 níveis de campo | entregue (MH-094) |
 | 4 destravar o extrator | entregue (dentro do Bloco C) |
-| 5 múltiplos medicamentos numa mensagem | **entregue no M2** (validada em staging, §12.7) |
+| 5 múltiplos medicamentos numa mensagem | **entregue no M2, em produção** (§12.7) |
 | 6 call único `{ intencao, campos }` | **entregue na v44** (porta única, §12) |
-| 7 runner do onboarding | runner entregue no M2 (§12.7); onboarding fica no **M4** |
+| 7 runner do onboarding | runner em produção (M2, §12.7); onboarding fica no **M4** |
 
 A limitação "corrigir e continuar no mesmo turno" foi parcialmente resolvida na v44:
 correção de estoque/horário pós-fechamento entra pela porta (BUG-103 resolvido); correção
@@ -714,9 +721,8 @@ contrato, e contrato de 7 fases envelhece antes de ser cumprido.
 Decisão de Guilherme ("sem medo"): ajustar a arquitetura agentiva com poucos usuários,
 staging isolado e a base real (2.833 turnos) como rede de segurança. Norte do produto:
 **"você fala com a Nami como se tivesse falando com alguém da sua família."**
-Marcos: M0 arnês · M1 porta+funil (**entregues, em produção**) · M2 runner+schema
-(**entregue, VALIDADO EM STAGING — aguarda promoção, §12.7**) · M3 configuração/relatórios ·
-M4 onboarding (LGPD, por último).
+Marcos: M0 arnês · M1 porta+funil · M2 runner+schema (**entregues, em produção** —
+§12.7) · M3 configuração/relatórios · M4 onboarding (LGPD, por último).
 Promoção por marco: cada um sobe isolado para `main`, com o arnês verde como portão.
 
 ### 12.1 Arquitetura entregue
@@ -846,13 +852,13 @@ iterada sem perda), A19-M2 (nome composto → dois registros), MH-77 (recorrênc
 schema; validador M1 já garante a honestidade), MH-96 é o item guarda-chuva. A20 (M3) e
 A10 (M4) ficam para as fases seguintes.
 
-### 12.7 v44 — M2 (runner + schema): VALIDADO EM STAGING (19/09/2026, aguarda promoção)
+### 12.7 v44 — M2 (runner + schema): EM PRODUÇÃO (19/09/2026)
 
-**Estado explícito: validada em staging — NÃO está em produção.** Commits
-`3b8f7ac..fca6b39` na branch `staging`; promoção pendente de: merge `staging` → `main`,
-migrações `20260919100000` (MH-77) e `20260919110000` (MH-30) aplicadas em produção via
-MCP, e o SQL da Manô (`scripts/sql_mano_recorrencia_producao.sql`, aprovação e execução
-de Guilherme, com aviso a ela).
+Commits `3b8f7ac..fca6b39` (staging) promovidos a `main` em 19/09/2026, com as migrações
+`v44_m2_mh77_recorrencia` e `v44_m2_mh30_tratamento_fim` aplicadas em produção via MCP
+ANTES do merge (verificadas: colunas + os dois filtros na RPC). **Pendência única: o SQL
+da Manô** (`scripts/sql_mano_recorrencia_producao.sql`) — aprovação e execução de
+Guilherme, com aviso a ela (contrato do briefing §4).
 
 **Entrega (briefing `briefings/execucao_v44_m2.md`, 5 commits, arnês verde entre cada um):**
 
@@ -902,17 +908,14 @@ de pó varia por horário — caso real: creatina "1 scoop às 10h, 10grs às 11
 = 1 unidade, coerção POR VALOR, e a resposta avisa a conversão (regra 7). Nada é escrito
 em `dosagem` a partir de gramas.
 
-**Backlog do encerramento (`scripts/backlog_encerramento_v44_m2.js`):** MH-96, MH-77,
-MH-30, MH-49, MH-86, MH-85, MH-83, BUG-102, ACH-3, ACH-4 e MH-73 C.1/C.2 →
-`em_validacao` (viram `resolvido` na promoção) · ACH-10 criado (achados do replay) ·
-MH-93 repriorizado para alta com a decisão de gramas.
+**Backlog (`scripts/backlog_encerramento_v44_m2.js` + flip da promoção):** MH-96, MH-77,
+MH-30, MH-49, MH-86, MH-85, MH-83, BUG-102, ACH-3, ACH-4, MH-73 C.1/C.2 e ACH-10 →
+`resolvido` na promoção (19/09) · MH-93 repriorizado para alta com a decisão de gramas.
 
-**Incidente registrado:** a chave da API Anthropic ficou temporariamente sem créditos no
-meio da sessão (bloqueia porta e classificadores — derrubaria a Nami inteira) e voltou
-sozinha. O arnês falha com clareza nesse cenário; os casos determinísticos continuam
-rodando. Conferir o billing.
+**Incidente registrado:** a chave da API Anthropic ficou sem créditos no meio da sessão
+(bloqueia porta e classificadores — derruba a Nami inteira). Resolvido na hora por
+Guilherme, que recarregou os créditos assim que avisado. O arnês falha com clareza
+nesse cenário; os casos determinísticos (A0/A21/A22/A23) continuam rodando. Vale um
+alerta de billing na conta para não depender de aviso em sessão.
 
-**Na promoção, além do fluxo do §7:** mover esta entrega para "em produção", remover
-`cadastro.js` do §2.1/§2.2 (substituído por runner+schema+validadores) e flipar os 12
-itens de backlog para `resolvido`.
 
