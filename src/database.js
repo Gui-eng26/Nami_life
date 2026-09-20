@@ -1103,6 +1103,25 @@ export async function reverterConfirmacao(doseLogId, motivo) {
 // CONFIGURAÇÃO DE MEDICAMENTOS
 // ============================================================
 
+// ============================================================
+// v44 M3 P1 — ESTADO EXPLÍCITO DO TRATAMENTO
+// medications.status ('ativo'|'pausado'|'encerrado') é escrito por
+// PONTO ÚNICO: pausar/encerrar/reativar passam por aqui. `ativo`
+// (boolean) permanece como derivado de compatibilidade durante o M3.
+// ============================================================
+
+async function escreverStatusTratamento(medicationId, status) {
+    const { error } = await supabase
+        .from('medications')
+        .update({
+            status,
+            status_alterado_em: new Date().toISOString(),
+            ativo: status !== 'encerrado' // derivado (compat M3)
+        })
+        .eq('id', medicationId);
+    if (error) throw new Error(`Erro ao escrever status '${status}': ${error.message}`);
+}
+
 export async function pausarMedicamento(medicationId) {
     const { error: errSched } = await supabase
         .from('schedules')
@@ -1118,6 +1137,8 @@ export async function pausarMedicamento(medicationId) {
         .eq('status', 'pendente');
     if (errLogs) throw new Error(`Erro ao cancelar dose_logs pendentes: ${errLogs.message}`);
 
+    await escreverStatusTratamento(medicationId, 'pausado');
+
     console.log(`⏸️ Medicamento pausado — schedules desativados + dose_logs pendentes marcados como pausado — medication: ${medicationId}`);
 }
 
@@ -1127,15 +1148,14 @@ export async function reativarMedicamento(medicationId) {
         .update({ ativo: true })
         .eq('medication_id', medicationId);
     if (error) throw new Error(`Erro ao reativar: ${error.message}`);
+
+    await escreverStatusTratamento(medicationId, 'ativo');
+
     console.log(`▶️ Schedules reativados — medication: ${medicationId}`);
 }
 
 export async function encerrarTratamento(medicationId) {
-    const { error: errMed } = await supabase
-        .from('medications')
-        .update({ ativo: false })
-        .eq('id', medicationId);
-    if (errMed) throw new Error(`Erro ao encerrar: ${errMed.message}`);
+    await escreverStatusTratamento(medicationId, 'encerrado');
 
     const { error: errSched } = await supabase
         .from('schedules')
@@ -1277,7 +1297,10 @@ export async function reativarComAtualizacao({ medicationId, estoque, tipo_trata
                 tipo_tratamento,
                 tratamento_dias: tratamento_dias || null,
                 tratamento_fim: calcularTratamentoFim(tipo_tratamento, tratamento_dias),
-                ativo: true
+                ativo: true,
+                // P1 (M3): reativação escreve o estado explícito.
+                status: 'ativo',
+                status_alterado_em: new Date().toISOString()
             })
             .eq('id', medicationId);
         if (errMed) throw new Error(`Erro ao atualizar medicamento: ${errMed.message}`);
