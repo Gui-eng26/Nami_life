@@ -38,7 +38,9 @@ import {
     getMedicationComSchedulesAtivos,
     encerrarTratamento
 } from './database.js';
-import { detectarRecorrenciaNaoSuportada, extrairHorariosCitados } from './validadores/recorrencia.js';
+import { detectarRecorrenciaNaoSuportada, interpretarRecorrencia, extrairHorariosCitados } from './validadores/recorrencia.js';
+import { hojeBRT } from './dataReferencia.js';
+import { derivarUnidades } from './validadores/derivacoes.js';
 import { classificarIndeterminadoCadastro } from './validadores/falha.js';
 import { calcularAlertaEstoqueCadastro } from './validadores/estoque.js';
 import { extrairCadastroCompleto, mapearExtracaoParaCampos, aplicarExtracaoEmVazios } from './validadores/extratorCompleto.js';
@@ -177,10 +179,19 @@ async function gravarTratamento(campos, user) {
     // propagar o erro, nunca fica órfão sem horário.
     try {
         for (const par of campos.pares_posologia || []) {
+            const horarioStr = String(par.horario).trim().substring(0, 5);
+            // MH-77: dias por horário (estrutura da recorrência) > dias pendentes
+            // da mensagem > default do banco (todos os dias).
+            const diasSemana = campos.dias_por_horario?.[horarioStr]
+                ?? campos.dias_semana_pendente
+                ?? null;
             await saveSchedule({
                 medicationId: med.id,
-                horario: String(par.horario).trim().substring(0, 5),
-                quantidadePorDose: Number(par.quantidade) || 1
+                horario: horarioStr,
+                quantidadePorDose: Number(par.quantidade) || 1,
+                diasSemana,
+                intervaloDias: campos.intervalo_dias_recorrencia ?? null,
+                dataInicio: campos.data_inicio_recorrencia ?? null
             });
         }
     } catch (e) {
@@ -197,7 +208,12 @@ async function gravarTratamento(campos, user) {
 async function lerMedicamentoGravado(medicationId) {
     const med = await getMedicationComSchedulesAtivos(medicationId);
     const pares = med.schedulesAtivos
-        .map(s => ({ horario: String(s.horario).substring(0, 5), quantidade: Number(s.quantidade_por_dose) }))
+        .map(s => ({
+            horario: String(s.horario).substring(0, 5),
+            quantidade: Number(s.quantidade_por_dose),
+            dias_semana: s.dias_semana ?? null,
+            intervalo_dias: s.intervalo_dias ?? null
+        }))
         .sort((a, b) => a.horario.localeCompare(b.horario));
     return { med, pares };
 }
@@ -565,33 +581,72 @@ async function processarTurno({ schema, user, mensagem, campos, historicoConvers
         }
     }
 
-    // Validador de recorrência (v44 §5.7, evidência A3): padrão de dia-da-semana/
-    // frequência não representável NUNCA vira gravação silenciosa de horários
-    // diários (regra 7). Horários desta mensagem bloqueados; o resto preservado.
+    // Validador de recorrência (v44 §5.7 → M2 MH-77): padrão de dia-da-semana/
+    // frequência agora PREENCHE quando representável (dias da semana, dia sim/
+    // dia não, 1x por semana com dia); fora disso, continua BLOQUEANDO —
+    // gravação errada em silêncio é proibida (regra 7).
     const mensagemTrouxeHorarios =
         (Array.isArray(resultado.updates?.horarios) && resultado.updates.horarios.length > 0) ||
         (Array.isArray(resultado.updates?.pares_posologia) && resultado.updates.pares_posologia.length > 0);
     const recorrencia = detectarRecorrenciaNaoSuportada(mensagem);
     const horariosNaMensagem = extrairHorariosCitados(mensagem);
 
-    if (recorrencia.detectado && (mensagemTrouxeHorarios || horariosNaMensagem.length > 0)) {
-        const { horarios, pares_posologia, intervalo_horas, horario_inicio, ...camposPreservados } = camposNovos;
+    if (recorrencia.detectado) {
+        const estrutura = interpretarRecorrencia(mensagem);
 
-        // Quantidade embutida nos pares bloqueados sobrevive como pendente.
-        const quantidades = [...new Set((pares_posologia || []).map(p => Number(p.quantidade)).filter(Boolean))];
-        if (quantidades.length === 1 && camposPreservados.quantidade_pendente == null) {
-            camposPreservados.quantidade_pendente = quantidades[0];
-            camposPreservados.unidade_dose_pendente = camposPreservados.unidade_dose || null;
-            camposPreservados.forma_explicita_pendente = camposPreservados.forma_explicita || null;
+        if (estrutura?.suportada) {
+            // PREENCHER (MH-77): estrutura por horário vira dado do tratamento.
+            if (estrutura.diasPorHorario) {
+                camposNovos.dias_por_horario = { ...(camposNovos.dias_por_horario || {}), ...estrutura.diasPorHorario };
+                // Horários que só a estrutura viu entram como coletados — nunca se perdem.
+                if (!(camposNovos.pares_posologia?.length)) {
+                    camposNovos.horarios = [...new Set([...(camposNovos.horarios || []), ...Object.keys(estrutura.diasPorHorario)])];
+                }
+            }
+            if (estrutura.diasSemHorario) {
+                camposNovos.dias_semana_pendente = estrutura.diasSemHorario;
+            }
+            if (estrutura.intervaloDias) {
+                camposNovos.intervalo_dias_recorrencia = estrutura.intervaloDias;
+                camposNovos.data_inicio_recorrencia = hojeBRT();
+            }
+            // Consolida: quantidade adiantada + horários agora conhecidos = pares.
+            if (!(camposNovos.pares_posologia?.length) && (camposNovos.horarios || []).length > 0
+                && camposNovos.quantidade_pendente != null) {
+                const unidades = derivarUnidades(camposNovos.unidade_dose_pendente || 'unidade');
+                camposNovos.pares_posologia = montarParesPosologia(camposNovos.horarios, camposNovos.quantidade_pendente);
+                camposNovos.unidade_dose = unidades.unidade_dose;
+                camposNovos.unidade_estoque = unidades.unidade_estoque;
+                camposNovos.gotas_por_ml = unidades.gotas_por_ml;
+                camposNovos.forma_explicita = camposNovos.forma_explicita || camposNovos.forma_explicita_pendente || null;
+                camposNovos.quantidade_pendente = null;
+                camposNovos.unidade_dose_pendente = null;
+                camposNovos.forma_explicita_pendente = null;
+            }
+            // A recorrência reconhecida não é falha da camada 1.
+            motivoFalha = null;
+            console.log(`🗓️ [VALIDADOR] Recorrência PREENCHIDA (${estrutura.padroes.join(', ')}) — dias por horário: ${JSON.stringify(estrutura.diasPorHorario)} intervalo: ${estrutura.intervaloDias ?? '—'} — ${user.phone}`);
+        } else if (mensagemTrouxeHorarios || horariosNaMensagem.length > 0 || (estrutura && !estrutura.suportada)) {
+            // BLOQUEIO honesto: padrão fora do representável (ciclos por semanas,
+            // semanal sem dia). Horários desta mensagem bloqueados; resto preservado.
+            const { horarios, pares_posologia, intervalo_horas, horario_inicio, ...camposPreservados } = camposNovos;
+
+            // Quantidade embutida nos pares bloqueados sobrevive como pendente.
+            const quantidades = [...new Set((pares_posologia || []).map(p => Number(p.quantidade)).filter(Boolean))];
+            if (quantidades.length === 1 && camposPreservados.quantidade_pendente == null) {
+                camposPreservados.quantidade_pendente = quantidades[0];
+                camposPreservados.unidade_dose_pendente = camposPreservados.unidade_dose || null;
+                camposPreservados.forma_explicita_pendente = camposPreservados.forma_explicita || null;
+            }
+
+            await saveConversationState(user.id, {
+                state: schema.estadoConversa,
+                context: { ...camposPreservados, etapa: 'cad_horarios' }
+            });
+
+            console.log(`🧱 [VALIDADOR] Recorrência não suportada (${recorrencia.padroes.join(', ')}) — horários bloqueados — ${user.phone}`);
+            return renderizarBloqueioRecorrencia(horariosNaMensagem, recorrencia.padroes);
         }
-
-        await saveConversationState(user.id, {
-            state: schema.estadoConversa,
-            context: { ...camposPreservados, etapa: 'cad_horarios' }
-        });
-
-        console.log(`🧱 [VALIDADOR] Recorrência não suportada (${recorrencia.padroes.join(', ')}) — horários bloqueados — ${user.phone}`);
-        return renderizarBloqueioRecorrencia(horariosNaMensagem);
     }
 
     // Nome composto por " e " coletado como um só (A19, caminho sem divisão da

@@ -114,10 +114,11 @@ REGRAS:
 - Mensagem que lista medicamento(s) com ou sem horários é intenção de cadastro, mesmo sem
   verbo ("Bariatron 12:00", "Fluoxetina 08:00 e 20:00").
 - Mensagem que TRAZ medicamento(s) para cadastrar é SEMPRE "cadastro" — mesmo com VÁRIOS
-  medicamentos de uma vez, ou com padrão de dias da semana/recorrência que a Nami ainda
-  não suporta. O fluxo de cadastro é quem faz a honestidade de limite SEM descartar o que
-  a pessoa já disse. "nao_suportado" é só para pedidos sem caminho nenhum (exportar
-  histórico, conectar cuidador, registrar sintomas, áudio/foto).
+  medicamentos de uma vez, ou com padrão de dias da semana/recorrência (o cadastro já
+  representa dias da semana, dia sim/dia não e 1x por semana; para o que ainda não faz,
+  é ele quem responde com honestidade SEM descartar o que a pessoa já disse).
+  "nao_suportado" é só para pedidos sem caminho nenhum (exportar histórico, conectar
+  cuidador, registrar sintomas, áudio/foto).
 - FEEDBACK é dimensão independente: avalie sempre. "ok"/"obrigado" isolado é reação, não elogio.
 - excluir_conta é APAGAR A CONTA INTEIRA, nunca remover um remédio/horário (isso é configuracao).
 

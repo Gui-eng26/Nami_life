@@ -20,6 +20,7 @@
 import {
     derivarFormaFarmaceutica, rotuloDaDose, pluralizarRotulo
 } from '../validadores/derivacoes.js';
+import { rotuloDias } from '../validadores/recorrencia.js';
 import { subEtapaEstoque, validarEstoque } from '../validadores/estoque.js';
 import { extrairCampoSimples, ehDosagemPura } from '../validadores/camposSimples.js';
 import {
@@ -303,10 +304,17 @@ export function renderizarDeclarativa(med, userName) {
     return `*${med.nome}* cadastrado${first ? `, ${first}` : ''}! Vou te lembrar nos horários certos.`;
 }
 
+function sufixoRecorrencia(par) {
+    if (Number(par?.intervalo_dias) === 2) return ' (dia sim, dia não)';
+    if (Number(par?.intervalo_dias) >= 3) return ` (a cada ${par.intervalo_dias} dias)`;
+    const rotulo = rotuloDias(par?.dias_semana);
+    return rotulo ? ` (${rotulo})` : '';
+}
+
 function renderizarListaPosologia(pares, rotulo) {
     return [...(pares || [])]
         .sort((a, b) => a.horario.localeCompare(b.horario))
-        .map(p => `   • ${p.horario} — ${p.quantidade} ${pluralizarRotulo(rotulo, p.quantidade)}`)
+        .map(p => `   • ${p.horario} — ${p.quantidade} ${pluralizarRotulo(rotulo, p.quantidade)}${sufixoRecorrencia(p)}`)
         .join('\n');
 }
 
@@ -516,14 +524,23 @@ export function renderizarFechamentoAnterior(nomeAnterior) {
 // honestidade de limite + oferta do subconjunto representável.
 // ------------------------------------------------------------
 
-export function renderizarBloqueioRecorrencia(horariosCitados) {
+// MH-77: o que era limite geral virou capacidade — o bloqueio agora só cobre
+// o que segue fora do representável (ciclos por semanas) e o padrão semanal
+// sem dia nomeado (pede o dia, nunca grava suposição).
+export function renderizarBloqueioRecorrencia(horariosCitados, padroes = []) {
+    if (padroes.includes('x_por_semana') && !padroes.includes('dia_da_semana') && !padroes.includes('abreviacao_de_dias')) {
+        return (
+            `Uma vez por semana eu faço sim! Só preciso saber o dia certinho. 😊\n\n` +
+            `Em qual dia da semana você toma?`
+        );
+    }
     const oferta = (horariosCitados || []).length > 0
-        ? `Qual desses horários você quer usar todos os dias — ${horariosCitados.join(' ou ')}?`
-        : 'Qual horário você quer usar todos os dias?';
+        ? `Como você prefere deixar os lembretes — ${horariosCitados.join(' ou ')}?`
+        : 'Como você prefere deixar os lembretes?';
     return (
-        `Por enquanto eu ainda não consigo variar os horários por dia da semana — ` +
-        `só consigo te lembrar nos *mesmos horários todos os dias*. É algo que está chegando! 😊\n\n` +
-        `Se estiver bom pra você, a gente já deixa um horário fixo por enquanto.\n\n` +
+        `Esse padrão de ciclo eu ainda não consigo acompanhar — por enquanto eu sei fazer ` +
+        `dias da semana (ex: seg a sex), *dia sim, dia não* e 1x por semana. É algo que está chegando! 😊\n\n` +
+        `Se um desses formatos servir por enquanto, a gente já deixa combinado.\n\n` +
         oferta
     );
 }

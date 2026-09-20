@@ -220,18 +220,16 @@ export async function replaceMedication({ medicationId, dosagem, instrucoes, est
 
     // MH-073: preserva quantidade_por_dose antes de recriar os horários — sem isso,
     // uma substituição de cadastro zeraria a posologia silenciosamente.
+    // MH-77: dias_semana/intervalo_dias/data_inicio preservados pela mesma razão.
     const { data: schedulesAntigos } = await supabase
         .from('schedules')
-        .select('horario, quantidade_por_dose')
+        .select('horario, quantidade_por_dose, dias_semana, intervalo_dias, data_inicio')
         .eq('medication_id', medicationId);
 
-    const quantidadePorHorario = new Map(
-        (schedulesAntigos || []).map(s => [
-            String(s.horario).substring(0, 5),
-            Number(s.quantidade_por_dose)
-        ])
+    const antigoPorHorario = new Map(
+        (schedulesAntigos || []).map(s => [String(s.horario).substring(0, 5), s])
     );
-    const quantidadesDistintas = [...new Set(quantidadePorHorario.values())];
+    const quantidadesDistintas = [...new Set([...antigoPorHorario.values()].map(s => Number(s.quantidade_por_dose)))];
     const quantidadePadrao = quantidadesDistintas.length === 1 ? quantidadesDistintas[0] : 1;
 
     // Apaga horários antigos e recria
@@ -251,10 +249,14 @@ export async function replaceMedication({ medicationId, dosagem, instrucoes, est
                 }
             }
             const horarioStr = String(horario).trim().substring(0, 5);
+            const antigo = antigoPorHorario.get(horarioStr);
             await saveSchedule({
                 medicationId,
                 horario: horarioStr,
-                quantidadePorDose: quantidadeNova ?? quantidadePorHorario.get(horarioStr) ?? quantidadePadrao
+                quantidadePorDose: quantidadeNova ?? (antigo ? Number(antigo.quantidade_por_dose) : null) ?? quantidadePadrao,
+                diasSemana: antigo?.dias_semana ?? null,
+                intervaloDias: antigo?.intervalo_dias ?? null,
+                dataInicio: antigo?.data_inicio ?? null
             });
         }
     }
@@ -305,7 +307,7 @@ export async function atualizarMedicamentoCampos({ medicationId, campos }) {
 export async function getMedicationComSchedulesAtivos(medicationId) {
     const { data, error } = await supabase
         .from('medications')
-        .select('*, schedules(id, horario, quantidade_por_dose, ativo)')
+        .select('*, schedules(id, horario, quantidade_por_dose, ativo, dias_semana, intervalo_dias, data_inicio)')
         .eq('id', medicationId)
         .single();
 
@@ -334,7 +336,7 @@ export async function getUserMedications(userId) {
         .from('medications')
         .select(`
             *,
-            schedules (id, horario, dias_semana, ativo, quantidade_por_dose)
+            schedules (id, horario, dias_semana, intervalo_dias, data_inicio, ativo, quantidade_por_dose)
         `)
         .eq('user_id', userId)
         .eq('ativo', true);
@@ -413,7 +415,11 @@ export async function registrarMovimentoEstoque({
 // horário duplicado do mesmo medicamento é recusado (skip com log), nunca inserido.
 // replaceMedication/reativarComAtualizacao apagam/desativam antes de recriar, então
 // nunca esbarram na guarda; quem esbarraria é exatamente o bug que ela mata.
-export async function saveSchedule({ medicationId, horario, quantidadePorDose = 1 }) {
+//
+// v44 M2 (MH-77): diasSemana (text[] 'seg'..'dom'), intervaloDias e dataInicio
+// opcionais — omitidos, a coluna carrega o DEFAULT do banco (todos os dias),
+// o comportamento de sempre.
+export async function saveSchedule({ medicationId, horario, quantidadePorDose = 1, diasSemana = null, intervaloDias = null, dataInicio = null }) {
     const horarioStr = String(horario).substring(0, 5);
     const { data: existentes } = await supabase
         .from('schedules')
@@ -432,10 +438,41 @@ export async function saveSchedule({ medicationId, horario, quantidadePorDose = 
         .insert({
             medication_id: medicationId,
             horario,
-            quantidade_por_dose: quantidadePorDose
+            quantidade_por_dose: quantidadePorDose,
+            ...(Array.isArray(diasSemana) && diasSemana.length > 0 ? { dias_semana: diasSemana } : {}),
+            ...(intervaloDias && intervaloDias >= 2 ? { intervalo_dias: intervaloDias, data_inicio: dataInicio ?? hojeBRT() } : {})
         });
 
     if (error) throw new Error(`Erro ao salvar horário: ${error.message}`);
+}
+
+// ============================================================
+// MH-77 — COBERTURA DE DIA DE UM SCHEDULE (ponto único, P30)
+// Consumidores que assumiam dose diária consultam aqui.
+// ============================================================
+
+const CODIGO_DIA_SEMANA = { Sun: 'dom', Mon: 'seg', Tue: 'ter', Wed: 'qua', Thu: 'qui', Fri: 'sex', Sat: 'sab' };
+
+// O schedule dispara hoje (dia-calendário em Brasília)?
+export function scheduleCobreDia(schedule, agora = new Date()) {
+    const dias = schedule?.dias_semana;
+    if (Array.isArray(dias) && dias.length > 0) {
+        const wk = agora.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'America/Sao_Paulo' });
+        if (!dias.includes(CODIGO_DIA_SEMANA[wk])) return false;
+    }
+    if (Number(schedule?.intervalo_dias) >= 2 && schedule?.data_inicio) {
+        const hoje = agora.toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+        const diff = Math.round((Date.parse(hoje) - Date.parse(schedule.data_inicio)) / 86400000);
+        if (((diff % schedule.intervalo_dias) + schedule.intervalo_dias) % schedule.intervalo_dias !== 0) return false;
+    }
+    return true;
+}
+
+// Quantos dias por semana o schedule dispara (7 no legado diário).
+export function diasPorSemanaDoSchedule(schedule) {
+    if (Number(schedule?.intervalo_dias) >= 2) return 7 / Number(schedule.intervalo_dias);
+    const dias = schedule?.dias_semana;
+    return (Array.isArray(dias) && dias.length > 0) ? dias.length : 7;
 }
 
 // Busca o número de schedules ativos de um medicamento (= doses por dia)
@@ -578,7 +615,8 @@ export async function calcularDeltaEstoqueDaDose(doseLog) {
 }
 
 // Consumo diário total do medicamento, na unidade de estoque — soma de todos os
-// horários ativos. Substitui a contagem de schedules como proxy de consumo.
+// horários ativos. MH-77: com recorrência, o consumo é POR SEMANA ÷ 7 (dias de
+// cobertura de estoque nunca assumem dose diária de um schedule semanal).
 export async function calcularConsumoDiario(medicationId) {
     const { data: med } = await supabase
         .from('medications')
@@ -588,18 +626,20 @@ export async function calcularConsumoDiario(medicationId) {
 
     const { data: schedules } = await supabase
         .from('schedules')
-        .select('quantidade_por_dose')
+        .select('quantidade_por_dose, dias_semana, intervalo_dias')
         .eq('medication_id', medicationId)
         .eq('ativo', true);
 
     const lista = schedules || [];
     if (!med || lista.length === 0) return { consumoDiario: 0, dosesPerDia: 0 };
 
-    const somaDoses = lista.reduce((acc, s) => acc + Number(s.quantidade_por_dose), 0);
+    const somaSemanal = lista.reduce(
+        (acc, s) => acc + Number(s.quantidade_por_dose) * diasPorSemanaDoSchedule(s), 0
+    );
 
     return {
         consumoDiario: converterDoseParaEstoque({
-            quantidade: somaDoses,
+            quantidade: somaSemanal / 7,
             unidade_dose: med.unidade_dose,
             unidade_estoque: med.unidade_estoque,
             gotas_por_ml: med.gotas_por_ml
@@ -1180,18 +1220,16 @@ export async function adicionarSchedule(medicationId, horario) {
 export async function reativarComAtualizacao({ medicationId, estoque, tipo_tratamento, tratamento_dias, horarios, apenasHorarios = false }) {
     // MH-073: preserva quantidade_por_dose antes de desativar os horários antigos —
     // mesma blindagem de replaceMedication (seção 5.6 do briefing).
+    // MH-77: dias_semana/intervalo preservados pela mesma razão.
     const { data: schedulesAntigos } = await supabase
         .from('schedules')
-        .select('horario, quantidade_por_dose')
+        .select('horario, quantidade_por_dose, dias_semana, intervalo_dias, data_inicio')
         .eq('medication_id', medicationId);
 
-    const quantidadePorHorario = new Map(
-        (schedulesAntigos || []).map(s => [
-            String(s.horario).substring(0, 5),
-            Number(s.quantidade_por_dose)
-        ])
+    const antigoPorHorario = new Map(
+        (schedulesAntigos || []).map(s => [String(s.horario).substring(0, 5), s])
     );
-    const quantidadesDistintas = [...new Set(quantidadePorHorario.values())];
+    const quantidadesDistintas = [...new Set([...antigoPorHorario.values()].map(s => Number(s.quantidade_por_dose)))];
     const quantidadePadrao = quantidadesDistintas.length === 1 ? quantidadesDistintas[0] : 1;
 
     if (!apenasHorarios) {
@@ -1222,13 +1260,16 @@ export async function reativarComAtualizacao({ medicationId, estoque, tipo_trata
 
     for (const horario of horarios) {
         const horarioStr = String(horario).trim().substring(0, 5);
+        const antigo = antigoPorHorario.get(horarioStr);
         const { error: errSched } = await supabase
             .from('schedules')
             .insert({
                 medication_id: medicationId,
                 horario: `${horarioStr}:00`,
                 ativo: true,
-                quantidade_por_dose: quantidadePorHorario.get(horarioStr) ?? quantidadePadrao
+                quantidade_por_dose: (antigo ? Number(antigo.quantidade_por_dose) : null) ?? quantidadePadrao,
+                ...(antigo?.dias_semana ? { dias_semana: antigo.dias_semana } : {}),
+                ...(antigo?.intervalo_dias ? { intervalo_dias: antigo.intervalo_dias, data_inicio: antigo.data_inicio } : {})
             });
         if (errSched) throw new Error(`Erro ao criar schedule: ${errSched.message}`);
     }
@@ -1402,11 +1443,15 @@ export async function getDosesDoDia(userId, dataISO, medicationId = null) {
     // Apenas para HOJE: em dias passados não há como saber quais horários estavam vigentes.
     if (dataISO !== hojeBRT()) return doses;
 
-    const { data: schedules } = await supabase
+    const { data: schedulesBrutos } = await supabase
         .from('schedules')
-        .select('medication_id, horario')
+        .select('medication_id, horario, dias_semana, intervalo_dias, data_inicio')
         .in('medication_id', medicationIds)
         .eq('ativo', true);
+
+    // MH-77: horário que não cobre HOJE (dias_semana/intervalo) não vira dose
+    // "agendada" sintética — dose de dia não coberto nunca nasce, nem no balanço.
+    const schedules = (schedulesBrutos || []).filter(s => scheduleCobreDia(s));
 
     const agoraHHMM = new Date().toLocaleTimeString('pt-BR', {
         hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo'
@@ -1484,7 +1529,8 @@ export async function getProximosMedicamentos(userId) {
     const proximos = [];
 
     for (const med of medications) {
-        for (const schedule of (med.schedules || []).filter(s => s.ativo)) {
+        // MH-77: só os horários que cobrem HOJE entram em passados/agora/próximos.
+        for (const schedule of (med.schedules || []).filter(s => s.ativo && scheduleCobreDia(s))) {
             const horario = schedule.horario.substring(0, 5);
             const confirmado = confirmadasPorDose.has(`${med.id}|${horario}`);
             const diff = _minutesDiff(horaAtual, horario);

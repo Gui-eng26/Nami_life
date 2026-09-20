@@ -118,8 +118,8 @@ export const CASOS = [
     // --------------------------------------------------------
     {
         id: 'A3',
-        marco: 'M1',
-        titulo: 'Manô 18/09 15:26 — "seg a sexta às 6h, sáb e dom às 10h" (recorrência não suportada)',
+        marco: 'M2',
+        titulo: 'Manô 18/09 15:26 — "seg a sexta às 6h, sáb e dom às 10h" (MH-77: recorrência SUPORTADA)',
         async executar({ ctx, seeds }) {
             const checks = [];
             const user = await seeds.criarUsuario({ nome: 'Manô', onboarded: true, nascimento: '2006-07-24', estado: 'post_onboarding' });
@@ -127,28 +127,33 @@ export const CASOS = [
             const r1 = await turno(ctx, user, 'Desvenlafaxina 50mg, 3 comprimidos, segunda à sexta às 6h, sábado e domingo ás 10h');
             checagensDeForma(checks, 'turno 1', r1);
 
-            // NUNCA gravar os dois horários como diários (limite: mesmos horários todos os dias).
-            const meds1 = await medicamentos(ctx.db, user.id);
-            const horarios1 = meds1.flatMap(m => (m.schedules || []).filter(s => s.ativo).map(s => String(s.horario).slice(0, 5)));
-            checks.push({
-                nome: 'turno 1: NUNCA grava 06:00 e 10:00 como horários diários',
-                ok: !(horarios1.includes('06:00') && horarios1.includes('10:00')),
-                detalhe: `horários gravados: ${horarios1.join(', ') || 'nenhum'}`
-            });
-            // Resposta honesta de limite (regras 6/7), sem gravação errada em silêncio.
-            checks.push({ nome: 'turno 1: resposta honesta de limite (ainda não faz dias da semana)', ...contem(r1, /ainda não|por enquanto|todos os dias/i, 'honestidade de limite') });
-            checks.push({ nome: 'turno 1: oferece o subconjunto representável', ...contem(r1, /6\s*h|06:00/i, 'oferta do horário representável') });
+            // M2 (MH-77): a mensagem inteira é representável — dois schedules com
+            // dias_semana distintos, gravados no MESMO turno, nada de recusa de limite.
+            const meds1 = await medicamentos(ctx.db, user.id, { nomeIlike: 'Desvenlafaxina%' });
+            const schedules1 = (meds1[0]?.schedules || []).filter(s => s.ativo)
+                .map(s => ({ horario: String(s.horario).slice(0, 5), dias: [...(s.dias_semana || [])].sort() }));
+            const s06 = schedules1.find(s => s.horario === '06:00');
+            const s10 = schedules1.find(s => s.horario === '10:00');
 
-            // Consentimento do subconjunto → grava só 06:00.
-            const r2 = await turno(ctx, user, 'Pode ser às 6h todos os dias então');
-            checagensDeForma(checks, 'turno 2', r2);
-            const meds2 = await medicamentos(ctx.db, user.id);
-            const horarios2 = meds2.flatMap(m => (m.schedules || []).filter(s => s.ativo).map(s => String(s.horario).slice(0, 5)));
             checks.push({
-                nome: 'turno 2: grava só o subconjunto consentido (06:00)',
-                ok: horarios2.length === 1 && horarios2[0] === '06:00',
-                detalhe: `horários gravados: ${horarios2.join(', ') || 'nenhum'}`
+                nome: 'turno 1: medicamento gravado com os DOIS horários (06:00 e 10:00)',
+                ok: meds1.length === 1 && !!s06 && !!s10 && schedules1.length === 2,
+                detalhe: `schedules: ${JSON.stringify(schedules1)}`
             });
+            checks.push({
+                nome: 'turno 1: 06:00 só de segunda a sexta (dias_semana)',
+                ok: JSON.stringify(s06?.dias) === JSON.stringify(['qua', 'qui', 'seg', 'sex', 'ter']),
+                detalhe: `dias 06:00: ${JSON.stringify(s06?.dias ?? null)}`
+            });
+            checks.push({
+                nome: 'turno 1: 10:00 só sábado e domingo (dias_semana)',
+                ok: JSON.stringify(s10?.dias) === JSON.stringify(['dom', 'sab']),
+                detalhe: `dias 10:00: ${JSON.stringify(s10?.dias ?? null)}`
+            });
+            // A honestidade de limite do M1 morreu por capacidade: nada de "ainda não
+            // consigo" nem oferta de subconjunto.
+            checks.push({ nome: 'turno 1: sem recusa de limite (recorrência agora FAZ)', ...naoContem(r1, /ainda n[ãa]o consigo|mesmos hor[áa]rios todos os dias/i, 'recusa de limite') });
+            checks.push({ nome: 'turno 1: confirmação declarativa pós-gravação (regra 2)', ...contem(r1, /cadastrad/i, 'declarativa de cadastro') });
             return checks;
         }
     },

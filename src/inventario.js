@@ -23,10 +23,12 @@ export const CAPACIDADES = [
     titulo: 'Cadastro de medicamentos',
     descricao: 'cadastrar novo medicamento, iniciar novo tratamento',
     resumoUsuario: 'lembrar de tomar remédio no horário certo',
-    limites: 'MESMOS horários todos os dias (nunca horários por dia da semana); ' +
-      'formas comprimido/cápsula/líquido (gotas/ml)/unidade; estoque opcional ' +
-      '(contagem ou frascos); tratamento contínuo ou por X dias; VÁRIOS ' +
-      'medicamentos numa mensagem são aceitos (cada um com seus próprios horários)'
+    limites: 'recorrência aceita: mesmos horários todos os dias, horários por dia da ' +
+      'semana (ex: seg-sex 6h e sáb-dom 10h), dia sim/dia não e 1x por semana com o dia ' +
+      'nomeado — ciclos por semanas (a cada 3 semanas, 21/7) ainda não; formas ' +
+      'comprimido/cápsula/líquido (gotas/ml)/unidade; estoque opcional (contagem ou ' +
+      'frascos); tratamento contínuo ou por X dias; VÁRIOS medicamentos numa mensagem ' +
+      'são aceitos (cada um com seus próprios horários)'
   },
   {
     agente: 'relatorios',
@@ -89,9 +91,7 @@ export const AINDA_NAO = [
   { chave: 'audio', rotulo: 'ouvir áudios' },
   { chave: 'foto', rotulo: 'entender fotos e imagens' },
   { chave: 'conectar_cuidador', rotulo: 'conectar um cuidador ou familiar' },
-  { chave: 'horarios_por_dia_da_semana', rotulo: 'horários diferentes por dia da semana' },
-  { chave: 'dia_sim_dia_nao', rotulo: 'remédio em dias alternados (dia sim, dia não)' },
-  { chave: 'uma_vez_por_semana', rotulo: 'remédio 1x por semana' },
+  { chave: 'ciclos_complexos', rotulo: 'ciclos de tratamento por semanas (a cada 3 semanas, 21 dias sim / 7 não)' },
   { chave: 'alterar_dosagem', rotulo: 'alterar dosagem de um medicamento já cadastrado', escopo: 'configuracao' },
   { chave: 'alterar_nome', rotulo: 'alterar nome de um medicamento já cadastrado', escopo: 'configuracao' },
   { chave: 'alterar_duracao', rotulo: 'alterar tempo/duração de um tratamento já cadastrado', escopo: 'configuracao' },

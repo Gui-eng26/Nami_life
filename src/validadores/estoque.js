@@ -372,7 +372,14 @@ export async function validarEstoque({ message, campos, historicoConversa = [] }
 
 export function calcularAlertaEstoqueCadastro(campos, estoqueFinal) {
     const pares = campos?.pares_posologia || [];
-    const somaDoses = pares.reduce((acc, p) => acc + Number(p.quantidade || 0), 0);
+    // MH-77: consumo POR SEMANA ÷ 7 — um horário de seg-sex consome 5/7 do que
+    // um diário consumiria; "dia sim, dia não" consome metade.
+    const diasPorSemanaDoPar = (p) => {
+        if (Number(campos?.intervalo_dias_recorrencia) >= 2) return 7 / Number(campos.intervalo_dias_recorrencia);
+        const dias = campos?.dias_por_horario?.[p.horario] ?? campos?.dias_semana_pendente ?? p?.dias_semana;
+        return (Array.isArray(dias) && dias.length > 0) ? dias.length : 7;
+    };
+    const somaDoses = pares.reduce((acc, p) => acc + Number(p.quantidade || 0) * diasPorSemanaDoPar(p) / 7, 0);
     const consumoDiario = converterDoseParaEstoque({
         quantidade: somaDoses,
         unidade_dose: campos?.unidade_dose,
