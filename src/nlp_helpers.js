@@ -77,15 +77,34 @@ export function encontrarTodosMedicamentos(texto, medications) {
     });
 }
 
+// Continência com FRONTEIRA de palavra (mesma regra da divisão multi-med) —
+// replay 20/09: "mudar o nome da Vitamina de A a Z" casava com "Vitamina D"
+// por substring ("vitamina d" ⊂ "vitamina de...") e renomeava o medicamento
+// ERRADO. Local (não importa de multiMed) para não criar ciclo de imports.
+function contemNomeComFronteira(textoNorm, nomeNorm) {
+    if (!nomeNorm) return false;
+    const escapado = nomeNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(?:^|[^a-z0-9])${escapado}(?:$|[^a-z0-9])`).test(textoNorm);
+}
+
 export function encontrarMedicamento(texto, medications) {
     if (!texto) return null;
-    const t = normalizar(texto);
-    return medications.find(m => normalizar(m.nome) === t)
-        || medications.find(m =>
-            t.includes(normalizar(m.nome)) ||
-            normalizar(m.nome).includes(t)
-        )
-        || null;
+    const t = normalizar(texto).trim();
+
+    // 1. Igualdade exata.
+    const exato = medications.find(m => normalizar(m.nome).trim() === t);
+    if (exato) return exato;
+
+    // 2. Nome contido no texto COM fronteira — o nome mais LONGO vence
+    //    ("Vitamina de A a Z" ganha de "Vitamina D" na mesma frase).
+    const comFronteira = medications
+        .filter(m => contemNomeComFronteira(t, normalizar(m.nome).trim()))
+        .sort((a, b) => normalizar(b.nome).length - normalizar(a.nome).length);
+    if (comFronteira.length > 0) return comFronteira[0];
+
+    // 3. Texto curto contido no nome ("mostra a vitamina" → "Vitamina D"),
+    //    comportamento legado preservado.
+    return medications.find(m => normalizar(m.nome).includes(t)) || null;
 }
 
 // ============================================================

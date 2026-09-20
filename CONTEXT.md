@@ -1013,6 +1013,27 @@ corrigidos na mesma sessão (todos travados no arnês):
 sem item novo por governança):** `verificarMedicamentoExistente` usa ilike sem
 normalizar acento — "Cúrcuma C" não casa com "Curcuma C" e abre cadastro novo.
 
+**2ª rodada do replay (Guilherme, 20/09 ~20h15):** mais 4 defeitos, corrigidos e
+travados na mesma sessão:
+5. "Mudar o nome da Vitamina de A a Z" renomeou a *Vitamina D* →
+   `encontrarMedicamento` agora casa com FRONTEIRA de palavra e o nome mais
+   LONGO vence (guarda determinística no A0).
+6. Reativação com "2 Cps as 10hrs e 1 cp as 21h" ignorava as quantidades →
+   quantidades ditas junto dos horários entram (A24).
+7. "Nao, as 10hrs são 2 Cps" no convite de estoque caía na repergunta de
+   estoque → mensagem com horário citado escala e vira correção.
+8. "Reativar o Pratz" (JÁ ativo) abria o fluxo com foto de 4 horários (grades
+   mortas acumuladas) → med ativo responde a verdade do banco; grades
+   substituídas são APAGADAS em `reativarComAtualizacao` (dose_logs.schedule_id
+   é ON DELETE SET NULL) — foto congelada exata (A24).
+Bônus: P6.1 instrumentado (timestamps no log) e endurecido — ambiguidade só
+com lembrete de dose RECENTE (≤10 min); uma desambiguação indevida apareceu em
+1 de 3 runs completos sem reprodução isolada.
+
+**Observação registrada (sem correção, à decisão de Guilherme):** "Isso" dito
+como "ok" logo após uma resposta da Nami, com dose pendente antiga no fundo,
+confirma a dose (regra 5 — principal). Refinamento possível da família BUG-86.
+
 **Replay pendente:** "encerrar todos" (Guilherme testa após estas correções).
 
 

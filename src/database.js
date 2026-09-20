@@ -1328,11 +1328,16 @@ export async function reativarComAtualizacao({ medicationId, estoque, tipo_trata
         }
     }
 
+    // Replay 20/09 (foto do Pratz com 4 horários): grades substituídas eram só
+    // DESATIVADAS e se acumulavam — a foto congelada de um pause futuro exibia
+    // horários de grades mortas. Substituição agora APAGA as linhas antigas
+    // (mesmo padrão de replaceMedication; dose_logs.schedule_id é ON DELETE
+    // SET NULL, e as quantidades/dias já foram capturadas acima).
     const { error: errDel } = await supabase
         .from('schedules')
-        .update({ ativo: false })
+        .delete()
         .eq('medication_id', medicationId);
-    if (errDel) throw new Error(`Erro ao desativar schedules: ${errDel.message}`);
+    if (errDel) throw new Error(`Erro ao substituir schedules: ${errDel.message}`);
 
     for (const horario of horarios) {
         const horarioStr = String(horario).trim().substring(0, 5);

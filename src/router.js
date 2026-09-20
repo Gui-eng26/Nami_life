@@ -932,10 +932,15 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                 let ambiguo = false;
                 if (ETAPAS_COM_CONFIRMACAO_DE_FLUXO.has(state?.context?.etapa)) {
                     const tPergunta = new Date(historicoConversa.at(-1)?.created_at ?? 0).getTime();
-                    if (tPergunta > 0) {
+                    if (tPergunta > 0 && Number.isFinite(tDose)) {
                         const delta = tPergunta - tDose;
-                        if (Math.abs(delta) <= JANELA_AMBIGUIDADE_DUPLA_PENDENCIA_MS) ambiguo = true;
+                        // Ambiguidade GENUÍNA exige que o lembrete da dose seja
+                        // recente (o follow-up acabou de chegar) — dose cobrada
+                        // há uma hora contra pergunta fresca é fluxo, sempre.
+                        const doseRecente = (Date.now() - tDose) <= 10 * 60_000;
+                        if (Math.abs(delta) <= JANELA_AMBIGUIDADE_DUPLA_PENDENCIA_MS && doseRecente) ambiguo = true;
                         else if (delta > 0) venceFluxo = true;
+                        console.log(`⚖️ [P6.1] Dupla pendência — tPergunta=${new Date(tPergunta).toISOString()} tDose=${new Date(tDose).toISOString()} delta=${Math.round(delta / 1000)}s → ${ambiguo ? 'ambiguidade' : venceFluxo ? 'fluxo' : 'dose'} — ${user.phone}`);
                     }
                 }
 

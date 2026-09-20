@@ -121,6 +121,17 @@ export const CASOS = [
                 detalhe: `50mg:${ehDosagemReconhecivel('50mg')} 100mg/ml:${ehDosagemReconhecivel('100mg/ml')} bastante:${ehDosagemReconhecivel('bastante')}`
             });
 
+            // Replay 20/09 (Jhony/Centrum): encontrarMedicamento com FRONTEIRA —
+            // "mudar o nome da Vitamina de A a Z" NUNCA casa com "Vitamina D".
+            const { encontrarMedicamento } = await import('../src/nlp_helpers.js');
+            const medsFronteira = [{ nome: 'Vitamina D' }, { nome: 'Vitamina de A a Z' }];
+            checks.push({
+                nome: 'encontrarMedicamento: nome mais longo com fronteira vence (nunca o alvo errado)',
+                ok: encontrarMedicamento('Quero mudar o nome da Vitamina de A a Z pra Centrum', medsFronteira)?.nome === 'Vitamina de A a Z'
+                    && encontrarMedicamento('Quais horários da Vitamina D?', medsFronteira)?.nome === 'Vitamina D',
+                detalhe: `alvo: ${encontrarMedicamento('Quero mudar o nome da Vitamina de A a Z pra Centrum', medsFronteira)?.nome}`
+            });
+
             // Replay 19/09 (Priscila): "Vitamina D" NUNCA casa dentro de
             // "Vitamina de A a Z" — cada uma na sua linha, grupos distintos.
             const { dividirCandidatos } = await import('../src/validadores/multiMed.js');
@@ -1380,9 +1391,10 @@ export const CASOS = [
             checks.push({ nome: 'foto congelada: posologia exibida (2 por horário)', ...contem(r1, /2 comprimidos|2 unidades/i, 'quantidade da foto') });
             checks.push({ nome: 'passo 2: pergunta "manter ou mudar"', ...contem(r1, /manter|mudar/i, 'manter ou mudar') });
 
-            // Passo 3: alteração de horário via P2, dita na resposta — na forma
-            // REAL do replay 20/09 ("as 8" sem sufixo), que vazava pro cadastro.
-            const r2 = await turno(ctx, user, 'Vou tomar as 8 e as 20hrs');
+            // Passo 3: alteração dita na resposta — na forma REAL dos replays de
+            // 20/09: "as 8" sem sufixo (vazava pro cadastro) e QUANTIDADES junto
+            // dos horários (eram ignoradas no caso Pratz).
+            const r2 = await turno(ctx, user, 'Vou tomar 2 comprimidos as 8 e 1 comprimido as 20hrs');
             checagensDeForma(checks, 'passo 3+4', r2);
             checks.push({ nome: 'passo 3: a resposta fica no fluxo (nunca repergunta o nome do medicamento)', ...naoContem(r2, /qual o \*?nome\*?/i, 'repergunta de nome') });
             const { data: medDepois } = await ctx.db.from('medications')
@@ -1391,10 +1403,10 @@ export const CASOS = [
                 .map(s => ({ h: String(s.horario).slice(0, 5), q: Number(s.quantidade_por_dose) }))
                 .sort((a, b) => a.h.localeCompare(b.h));
             checks.push({
-                nome: 'passo 4: reativado com a grade NOVA (08:00 e 20:00), quantidade preservada (2)',
+                nome: 'passo 4: reativado com a grade NOVA e as QUANTIDADES ditas (08:00 — 2, 20:00 — 1)',
                 ok: medDepois?.status === 'ativo' && ativos.length === 2
-                    && ativos[0].h === '08:00' && ativos[1].h === '20:00'
-                    && ativos.every(s => s.q === 2),
+                    && ativos[0].h === '08:00' && ativos[0].q === 2
+                    && ativos[1].h === '20:00' && ativos[1].q === 1,
                 detalhe: `status: ${medDepois?.status}, schedules: ${JSON.stringify(ativos)}`
             });
             checks.push({ nome: 'passo 4: confirmação DECLARA os horários vigentes', ok: /08:00/.test(r2) && /20:00/.test(r2), detalhe: r2.slice(0, 200) });
@@ -1405,6 +1417,26 @@ export const CASOS = [
             checagensDeForma(checks, 'passo 5', r3);
             const { data: medFinal } = await ctx.db.from('medications').select('estoque_atual').eq('id', med.id).single();
             checks.push({ nome: 'estoque do convite gravado (30)', ok: Number(medFinal?.estoque_atual) === 30, detalhe: `estoque_atual: ${medFinal?.estoque_atual}` });
+
+            // Replay 20/09: "reativar" um tratamento JÁ ATIVO responde a verdade
+            // do banco, nunca abre o fluxo.
+            const r4 = await turno(ctx, user, 'Reativar a Sertralina');
+            checagensDeForma(checks, 'já ativo', r4);
+            checks.push({ nome: 'já ativo: responde direto com os horários vigentes', ok: /j[áa] est[áa] ativ/i.test(r4) && /08:00/.test(r4), detalhe: r4.slice(0, 160) });
+            checks.push({ nome: 'já ativo: não abre o fluxo de reativação', ...naoContem(r4, /manter|mudar algo/i, 'fluxo de reativação') });
+
+            // Replay 20/09 (foto do Pratz com 4 horários): grades substituídas
+            // são APAGADAS — a foto congelada de um novo pause mostra SÓ a grade
+            // vigente, nunca horários de grades mortas.
+            await turno(ctx, user, 'Pausar a Sertralina');
+            await turno(ctx, user, 'Sim');
+            const r5 = await turno(ctx, user, 'Reativar a Sertralina');
+            checagensDeForma(checks, 'foto exata', r5);
+            checks.push({
+                nome: 'foto congelada EXATA: só a grade vigente (08:00/20:00), sem grades mortas (07:00/19:00)',
+                ok: /08:00/.test(r5) && /20:00/.test(r5) && !/07:00/.test(r5) && !/19:00/.test(r5),
+                detalhe: r5.slice(0, 220)
+            });
             return checks;
         }
     },

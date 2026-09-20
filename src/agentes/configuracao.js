@@ -130,9 +130,22 @@ async function tratarManterOuMudar({ user, firstName, message, context, medicati
         ? Object.keys(estrutura.diasPorHorario)
         : [...new Set([...extrairHorariosCitados(message), ...horariosComPreposicao])].sort();
     if (horariosNovos.length > 0) {
+        // Replay 20/09 ("2 Cps as 10hrs e 1 cp as 21h"): quantidades ditas
+        // JUNTO dos horários também entram — nunca só a grade.
+        let paresQuantidade = null;
+        let quantidadeUnica = null;
+        if (/\d+\s*(cps?|comprimidos?|c[áa]psulas?|gotas?|ml|unidades?)\b/i.test(message)) {
+            const cls = await classificarPosologia({
+                message, campoEsperado: 'horarios', nomeMedicamento: context.medicationNome,
+                horariosJaColetados: [], historicoConversa
+            });
+            if ((cls.pares || []).length > 0) paresQuantidade = cls.pares;
+            else if (cls.quantidadeUnica) quantidadeUnica = cls.quantidadeUnica;
+        }
         return await concluirReativacao({
             user, firstName, medicationId: context.medicationId,
-            horariosNovos, diasPorHorario: estrutura?.diasPorHorario ?? null
+            horariosNovos, diasPorHorario: estrutura?.diasPorHorario ?? null,
+            paresQuantidade, quantidadeUnica
         });
     }
 
@@ -967,6 +980,13 @@ export async function handleConfiguracao({ user, message, state, context, histor
 
     // Passo 5: resposta ao convite de estoque (mesmo validador do cadastro).
     if (etapa === 'reativ_estoque_convite') {
+        // Replay 20/09 ("Nao, as 10hrs são 2 Cps do Pratz"): mensagem com
+        // HORÁRIO citado não é resposta de estoque — é correção; escala para a
+        // porta reinterpretar (vira corrigir_quantidade/horários).
+        if (extrairHorariosCitados(message).length > 0) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return { escalarParaRoteador: true };
+        }
         if (isCancelamentoGenuino(message, medicationsAtivos) || /\bn[aã]o sei\b|\bdepois\b/i.test(message)) {
             await saveConversationState(user.id, { state: 'idle', context: {} });
             return `Tudo bem${firstName ? `, ${firstName}` : ''}! O estoque fica pra depois — quando souber, é só me mandar a quantidade. 🌿`;
@@ -1212,6 +1232,15 @@ async function continuarComAcao({ user, firstName, acao, med, medicationsAtivos,
     // M3 P3 — porta 1 da reativação: foto congelada + manter/mudar (o fluxo
     // cego de confirmar-e-reativar morreu).
     if (acao === 'reativar') {
+        // Replay 20/09: "reativar" um tratamento JÁ ATIVO nunca abre o fluxo —
+        // responde a verdade do banco com os horários vigentes.
+        const schedulesAtivosDoMed = (med.schedules || []).filter(s => s.ativo);
+        if (med.status !== 'pausado' && schedulesAtivosDoMed.length > 0) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            const horariosVigentes = schedulesAtivosDoMed
+                .map(s => String(s.horario).substring(0, 5)).sort().join(', ');
+            return `O *${med.nome}* já está ativo, ${firstName}! Os lembretes seguem valendo (${horariosVigentes}). 🌿`;
+        }
         return await iniciarReativacao({ user, med });
     }
 
