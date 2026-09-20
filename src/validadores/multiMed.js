@@ -25,11 +25,43 @@ const ROTULO_QTD = {
     gota: 'gota', gotas: 'gota', unidade: 'unidade', unidades: 'unidade'
 };
 
-function linhaDoCandidato(linhas, nome) {
-    const alvo = normalizar(nome);
-    let idx = linhas.findIndex(l => normalizar(l).includes(alvo));
-    if (idx === -1) idx = linhas.findIndex(l => normalizar(l).includes(alvo.split(/\s+/).pop()));
-    return idx;
+function escapeRegex(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Continência com FRONTEIRA de palavra — "vitamina d" NUNCA casa dentro de
+// "vitamina de a a z" (achado do replay da Priscila, 19/09: a Vitamina D caía
+// no grupo da Vitamina de A a Z e herdava a posologia dela).
+function contemComFronteira(linhaNorm, alvoNorm) {
+    if (!alvoNorm) return false;
+    return new RegExp(`(?:^|[^a-z0-9])${escapeRegex(alvoNorm)}(?:$|[^a-z0-9])`).test(linhaNorm);
+}
+
+// Dois passes: igualdade exata da linha primeiro (linha "Vitamina D" pertence
+// ao candidato "Vitamina D", nunca a outro); depois continência com fronteira,
+// pulando linhas já reivindicadas por igualdade exata.
+function atribuirLinhas(linhas, medicamentosPropostos) {
+    const linhasNorm = linhas.map(l => normalizar(l).trim());
+    const alvos = medicamentosPropostos.map(n => normalizar(n).trim());
+    const escolhas = new Array(alvos.length).fill(-1);
+
+    alvos.forEach((alvo, i) => {
+        const idx = linhasNorm.findIndex(l => l === alvo);
+        if (idx >= 0) escolhas[i] = idx;
+    });
+    const exatas = new Set(escolhas.filter(i => i >= 0));
+
+    alvos.forEach((alvo, i) => {
+        if (escolhas[i] >= 0) return;
+        let idx = linhasNorm.findIndex((l, j) => !exatas.has(j) && contemComFronteira(l, alvo));
+        if (idx === -1) {
+            const ultimaPalavra = alvo.split(/\s+/).pop();
+            idx = linhasNorm.findIndex((l, j) => !exatas.has(j) && contemComFronteira(l, ultimaPalavra));
+        }
+        escolhas[i] = idx;
+    });
+
+    return escolhas;
 }
 
 // Divide a mensagem em candidatos [{ nome, linha, horarios, dosagem, grupo }].
@@ -40,9 +72,10 @@ function linhaDoCandidato(linhas, nome) {
 export function dividirCandidatos({ message, medicamentosPropostos, horariosPorta = [] }) {
     const linhas = String(message).split('\n').map(l => l.trim()).filter(Boolean);
 
+    const escolhas = atribuirLinhas(linhas, medicamentosPropostos);
     const indicesUsados = new Set();
-    const candidatos = medicamentosPropostos.map(nome => {
-        const idx = linhaDoCandidato(linhas, nome);
+    const candidatos = medicamentosPropostos.map((nome, i) => {
+        const idx = escolhas[i];
         const linha = idx >= 0 ? linhas[idx] : null;
         if (idx >= 0) indicesUsados.add(idx);
         const mQtd = linha ? linha.match(RE_QTD_LINHA) : null;

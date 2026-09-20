@@ -112,7 +112,7 @@ export function proximaPendencia(schema, campos) {
 // normal e a reentrada pós-escalada (repetirPergunta).
 // ------------------------------------------------------------
 
-function montarPerguntaPendente({ pend, campos, userName, resultado = null, motivoFalha = null, nomeRecemColetado = false, mensagemUsuario = '' }) {
+function montarPerguntaPendente({ pend, campos, userName, resultado = null, motivoFalha = null, nomeRecemColetado = false, aberturaFila = false, mensagemUsuario = '' }) {
     const nomeCampo = pend.campo?.nome;
     let pergunta;
 
@@ -129,6 +129,7 @@ function montarPerguntaPendente({ pend, campos, userName, resultado = null, moti
             motivoFalha,
             mencionaConcentracao: !!resultado?.mencionaConcentracao,
             nomeRecemColetado,
+            aberturaFila,
             mensagemUsuario
         });
     } else if (nomeCampo === 'estoque') {
@@ -442,6 +443,7 @@ export async function executarRunner({ schema, user, message, state, context, hi
 
     const prefixos = [];
     let mensagem = message;
+    let emFilaNova = false;
 
     // MH-83 (M2 §2.4): medicamento DIFERENTE citado no meio de um cadastro é um
     // cadastro NOVO — o anterior (se gravado) fecha pela verdade do banco e
@@ -450,7 +452,12 @@ export async function executarRunner({ schema, user, message, state, context, hi
     if (campos?.nome && propostos.length > 0 && medicamentoDiferente(propostos, campos.nome)) {
         console.log(`💊 [RUNNER] Novo medicamento sobre cadastro em andamento (${campos.nome} → ${propostos.join(', ')}) — ${user.phone}`);
         if (campos.medication_id) prefixos.push(renderizarFechamentoAnterior(campos.nome));
-        campos = { sujeito: campos.sujeito };
+        // MH-83: nada do tratamento anterior vaza — mas a FILA de outros
+        // tratamentos pendentes não é "do anterior": ela sobrevive ao pivô.
+        campos = {
+            sujeito: campos.sujeito,
+            ...(campos.fila?.length ? { fila: campos.fila } : {})
+        };
     }
 
     // MH-96 (M2 §3): N candidatos na mesma mensagem — divisão determinística
@@ -498,10 +505,11 @@ export async function executarRunner({ schema, user, message, state, context, hi
             ...(primeiro.horariosCompartilhados && primeiro.horarios.length > 0 ? { horarios: primeiro.horarios } : {})
         };
         mensagem = primeiro.linha || primeiro.nome;
+        emFilaNova = true;
     }
 
     const resposta = await processarTurno({
-        schema, user, mensagem, campos, historicoConversa, firstName
+        schema, user, mensagem, campos, historicoConversa, firstName, emFilaNova
     });
     if (typeof resposta === 'string') return juntarPartes(prefixos, resposta);
     return resposta;
@@ -509,7 +517,7 @@ export async function executarRunner({ schema, user, message, state, context, hi
 
 // Corpo do turno: pendência → validador → camada 2 → absorção → recorrência →
 // duplicata → gravação/fechamento → pergunta seguinte.
-async function processarTurno({ schema, user, mensagem, campos, historicoConversa, firstName }) {
+async function processarTurno({ schema, user, mensagem, campos, historicoConversa, firstName, emFilaNova = false }) {
     // 1. O QUE FALTA — pendência corrente.
     const pend = proximaPendencia(schema, campos);
 
@@ -711,6 +719,23 @@ async function processarTurno({ schema, user, mensagem, campos, historicoConvers
                 return renderizarDuplicataPausada(existente, schedules.map(s => s.horario.substring(0, 5)));
             }
 
+            // Achado do replay 19/09 (Priscila/Vitamina D): mensagem sobre um
+            // medicamento JÁ ATIVO que traz horário/quantidade é pedido de
+            // ALTERAÇÃO — vai para a configuração com o contexto do registro,
+            // nunca para o beco "se quiser atualizar, é só me dizer" (regra 3).
+            const trazAjuste = extrairHorariosCitados(mensagem).length > 0
+                || /\b\d+\s*(cps?|comprimidos?|c[áa]psulas?|gotas?|ml|unidades?)\b/i.test(mensagem);
+            if (trazAjuste) {
+                console.log(`⚙️ [RUNNER] Medicamento ativo + ajuste na mensagem — despachando para configuração (${existente.nome}) — ${user.phone}`);
+                return {
+                    configurarExistente: {
+                        medicationId: existente.id,
+                        medicationNome: existente.nome,
+                        schedulesAtivos
+                    }
+                };
+            }
+
             await saveConversationState(user.id, { state: 'idle', context: {} });
             return renderizarDuplicataAtiva(existente, schedulesAtivos.map(s => s.horario.substring(0, 5)));
         }
@@ -850,6 +875,7 @@ async function processarTurno({ schema, user, mensagem, campos, historicoConvers
         resultado,
         motivoFalha,
         nomeRecemColetado,
+        aberturaFila: emFilaNova,
         mensagemUsuario: mensagem
     });
 }

@@ -335,6 +335,36 @@ async function despacharCadastro({ user, message, image, state, context, histori
                                    contextoProativo = null, camposPorta = null }) {
     const resultado = await executarRunner({ schema: SCHEMA_CADASTRO, user, message, state, context, historicoConversa, camposPorta });
 
+    // v44 M2 (achado do replay 19/09): mensagem sobre medicamento JÁ ATIVO com
+    // ajuste embutido ("muda a Vitamina D pra 11h") — o runner devolve o alvo e
+    // a configuração assume com o contexto do registro (mesmo shape da escalada).
+    async function despacharConfiguracaoExistente(alvo) {
+        const { medicationId, medicationNome, schedulesAtivos } = alvo;
+        console.log(`⚙️ [CADASTRO→CONFIG] Ajuste de medicamento ativo (${medicationNome}) — ${user.phone}`);
+        const respostaConfig = await handleConfiguracao({
+            user, message, historicoConversa,
+            state: { state: 'configurando', context: { etapa: 'identif_intencao' } },
+            context: {
+                etapa: 'identif_intencao',
+                medicationId,
+                medicationNome,
+                schedulesAtivos
+            }
+        });
+        if (respostaConfig?.escalarParaRoteador) {
+            const escalada = await despacharEscalada({
+                user, message, image, historicoConversa, contextoProativo,
+                contextoPreservado: { medicationId, medicationNome, schedulesAtivos }
+            });
+            return { agentName: escalada.agentName, response: escalada.response, feedback: escalada.feedback };
+        }
+        return { agentName: 'configuracao', response: respostaConfig };
+    }
+
+    if (resultado?.configurarExistente) {
+        return despacharConfiguracaoExistente(resultado.configurarExistente);
+    }
+
     if (!resultado?.escalarParaRoteador) {
         return { agentName: 'cadastro', response: resultado };
     }
@@ -363,6 +393,10 @@ async function despacharCadastro({ user, message, image, state, context, histori
                 user, message, state, historicoConversa,
                 context, camposPorta: proposta.campos
             });
+            if (respostaNovo?.configurarExistente) {
+                const r = await despacharConfiguracaoExistente(respostaNovo.configurarExistente);
+                return { ...r, feedback: r.feedback ?? proposta.feedback };
+            }
             if (respostaNovo?.escalarParaRoteador) {
                 return { agentName: 'porta_degradada', response: reperguntaSegura(user), feedback: proposta.feedback };
             }

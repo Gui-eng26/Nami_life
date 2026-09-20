@@ -18,7 +18,7 @@
 // ============================================================
 
 import {
-    derivarFormaFarmaceutica, rotuloDaDose, pluralizarRotulo
+    derivarFormaFarmaceutica, rotuloDaDose, pluralizarRotulo, derivarUnidades
 } from '../validadores/derivacoes.js';
 import { rotuloDias } from '../validadores/recorrencia.js';
 import { subEtapaEstoque, validarEstoque } from '../validadores/estoque.js';
@@ -95,7 +95,35 @@ async function validarCampoPosologia({ message, campos, historicoConversa }) {
     const mencionaConcentracao = campoEsperado === 'quantidade' && decisao.acao === 'indeterminado'
         && /\d+(?:[.,]\d+)?\s*(mg|mcg|g|%|mg\/ml)\b/i.test(message);
 
+    corrigirDoseEmGramas(message, decisao, campos);
+
     return { ...decisao, mencionaConcentracao };
+}
+
+// Achado do replay 19/09 (Priscila, "5gr às 10h"): dose em GRAMAS não é
+// representável — nem "5ml" nem "5 unidades". Convenção da micro-entrega
+// (MH-93): 1 unidade por horário, com o tamanho da dose preservado como
+// dosagem ("5g"). Coerção determinística, nunca do LLM.
+export function corrigirDoseEmGramas(message, decisao, campos) {
+    const pares = decisao.updates?.pares_posologia;
+    if (!pares?.length) return;
+    if (/\b(mg|mcg|kg)\b/i.test(message)) return;
+
+    const mGramas = String(message).match(/\b(\d+(?:[.,]\d+)?)\s*(?:g|gr|gramas?)\b/i);
+    if (!mGramas) return;
+
+    const valorG = Number(mGramas[1].replace(',', '.'));
+    const doseVeioDosGramas = decisao.updates.unidade_dose === 'ml'
+        || pares.every(p => Number(p.quantidade) === valorG);
+    if (!doseVeioDosGramas) return;
+
+    console.log(`⚖️ [CADASTRO] Dose em gramas ("${mGramas[0]}") — convenção MH-93: 1 unidade por horário, dosagem "${mGramas[1]}g"`);
+    decisao.updates.pares_posologia = pares.map(p => ({ ...p, quantidade: 1 }));
+    Object.assign(decisao.updates, derivarUnidades('unidade'));
+    decisao.updates.forma_explicita = null;
+    if (!campos?.dosagem && !decisao.updates.dosagem) {
+        decisao.updates.dosagem = `${mGramas[1]}g`;
+    }
 }
 
 async function validarCampoEstoque({ message, campos, historicoConversa }) {
@@ -189,7 +217,7 @@ export function renderizarPerguntaNome({ userName, motivoFalha = null, nomeRecus
     return `Vamos cadastrar seu medicamento${first ? `, ${first}` : ''}! 💊\n\nQual o *nome* dele?`;
 }
 
-export function renderizarPerguntaPosologia({ campos, userName, acao = null, motivoFalha = null, mencionaConcentracao = false, nomeRecemColetado = false, mensagemUsuario = '' }) {
+export function renderizarPerguntaPosologia({ campos, userName, acao = null, motivoFalha = null, mencionaConcentracao = false, nomeRecemColetado = false, aberturaFila = false, mensagemUsuario = '' }) {
     const first = primeiroNome(userName);
     const nome = campos?.nome || 'o medicamento';
     const horarios = (campos?.horarios || []).map(h => String(h).slice(0, 5));
@@ -213,6 +241,13 @@ export function renderizarPerguntaPosologia({ campos, userName, acao = null, mot
                 || `Desculpa, não peguei direito 😊 Os horários já estão anotados — falta só o quanto.`;
             return `${abertura}\n\nQuanto de ${nome} você toma ou usa às ${listaHorarios}?\n`
                 + `Por exemplo: 1 unidade, ou 2 comprimidos`;
+        }
+        if (aberturaFila) {
+            // Copy compacta da fila (replay 19/09): destaque em negrito e a
+            // pergunta na mesma linha da abertura — sem repetir a lista.
+            const nomeComDosagemFila = campos?.dosagem ? `${nome} ${campos.dosagem}` : nome;
+            return `Vamos começar pelo *${nomeComDosagemFila}* (às ${listaHorarios}): quanto você toma ou usa em cada horário?\n`
+                + `Por exemplo: 1 comprimido, ou 20 gotas`;
         }
         return `Os horários já anotei (às ${listaHorarios}) 🌿\n\n`
             + `Quanto de ${nome} você toma ou usa em cada um?\n`
@@ -238,6 +273,10 @@ export function renderizarPerguntaPosologia({ campos, userName, acao = null, mot
     // 19/09: quantidade E horários numa pergunta só; a abertura CONFIRMA a ação
     // em curso, conectando com o que a pessoa acabou de mandar).
     const nomeComDosagem = campos?.dosagem ? `${nome} ${campos.dosagem}` : nome;
+    if (aberturaFila) {
+        return `Vamos começar pelo *${nomeComDosagem}*: quanto você toma ou usa por vez, e em quais horários?\n`
+            + `Por exemplo: 1 comprimido às 8h`;
+    }
     const abertura = nomeRecemColetado
         ? `Certo${first ? `, ${first}` : ''}! Vamos cadastrar o ${nomeComDosagem} pra você. 😊`
         : `Seguindo com o ${nomeComDosagem}. 😊`;
@@ -443,11 +482,12 @@ export function renderizarPropostaLote(candidatos) {
         + `Posso cadastrar ${candidatos.length === 2 ? 'os dois' : `os ${candidatos.length}`} assim?`;
 }
 
-// Abertura da fila (caso A17): reconhece TODOS de imediato (regra 3) e começa
-// pelo primeiro sem perder os demais.
+// Abertura da fila (caso A17): reconhece TODOS de imediato (regra 3), um por
+// linha e em negrito (ajuste de copy do replay 19/09 — Priscila); o começo
+// pelo primeiro vem embutido na própria pergunta (aberturaFila), sem repetir.
 export function renderizarAberturaFila(candidatos) {
-    const lista = candidatos.map(c => c.nome).join(', ');
-    return `Vi tudo o que você me mandou: ${lista}.\n\nVou cadastrar um por um, rapidinho — começando por ${candidatos[0].nome}.`;
+    const lista = candidatos.map(c => `• *${c.nome}*`).join('\n');
+    return `Vi tudo o que você me mandou:\n${lista}`;
 }
 
 // Divisão de nome composto (caso A19 — "Regenesis e ofolato D"): dois produtos
@@ -458,14 +498,15 @@ export function renderizarPropostaDivisaoNome(nomes) {
         + `Por exemplo: 1 comprimido às 12h`;
 }
 
-// Transição da fila: o anterior está pronto (pós-escrita), o próximo começa.
+// Transição da fila: o anterior está pronto (pós-escrita), o próximo começa —
+// sempre em negrito (ajuste de copy do replay 19/09).
 export function renderizarTransicaoFila({ proximo }) {
     const nomeComDosagem = proximo.dosagem ? `${proximo.nome} ${proximo.dosagem}` : proximo.nome;
     if ((proximo.horarios || []).length > 0) {
-        return `Agora o ${nomeComDosagem} (às ${proximo.horarios.join(' e às ')}) — quanto você toma ou usa em cada horário?\n`
+        return `Agora o *${nomeComDosagem}* (às ${proximo.horarios.join(' e às ')}) — quanto você toma ou usa em cada horário?\n`
             + `Por exemplo: 1 comprimido, ou 20 gotas`;
     }
-    return `Agora o ${nomeComDosagem} — me conta: quanto você toma ou usa por vez, e em quais horários?\n`
+    return `Agora o *${nomeComDosagem}* — me conta: quanto você toma ou usa por vez, e em quais horários?\n`
         + `Por exemplo: 1 comprimido às 22h`;
 }
 

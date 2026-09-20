@@ -113,6 +113,50 @@ export const CASOS = [
                 ok: ehDosagemReconhecivel('50mg') && ehDosagemReconhecivel('100mg/ml') && !ehDosagemReconhecivel('bastante'),
                 detalhe: `50mg:${ehDosagemReconhecivel('50mg')} 100mg/ml:${ehDosagemReconhecivel('100mg/ml')} bastante:${ehDosagemReconhecivel('bastante')}`
             });
+
+            // Replay 19/09 (Priscila): "Vitamina D" NUNCA casa dentro de
+            // "Vitamina de A a Z" — cada uma na sua linha, grupos distintos.
+            const { dividirCandidatos } = await import('../src/validadores/multiMed.js');
+            const divisao = dividirCandidatos({
+                message: 'Curcuma C \nVitamina de A a Z \nVitamina b12\nVitamina D',
+                medicamentosPropostos: ['Curcuma C', 'Vitamina de A a Z', 'Vitamina b12', 'Vitamina D']
+            });
+            const grupos = divisao.candidatos.map(c => c.grupo);
+            checks.push({
+                nome: 'divisão multi-med: Vitamina D com linha/grupo PRÓPRIOS (não herda a posologia da A a Z)',
+                ok: new Set(grupos).size === 4 && grupos.every(g => g !== null),
+                detalhe: `grupos: ${JSON.stringify(divisao.candidatos.map(c => ({ nome: c.nome, grupo: c.grupo })))}`
+            });
+            // E o caso legítimo de grupo compartilhado (A19) continua agrupando.
+            const divisaoA19 = dividirCandidatos({
+                message: 'Regenesis e ofolato D',
+                medicamentosPropostos: ['Regenesis', 'ofolato D']
+            });
+            checks.push({
+                nome: 'divisão multi-med: nomes na MESMA linha continuam num grupo só (A19)',
+                ok: divisaoA19.candidatos[0].grupo === divisaoA19.candidatos[1].grupo && divisaoA19.candidatos[0].grupo !== null,
+                detalhe: `grupos: ${JSON.stringify(divisaoA19.candidatos.map(c => c.grupo))}`
+            });
+
+            // Replay 19/09 (Priscila, "5gr às 10h"): dose em gramas nunca vira
+            // "5ml" nem "5 unidades" — 1 unidade por horário + dosagem "5g".
+            const { corrigirDoseEmGramas } = await import('../src/schemas/cadastro.js');
+            const decisaoGr = { updates: { pares_posologia: [{ horario: '10:00', quantidade: 5 }], unidade_dose: 'ml', unidade_estoque: 'ml', gotas_por_ml: null } };
+            corrigirDoseEmGramas('5gr as 10hrs', decisaoGr, { nome: 'Curcuma C' });
+            checks.push({
+                nome: 'dose em gramas: "5gr às 10h" vira 1 unidade às 10:00 com dosagem "5g"',
+                ok: decisaoGr.updates.pares_posologia[0].quantidade === 1
+                    && decisaoGr.updates.unidade_dose === 'unidade'
+                    && decisaoGr.updates.dosagem === '5g',
+                detalhe: JSON.stringify(decisaoGr.updates)
+            });
+            const decisaoMg = { updates: { pares_posologia: [{ horario: '08:00', quantidade: 2 }], unidade_dose: 'unidade' } };
+            corrigirDoseEmGramas('2 comprimidos de 500mg as 8h', decisaoMg, {});
+            checks.push({
+                nome: 'dose em gramas: mg/quantidade legítima NÃO são tocados pela coerção',
+                ok: decisaoMg.updates.pares_posologia[0].quantidade === 2 && decisaoMg.updates.dosagem === undefined,
+                detalhe: JSON.stringify(decisaoMg.updates)
+            });
             return checks;
         }
     },
