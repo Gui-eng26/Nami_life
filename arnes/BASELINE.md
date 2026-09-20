@@ -73,3 +73,27 @@ Correções de comportamento aplicadas após esta execução (re-rodar para vali
    (regex), sem depender do extrator produzir pares.
 3. `campos_rica` preservado junto da `mensagem_rica` — o "sim" recupera o
    caminho multi-med.
+
+## 4ª execução (19/09/2026) — ENTREGA DO M2 ✅ (alvo M2)
+
+Runner + schema (v44 M2): `cadastro.js` (3.709 linhas) substituído por
+`src/schemas/cadastro.js` + `src/runner.js` + `src/validadores/*`, em 5 commits
+com o arnês verde entre cada um.
+
+Gate final: **24/24 casos verdes · 164 asserções · 0 falhas no alvo M2 ·
+4 conhecidas** (A20/M3 e A10/M4, conforme `ORDEM_MARCOS`).
+
+- Commit 1 (paridade): 20/20 no alvo M1, 130 asserções — prova de que schema+
+  runner reproduzem o comportamento do M1 sem capacidade nova.
+- Commit 2 (MH-96): A2-pleno, A16-M2, A17-M2 e A19-M2 verdes de primeira.
+- Commit 3 (MH-77): A3 evoluiu de honestidade de limite para capacidade —
+  grava 06:00 seg-sex e 10:00 sáb-dom no MESMO turno.
+- Commit 4 (MH-30/49): casos novos A21/A22, deterministicamente verdes (sem
+  custo de LLM — job de conclusão e fast-path de dose).
+- Commit 5 (MH-86 + guardas): A23 (estoque líquido composto) e A0 (grep-guards
+  do §8.2 como asserções executáveis + ACH-3 vivo + ACH-4).
+
+Incidente durante a validação: a chave da Anthropic ficou temporariamente sem
+créditos (bloqueou porta e classificadores); voltou sozinha na mesma sessão.
+Vale registrar: o arnês FALHA COM CLAREZA nesse cenário (degradação da porta),
+e os casos determinísticos (A0/A5/A8/A21/A22/A23) continuam rodando.
