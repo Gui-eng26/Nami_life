@@ -922,9 +922,12 @@ alerta de billing na conta para não depender de aviso em sessão.
 
 Briefing `briefings/execucao_v44_m3.md`. Commits na `staging` (Commit 0 → P6), arnês
 entre cada um; migração `20260920000000_v44_m3_status_tratamento` aplicada no STAGING
-via MCP (produção só na promoção). **Sem promoção a produção nesta sessão; backlog
-intocado (governança do briefing — script pronto em
-`scripts/backlog_encerramento_v44_m3.js`, aguarda o "sim, registra").**
+via MCP (produção só na promoção). **Sem promoção a produção nesta sessão.** Backlog
+registrado em 20/09 com o "sim, registra" de Guilherme
+(`scripts/backlog_encerramento_v44_m3.js`): ACH-1 → resolvido (verificação; código já
+em produção), 18 itens → em_validacao, MH-43 segue aberto com nota de entrega parcial,
+MH-27 segue aberto (honestidade entregue). **SQL da Manô (pendência do M2): executado
+por Guilherme, com aviso feito a ela em 20/09 às 10h — pendência encerrada.**
 
 - **Commit 0 (caso Evandro, defeito de produção do M2, 20/09 12:51):** `RE_HORARIO`
   aceita os sufixos reais (hs/hrs/hr/horas; lookbehind impede "12/12 hrs" de virar

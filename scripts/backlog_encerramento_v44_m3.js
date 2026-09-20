@@ -33,12 +33,17 @@ async function emValidacao({ tipo, numero, parte = '', notas }) {
 
 async function main() {
     // ---- Verificados em 20/09 (fora do código do M3) ----
-    await emValidacao({
-        tipo: 'ACH', numero: 1,
+    // ACH-1 vai DIRETO a resolvido: o código verificado já está em produção
+    // desde antes do M3 — não depende da promoção deste marco.
+    await atualizarStatusBacklogItem({
+        tipo: 'ACH', numero: 1, parte: '',
+        novoStatus: 'resolvido',
+        sessaoFechamento: SESSAO, dataFechamento: HOJE,
         notas: 'Verificado em 20/09 (sessão M3): reverterConfirmacao devolve o delta '
             + 'efetivamente debitado via calcularDeltaEstoqueDaDose, com guarda P49 para NULL '
-            + '(database.js). Já estava resolvido no código — registro de verificação.'
+            + '(database.js). Já estava resolvido no código em produção — registro de verificação.'
     });
+    console.log('✅ ACH-1 → resolvido');
 
     // ---- P1: estado explícito ----
     await emValidacao({
@@ -75,12 +80,17 @@ async function main() {
             + 'mesmo ato (alterarHorarioSchedule + reativarComAtualizacao — horários que saem da '
             + 'grade pausam as pendentes). Asserção A26 verde.'
     });
-    await emValidacao({
-        tipo: 'MH', numero: 43,
-        notas: 'PARCIAL no M3: prorrogação/encurtamento via edição de duração (corrigir_duracao '
-            + 'recalcula tratamento_fim — caso A26). Pós-encerramento e alertas vencidos '
-            + 'PERMANECEM abertos (item segue aberto como feature).'
+    // MH-43 é PARCIAL: a fatia de prorrogação foi entregue, mas o item segue
+    // ABERTO (pós-encerramento e alertas vencidos permanecem) — só a nota muda.
+    await atualizarStatusBacklogItem({
+        tipo: 'MH', numero: 43, parte: '',
+        novoStatus: 'aberto',
+        sessaoFechamento: null, dataFechamento: null,
+        notas: 'PARCIAL no M3 (20/09, em staging): prorrogação/encurtamento via edição de '
+            + 'duração (corrigir_duracao recalcula tratamento_fim — caso A26). Pós-encerramento '
+            + 'e alertas vencidos PERMANECEM — item segue aberto como feature.'
     });
+    console.log('✅ MH-43 → segue aberto (nota de entrega parcial)');
 
     // ---- P4: relatórios ----
     await emValidacao({
