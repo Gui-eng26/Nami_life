@@ -1,6 +1,6 @@
-import Anthropic from '@anthropic-ai/sdk';
 import 'dotenv/config';
 import { NAMI_SYSTEM_PROMPT } from '../prompts.js';
+import { classificarComFerramenta } from '../validadores/llm.js';
 import {
     getConversationState,
     updateConversationState,
@@ -28,9 +28,8 @@ import {
     buildAlertaEstoquePosConfirmacao, buildConviteEstoqueNaoCadastrado,
     buildAlertaEstoquePosAjuste, buildEstoqueAtualizadoMessage
 } from '../templates/estoqueTemplates.js';
-import { degradar } from '../observabilidade.js';
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
 
 export async function handlePrincipal({ user, message, image, historicoConversa = [], intencaoNaoSuportada = false }) {
     const state = await getConversationState(user.id);
@@ -260,6 +259,9 @@ Mensagem do usuário: ${text || '[usuário enviou uma imagem]'}
     return context;
 }
 
+// v44 M3 P6.2: a resposta do principal chega por TOOL-USE com schema — nunca
+// mais JSON em texto livre (mata a família parse_json_falhou por construção).
+// O contrato do prompt não mudou: { message, newState, context, actions, devolver }.
 async function callClaude({ userMessage, image }) {
     const content = image
         ? [
@@ -268,54 +270,42 @@ async function callClaude({ userMessage, image }) {
         ]
         : [{ type: 'text', text: userMessage }];
 
-    const response = await anthropic.messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1024,
-        system: NAMI_SYSTEM_PROMPT,
-        messages: [{ role: 'user', content }]
+    const { parsed } = await classificarComFerramenta({
+        systemPrompt: NAMI_SYSTEM_PROMPT,
+        messages: [{ role: 'user', content }],
+        maxTokens: 1024,
+        nomeFerramenta: 'responder_usuario',
+        descricaoFerramenta: 'Registra a resposta da Nami: mensagem ao usuário, novo estado, contexto, ações e devolução.',
+        schema: {
+            type: 'object',
+            properties: {
+                message: { type: 'string', description: 'Texto da mensagem para enviar ao usuário. Vazia quando devolver=true.' },
+                newState: { type: 'string', enum: ['idle', 'confirming'] },
+                context: { type: 'object', description: 'Contexto da conversa a persistir. {} na maioria dos casos.' },
+                actions: {
+                    type: 'array',
+                    items: { type: 'object' },
+                    description: 'Lista de ações a executar (pode ser vazia).'
+                },
+                devolver: { type: 'boolean', description: 'true SOMENTE quando o pedido pertence a outro agente.' }
+            },
+            required: ['message', 'newState', 'devolver']
+        },
+        validar: (input) => typeof input?.message === 'string'
+            && (input.devolver === true || input.message.trim().length > 0),
+        motivo: 'parse_json_falhou',
+        agent: 'principal',
+        origem: 'principal',
+        fallback: {
+            message: 'Desculpe, não entendi bem. Pode repetir? 🌿',
+            newState: 'idle',
+            context: {},
+            actions: [],
+            devolver: false
+        }
     });
 
-    const rawText = response.content[0].text;
-
-    try {
-        return JSON.parse(rawText);
-    } catch {
-        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            try {
-                return JSON.parse(jsonMatch[0]);
-            } catch {
-                console.error('❌ Falha ao extrair JSON:', rawText);
-            }
-        }
-        console.error('❌ Claude não retornou JSON válido:', rawText);
-
-        const pareceJson = rawText.trim().startsWith('{');
-        return await degradar({
-            origem: 'principal',
-            motivo: 'parse_json_falhou',
-            agent: 'principal',
-            userId: null, // `user` não está no escopo de callClaude() — ver briefing MH-064 T1, risco 3.
-            detalhe: {
-                // Estes campos existem para DISTINGUIR truncamento de cerca markdown, que
-                // produzem o mesmo sintoma. stop_reason === 'max_tokens' é prova de truncamento.
-                stop_reason: response?.stop_reason ?? null,
-                tamanho_raw: rawText.length,
-                comeca_com_chave: pareceJson,
-                regex_casou: !!jsonMatch,
-                max_tokens: 1024,
-                texto_cru_devolvido: !pareceJson && rawText.length > 10 && rawText.length < 500
-            },
-            fallback: {
-                message: (!pareceJson && rawText.length > 10 && rawText.length < 500)
-                    ? rawText
-                    : 'Desculpe, não entendi bem. Pode repetir? 🌿',
-                newState: 'idle',
-                context: {},
-                action: null
-            }
-        });
-    }
+    return parsed;
 }
 
 async function processAction(action, user) {

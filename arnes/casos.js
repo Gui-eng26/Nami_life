@@ -82,6 +82,13 @@ export const CASOS = [
                 .map(([f]) => f);
             checks.push({ nome: 'grep (ACH-3): insert em schedules só em database.js', ok: violadoresSchedules.length === 0, detalhe: violadoresSchedules.join(', ') || 'limpo' });
 
+            // Grep-guard 5 (M3 P6.2 — A0 estendida): nenhum JSON.parse de saída de
+            // LLM fora de tool-use em TODO o sistema. Como toda saída estruturada
+            // de LLM agora chega por ferramenta, src/ não tem NENHUM JSON.parse.
+            const violadoresJsonParse = [...conteudo.entries()]
+                .filter(([, c]) => /JSON\.parse\(/.test(c)).map(([f]) => f);
+            checks.push({ marco: 'M2', nome: 'grep (A0 estendida): zero JSON.parse em src/ (tool-use em tudo)', ok: violadoresJsonParse.length === 0, detalhe: violadoresJsonParse.join(', ') || 'limpo' });
+
             // Grep-guard 4: perguntas de coleta do cadastro só no schema.
             const violadoresPergunta = [...conteudo.entries()]
                 .filter(([f, c]) => f !== path.join('schemas', 'cadastro.js')

@@ -130,6 +130,14 @@ export async function classificarEstoqueSolido({ message, nomeMedicamento, histo
     const { parsed, degradado } = await classificarJSON({
         systemPrompt: buildEstoqueSolidoSystemPrompt({ nomeMedicamento, historicoConversa, message }),
         message, maxTokens: 200,
+        schema: {
+            type: 'object',
+            properties: {
+                categoria: { type: 'string', enum: ['quantidade', 'estimativa', 'nao_sei', 'indeterminado'] },
+                quantidade: { type: ['number', 'null'] }
+            },
+            required: ['categoria']
+        },
         motivo: 'classificador_estoque_falhou',
         fallback: null
     });
@@ -173,6 +181,11 @@ export async function classificarStatusFrasco({ message, nomeMedicamento, histor
     const { parsed, degradado } = await classificarJSON({
         systemPrompt: buildStatusFrascoSystemPrompt({ nomeMedicamento, historicoConversa, message }),
         message, maxTokens: 50, temperature: 0,
+        schema: {
+            type: 'object',
+            properties: { categoria: { type: 'string', enum: ['aberto', 'fechado', 'indeterminado'] } },
+            required: ['categoria']
+        },
         motivo: 'classificador_status_frasco_falhou',
         fallback: null
     });
@@ -213,6 +226,13 @@ export async function classificarFracaoEstoque({ message, nomeMedicamento, histo
     const { parsed, degradado } = await classificarJSON({
         systemPrompt: buildFracaoEstoqueSystemPrompt({ nomeMedicamento, historicoConversa, message }),
         message, maxTokens: 50, temperature: 0,
+        schema: {
+            type: 'object',
+            properties: {
+                categoria: { type: 'string', enum: ['recem_aberto', 'tres_quartos', 'metade', 'um_quarto', 'quase_acabando', 'nao_sei', 'indeterminado'] }
+            },
+            required: ['categoria']
+        },
         motivo: 'classificador_fracao_estoque_falhou',
         fallback: null
     });

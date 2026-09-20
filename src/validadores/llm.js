@@ -1,11 +1,13 @@
 // ============================================================
-// CHAMADA DE CLASSIFICADOR LLM COM PARSE DE JSON — ponto único (P30)
+// CHAMADA DE CLASSIFICADOR LLM VIA TOOL-USE — ponto único (P30)
 //
-// v44 M2: os classificadores do cadastro mudaram de endereço
-// (agentes/cadastro.js → validadores/) e o padrão repetido de
-// parse+degradação foi consolidado aqui. Os PROMPTS não mudaram —
-// classificador com histórico de casos de borda muda de endereço,
-// não de lógica (briefing M2 §1).
+// v44 M3 P6.2: TODA saída estruturada de LLM chega por tool-use com
+// schema — nunca mais JSON em texto livre (mesmo padrão da porta:
+// schema + 1 retry + degradar). Zera a família parse_json_falhou;
+// asserção A0 estendida: nenhum JSON.parse de saída de LLM no
+// sistema. Os PROMPTS dos classificadores não mudaram (briefing
+// M2 §1: classificador com histórico de borda muda de transporte,
+// não de lógica).
 // ============================================================
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -14,43 +16,58 @@ import { degradar } from '../observabilidade.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// Chama o modelo com um system prompt de classificação e devolve o JSON
-// parseado, ou o fallback via degradar() quando o parse falha (P31).
-export async function classificarJSON({ systemPrompt, message, maxTokens = 200, temperature = null, motivo, agent = 'cadastro', detalheExtra = {}, fallback }) {
-    const response = await anthropic.messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: maxTokens,
-        ...(temperature !== null ? { temperature } : {}),
-        system: systemPrompt,
-        messages: [{ role: 'user', content: message || '' }]
-    });
+const SCHEMA_LIVRE = { type: 'object' };
 
-    const rawText = response.content[0]?.text || '';
-    let parsed = null;
-    try {
-        parsed = JSON.parse(rawText);
-    } catch {
-        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            try { parsed = JSON.parse(jsonMatch[0]); } catch { /* fall through */ }
+// Chama o modelo com tool_choice forçado e devolve o input da ferramenta.
+// Duas tentativas; na segunda falha, degradar() com o fallback do chamador
+// (P31: o fallback vive no retorno de quem registra a degradação).
+export async function classificarComFerramenta({
+    systemPrompt, message, messages = null, maxTokens = 200, temperature = null,
+    model = 'claude-sonnet-4-6',
+    nomeFerramenta = 'registrar_classificacao',
+    descricaoFerramenta = 'Registra a classificação estruturada da mensagem.',
+    schema = SCHEMA_LIVRE, validar = null,
+    motivo, agent = 'cadastro', origem = 'cadastro', detalheExtra = {}, fallback
+}) {
+    for (let tentativa = 1; tentativa <= 2; tentativa++) {
+        try {
+            const response = await anthropic.messages.create({
+                model,
+                max_tokens: maxTokens,
+                ...(temperature !== null ? { temperature } : {}),
+                system: systemPrompt,
+                tools: [{ name: nomeFerramenta, description: descricaoFerramenta, input_schema: schema }],
+                tool_choice: { type: 'tool', name: nomeFerramenta },
+                messages: messages || [{ role: 'user', content: message || '' }]
+            });
+            const toolUse = response.content.find(b => b.type === 'tool_use' && b.name === nomeFerramenta);
+            const input = toolUse?.input ?? null;
+            if (input && (!validar || validar(input))) {
+                return { parsed: input, degradado: false };
+            }
+            console.warn(`⚠️ [TOOL-USE] ${motivo}: entrada inválida na tentativa ${tentativa} — ${JSON.stringify(input).slice(0, 200)}`);
+        } catch (e) {
+            console.error(`❌ [TOOL-USE] ${motivo}: erro na tentativa ${tentativa}: ${e.message}`);
         }
     }
 
-    if (!parsed) {
-        console.error(`❌ validador: classificador (${motivo}) não retornou JSON válido:`, rawText);
-        return {
-            parsed: await degradar({
-                origem: 'cadastro',
-                motivo,
-                agent,
-                detalhe: { stop_reason: response?.stop_reason ?? null, tamanho_raw: rawText.length, ...detalheExtra },
-                fallback
-            }),
-            degradado: true
-        };
-    }
+    return {
+        parsed: await degradar({ origem, motivo, agent, detalhe: detalheExtra, fallback }),
+        degradado: true
+    };
+}
 
-    return { parsed, degradado: false };
+// Assinatura preservada dos classificadores do cadastro: mesmo contrato
+// ({ parsed, degradado }), transporte novo (tool-use em vez de JSON-texto).
+// `schema`/`validar` opcionais: classificador com shape conhecido DECLARA o
+// schema — o modelo oscila menos do que com objeto livre.
+export async function classificarJSON({ systemPrompt, message, maxTokens = 200, temperature = null, motivo, agent = 'cadastro', detalheExtra = {}, fallback, schema = undefined, validar = undefined }) {
+    return classificarComFerramenta({
+        systemPrompt, message, maxTokens, temperature,
+        ...(schema ? { schema } : {}),
+        ...(validar ? { validar } : {}),
+        motivo, agent, origem: 'cadastro', detalheExtra, fallback
+    });
 }
 
 // Classificador de palavra única (ex.: recusa/duvida/nova_intencao/ruido).

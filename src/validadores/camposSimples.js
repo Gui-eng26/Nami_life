@@ -48,6 +48,14 @@ export async function extrairCampoSimples({ campo, message, historicoConversa = 
     const { parsed, degradado } = await classificarJSON({
         systemPrompt: buildCampoSimplesSystemPrompt({ campo, historicoConversa, message }),
         message, maxTokens: 200,
+        schema: {
+            type: 'object',
+            properties: {
+                categoria: { type: 'string', enum: ['valor', 'indeterminado'] },
+                valor: { type: ['string', 'null'], description: 'O valor extraído, tal como a pessoa escreveu. null quando indeterminado.' }
+            },
+            required: ['categoria']
+        },
         motivo: 'classificador_campo_simples_falhou',
         detalheExtra: { campo },
         fallback: null
@@ -91,6 +99,14 @@ export async function classificarTipoTratamento({ message, nomeMedicamento, agua
     const { parsed, degradado } = await classificarJSON({
         systemPrompt: buildTipoTratamentoSystemPrompt({ nomeMedicamento, aguardandoDias, historicoConversa, message }),
         message, maxTokens: 200,
+        schema: {
+            type: 'object',
+            properties: {
+                categoria: { type: 'string', enum: ['continuo', 'dias', 'temporario', 'indeterminado'] },
+                dias: { type: ['number', 'null'] }
+            },
+            required: ['categoria']
+        },
         motivo: 'classificador_tipo_tratamento_falhou',
         fallback: null
     });

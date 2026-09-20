@@ -1,4 +1,3 @@
-import Anthropic from '@anthropic-ai/sdk';
 import 'dotenv/config';
 import {
     saveConversationState,
@@ -13,7 +12,7 @@ import {
     formatarHistoricoConversa
 } from '../database.js';
 import { isCancelamento, encontrarMedicamento, normalizar } from '../nlp_helpers.js';
-import { degradar } from '../observabilidade.js';
+import { classificarComFerramenta } from '../validadores/llm.js';
 import { AINDA_NAO } from '../inventario.js';
 
 // v44 §5.9: a fatia relevante para este agente deixou de ser posicional
@@ -23,11 +22,15 @@ const NAO_SUPORTADO_CONFIGURACAO = AINDA_NAO
     .filter(i => i.escopo === 'configuracao')
     .map(i => i.rotulo);
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
 // ============================================================
 // CLASSIFICAÇÃO VIA CLAUDE — única chamada LLM do agente
 // ============================================================
+
+const ACOES_CONFIGURACAO = [
+    'pausar', 'reativar', 'encerrar', 'alterar_horario', 'remover_horario',
+    'adicionar_horario', 'redefinir_horarios', 'esclarecer_pausar_encerrar',
+    'recusa_opcoes_oferecidas', 'nao_suportado'
+];
 
 async function classificarIntencao(message, medicamentosDisponiveis, historicoConversa = []) {
     const listaMeds = medicamentosDisponiveis.map(m => m.nome).join(', ') || 'nenhum';
@@ -98,27 +101,38 @@ REGRAS DE DECISÃO:
    pausar/encerrar/contínuo/temporário) e a resposta rejeita todas sem introduzir assunto novo
    → recusa_opcoes_oferecidas. NUNCA confunda com reafirmar a ação anterior.`;
 
-    try {
-        const response = await anthropic.messages.create({
-            model: 'claude-sonnet-4-6',
-            max_tokens: 150,
-            system: systemPrompt,
-            messages: [{ role: 'user', content: message }]
-        });
-        const text = response.content[0]?.text || '{}';
-        const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
-        console.log(`⚙️ Intenção classificada: ${JSON.stringify(parsed)}`);
-        return parsed;
-    } catch (e) {
-        console.error('⚠️ Erro ao classificar intenção:', e.message);
-        return await degradar({
-            origem: 'configuracao',
-            motivo: 'classificacao_falhou',
-            agent: 'configuracao',
-            detalhe: { erro: e.name, status: e?.status ?? null },
-            fallback: { acao: 'esclarecer_pausar_encerrar', medicamentoMencionado: null, novoHorario: null }
-        });
-    }
+    // v44 M3 P6.2: tool-use com schema — mesmo padrão da porta (1 retry +
+    // degradar). O prompt de classificação não mudou.
+    const { parsed } = await classificarComFerramenta({
+        systemPrompt,
+        message,
+        maxTokens: 200,
+        nomeFerramenta: 'registrar_intencao',
+        descricaoFerramenta: 'Registra a intenção de configuração classificada.',
+        schema: {
+            type: 'object',
+            properties: {
+                acao: { type: 'string', enum: ACOES_CONFIGURACAO },
+                medicamentoMencionado: { type: 'string', description: 'Nome mencionado, exatamente como escrito. String vazia se nenhum.' },
+                novoHorario: { type: 'string', description: 'HH:MM. String vazia se não houver.' }
+            },
+            required: ['acao']
+        },
+        validar: (input) => ACOES_CONFIGURACAO.includes(input?.acao),
+        motivo: 'classificacao_falhou',
+        agent: 'configuracao',
+        origem: 'configuracao',
+        fallback: { acao: 'esclarecer_pausar_encerrar', medicamentoMencionado: null, novoHorario: null }
+    });
+
+    const limpar = (v) => (typeof v === 'string' && v.trim()) ? v.trim() : null;
+    const resultado = {
+        acao: parsed?.acao ?? 'esclarecer_pausar_encerrar',
+        medicamentoMencionado: limpar(parsed?.medicamentoMencionado),
+        novoHorario: limpar(parsed?.novoHorario)
+    };
+    console.log(`⚙️ Intenção classificada: ${JSON.stringify(resultado)}`);
+    return resultado;
 }
 
 // ============================================================

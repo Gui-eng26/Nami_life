@@ -228,6 +228,27 @@ export async function classificarPosologia({ message, campoEsperado, nomeMedicam
 
     const { parsed, degradado } = await classificarJSON({
         systemPrompt, message, maxTokens: 400,
+        schema: {
+            type: 'object',
+            properties: {
+                categoria: { type: 'string', enum: ['posologia_completa', 'horarios_apenas', 'quantidade_apenas', 'frequencia_intervalo', 'indeterminado'] },
+                pares: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: { horario: { type: 'string' }, quantidade: { type: 'number' } },
+                        required: ['horario', 'quantidade']
+                    }
+                },
+                quantidade_unica: { type: ['number', 'null'] },
+                intervalo_horas: { type: ['number', 'null'] },
+                horario_inicio: { type: ['string', 'null'] },
+                unidade_dose: { type: ['string', 'null'] },
+                forma_explicita: { type: ['string', 'null'] },
+                multiplicador_aplicado: { type: 'boolean' }
+            },
+            required: ['categoria', 'pares']
+        },
         motivo: 'classificador_posologia_falhou',
         detalheExtra: { campoEsperado },
         fallback: null

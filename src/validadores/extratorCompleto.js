@@ -108,6 +108,36 @@ export async function extrairCadastroCompleto({ message, historicoConversa = [] 
     const { parsed, degradado } = await classificarJSON({
         systemPrompt: buildCadastroCompletoSystemPrompt({ historicoConversa, message }),
         message, maxTokens: 500,
+        schema: {
+            type: 'object',
+            properties: {
+                nome: { type: ['string', 'null'] },
+                dosagem: { type: ['string', 'null'] },
+                pares: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: { horario: { type: 'string' }, quantidade: { type: 'number' } },
+                        required: ['horario', 'quantidade']
+                    }
+                },
+                intervaloHoras: { type: ['number', 'null'] },
+                horarioInicio: { type: ['string', 'null'] },
+                quantidadeUnica: { type: ['number', 'null'] },
+                unidadeDose: { type: ['string', 'null'] },
+                formaExplicita: { type: ['string', 'null'] },
+                estoqueQuantidade: { type: ['number', 'null'] },
+                frascos: { type: ['number', 'null'] },
+                volumeFrasco: { type: ['number', 'null'] },
+                statusFrasco: { type: ['string', 'null'] },
+                fracaoEstoque: { type: ['string', 'null'] },
+                tipoTratamento: { type: ['string', 'null'] },
+                tratamentoDias: { type: ['number', 'null'] }
+            },
+            // 'nome' NUNCA em required: campo obrigatório+nulável induz o modelo a
+            // inventar placeholder ("<UNKNOWN>") em vez de devolver null.
+            required: ['pares']
+        },
         motivo: 'extracao_cadastro_completo_falhou',
         fallback: null
     });
@@ -151,8 +181,12 @@ export async function extrairCadastroCompleto({ message, historicoConversa = [] 
     let quantidadeUnica = Number(parsed.quantidadeUnica);
     quantidadeUnica = Number.isFinite(quantidadeUnica) && quantidadeUnica > 0 ? quantidadeUnica : null;
 
+    // Placeholder de modelo ("<UNKNOWN>", "null", "n/a") nunca vira nome real.
+    const nomePlausivel = typeof parsed.nome === 'string' && parsed.nome.trim()
+        && !/^<.*>$|^(null|none|n\/a|unknown|desconhecido)$/i.test(parsed.nome.trim());
+
     const resultado = {
-        nome: typeof parsed.nome === 'string' && parsed.nome.trim() ? parsed.nome.trim() : null,
+        nome: nomePlausivel ? parsed.nome.trim() : null,
         dosagem: typeof parsed.dosagem === 'string' && parsed.dosagem.trim() ? parsed.dosagem.trim() : null,
         pares,
         intervaloHoras,

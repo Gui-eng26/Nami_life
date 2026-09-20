@@ -354,9 +354,10 @@ async function despacharCadastro({ user, message, image, state, context, histori
         if (respostaConfig?.escalarParaRoteador) {
             const escalada = await despacharEscalada({
                 user, message, image, historicoConversa, contextoProativo,
-                contextoPreservado: { medicationId, medicationNome, schedulesAtivos }
+                contextoPreservado: { medicationId, medicationNome, schedulesAtivos },
+                currentState: state?.state || 'adding_med'
             });
-            return { agentName: escalada.agentName, response: escalada.response, feedback: escalada.feedback };
+            return { agentName: escalada.agentName, response: escalada.response, feedback: escalada.feedback, escalouPara: escalada.escalouPara };
         }
         return { agentName: 'configuracao', response: respostaConfig };
     }
@@ -411,13 +412,15 @@ async function despacharCadastro({ user, message, image, state, context, histori
     const escalada = await despacharEscalada({
         user, message, image, historicoConversa, contextoProativo,
         contextoPreservado: context || null,
-        propostaPreResolvida: proposta
+        propostaPreResolvida: proposta,
+        currentState: state?.state || 'adding_med'
     });
     return {
         agentName: escalada.agentName,
         response: escalada.response,
         feedback: escalada.feedback,
-        intencaoNaoSuportadaDetectada: escalada.intencaoNaoSuportadaDetectada
+        intencaoNaoSuportadaDetectada: escalada.intencaoNaoSuportadaDetectada,
+        escalouPara: escalada.escalouPara
     };
 }
 
@@ -427,11 +430,14 @@ async function despacharCadastro({ user, message, image, state, context, histori
 // ============================================================
 
 async function despacharEscalada({ user, message, image, contextoPreservado, historicoConversa,
-                                   contextoProativo = null, propostaPreResolvida = null }) {
+                                   contextoProativo = null, propostaPreResolvida = null,
+                                   currentState = 'configurando' }) {
     // BUG-101: quem já interpretou a mensagem passa a proposta INTEIRA aqui e evita a
     // segunda chamada de LLM.
+    // ACH-5 (M3 P6.3): o estado que entra no prompt da porta é o REAL do chamador,
+    // nunca mais 'configurando' cravado.
     const proposta = propostaPreResolvida ?? await interpretarTurno({
-        message, currentState: 'configurando', historicoConversa, contextoProativo
+        message, currentState, historicoConversa, contextoProativo
     });
 
     if (!proposta) {
@@ -457,6 +463,14 @@ async function despacharEscalada({ user, message, image, contextoPreservado, his
                 schedulesAtivos: contextoPreservado?.schedulesAtivos || []
             }
         });
+        // BUG-69 (M3 P6.3): escalada dupla (configuracao escala de novo na
+        // reentrada) NUNCA vaza o objeto de sinal para o funil — sem nova rodada
+        // disponível, a saída segura é a repergunta.
+        if (response?.escalarParaRoteador) {
+            console.warn(`⚠️ [ESCALADA] Escalada dupla do configuracao — repergunta segura — ${user.phone}`);
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            response = reperguntaSegura(user);
+        }
     } else {
         await saveConversationState(user.id, { state: 'idle', context: {} });
         const idleState = { state: 'idle', context: {} };
@@ -471,6 +485,31 @@ async function despacharEscalada({ user, message, image, contextoPreservado, his
                 user, message, state: idleState, historicoConversa,
                 context: { etapa: 'cad_nome' }, camposPorta: proposta.campos
             });
+            // BUG-69 (mesma classe): sinal de devolução do runner nunca vaza como
+            // objeto — sem rodada nova, repergunta segura.
+            if (response?.escalarParaRoteador) {
+                console.warn(`⚠️ [ESCALADA] Runner devolveu na escalada — repergunta segura — ${user.phone}`);
+                response = reperguntaSegura(user);
+            } else if (response?.configurarExistente) {
+                // Medicamento já ativo com ajuste embutido: a configuração assume.
+                const alvo = response.configurarExistente;
+                agentName = 'configuracao';
+                response = await handleConfiguracao({
+                    user, message, historicoConversa,
+                    state: { state: 'configurando', context: { etapa: 'identif_intencao' } },
+                    context: {
+                        etapa: 'identif_intencao',
+                        medicationId: alvo.medicationId,
+                        medicationNome: alvo.medicationNome,
+                        schedulesAtivos: alvo.schedulesAtivos
+                    }
+                });
+                if (response?.escalarParaRoteador) {
+                    console.warn(`⚠️ [ESCALADA] Escalada dupla via configurarExistente — repergunta segura — ${user.phone}`);
+                    await saveConversationState(user.id, { state: 'idle', context: {} });
+                    response = reperguntaSegura(user);
+                }
+            }
         } else if (intencao === 'relatorios') {
             console.log(`📊 [ESCALADA] Roteando para relatorios (${subtipoRelatorio}) — ${user.phone}`);
             const r = await despacharRelatorio({ user, message, image, historicoConversa,
@@ -496,7 +535,9 @@ async function despacharEscalada({ user, message, image, contextoPreservado, his
         }
     }
 
-    return { agentName, response, feedback, intencaoNaoSuportadaDetectada };
+    // MH-48 (M3 P6.3): sinal explícito de escalada — sobe até o logAgentInteraction
+    // do turno e fica consultável em agent_logs.contexto_conversa.
+    return { agentName, response, feedback, intencaoNaoSuportadaDetectada, escalouPara: agentName };
 }
 
 // ============================================================
@@ -541,7 +582,8 @@ async function chamarPrincipal({ user, message, image, historicoConversa,
         historicoConversa, contextoProativo,
         permitirDevolucao: false
     });
-    return { ...r2, feedback: r2.feedback ?? proposta.feedback ?? null };
+    // MH-48: a devolução do principal também é uma escalada — registra o destino.
+    return { ...r2, feedback: r2.feedback ?? proposta.feedback ?? null, escalouPara: r2.escalouPara ?? r2.agentName };
 }
 
 // ============================================================
@@ -567,6 +609,7 @@ async function despacharPorProposta({ proposta, user, message, image, state, cur
     let response;
     let intencaoNaoSuportadaDetectada = false;
     let feedback = proposta.feedback ?? null;
+    let escalouPara = null;
 
     // Saída dos estados de pergunta do relatório quando o assunto mudou —
     // são estados leves, sem dado coletado a preservar.
@@ -589,6 +632,7 @@ async function despacharPorProposta({ proposta, user, message, image, state, cur
         agentName = rCad.agentName;
         response = rCad.response;
         feedback = rCad.feedback ?? feedback;
+        escalouPara = rCad.escalouPara ?? escalouPara;
         if (rCad.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
 
     } else if (intencao === 'relatorios') {
@@ -609,11 +653,13 @@ async function despacharPorProposta({ proposta, user, message, image, state, cur
         if (resultadoConfig?.escalarParaRoteador) {
             const escalada = await despacharEscalada({
                 user, message, image, historicoConversa, contextoProativo,
-                contextoPreservado: currentState === 'configurando' ? state?.context : null
+                contextoPreservado: currentState === 'configurando' ? state?.context : null,
+                currentState
             });
             agentName = escalada.agentName;
             response = escalada.response;
             feedback = escalada.feedback ?? feedback;
+            escalouPara = escalada.escalouPara ?? escalouPara;
             if (escalada.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
         } else {
             response = resultadoConfig;
@@ -642,9 +688,10 @@ async function despacharPorProposta({ proposta, user, message, image, state, cur
         response = r.response;
         if (r.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
         feedback = r.feedback ?? feedback;
+        escalouPara = r.escalouPara ?? escalouPara;
     }
 
-    return { agentName, response, intencaoNaoSuportadaDetectada, feedback };
+    return { agentName, response, intencaoNaoSuportadaDetectada, feedback, escalouPara };
 }
 
 // ============================================================
@@ -757,6 +804,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
     let agentName;
     let feedbackDetectado = null;
     let intencaoNaoSuportadaDetectada = false;
+    let escalouParaDetectado = null; // MH-48: sinal de escalada consultável em agent_logs
 
     // 1. Usuário ainda não fez onboarding → recepcionista
     if (!user.onboarded) {
@@ -802,11 +850,13 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         if (resultadoNascimento?.escalarParaRoteador) {
             const escalada = await despacharEscalada({
                 user, message, image, historicoConversa, contextoProativo,
-                contextoPreservado: null
+                contextoPreservado: null,
+                currentState: 'coletando_nascimento' // ACH-5: o estado real, nunca 'configurando'
             });
             agentName = escalada.agentName;
             response = escalada.response;
             feedbackDetectado = escalada.feedback ?? feedbackDetectado;
+            escalouParaDetectado = escalada.escalouPara ?? null;
             if (escalada.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
         } else {
             response = resultadoNascimento;
@@ -896,6 +946,7 @@ export async function routeMessage({ user, message, image, messageId, referenceM
                 agentName = r.agentName;
                 response = r.response;
                 feedbackDetectado = r.feedback ?? feedbackDetectado;
+                escalouParaDetectado = r.escalouPara ?? escalouParaDetectado;
                 if (r.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
             }
         }
@@ -919,13 +970,17 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         }
     }
 
+    // MH-48: quando o turno escalou, o sinal fica consultável em agent_logs
+    // (contexto_conversa.escalada) — nunca mais cruzar console.log do Railway.
     const agentLogId = await logAgentInteraction({
         userId: user.id,
         agent: agentName,
         userMessage: message,
         agentResponse: response,
         estadoConversa: currentState || null,
-        contextoConversa: state?.context || null,
+        contextoConversa: escalouParaDetectado
+            ? { ...(state?.context || {}), escalada: { para: escalouParaDetectado } }
+            : (state?.context || null),
         referenceMessageId: referenceMessageId || null
     });
 

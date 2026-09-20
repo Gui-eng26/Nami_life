@@ -281,28 +281,44 @@ async function gerarMoldura({ nome, rotuloData, resumo, med, podeConfirmarRetroa
         podeConfirmarRetroativo
     });
 
-    try {
-        const resposta = await anthropic.messages.create({
-            model: 'claude-sonnet-4-6',
-            max_tokens: 300,
-            system: PROMPT_MOLDURA,
-            messages: [{ role: 'user', content: entrada }]
-        });
+    // v44 M3 P6.2: tool-use com schema — a moldura chega estruturada, nunca
+    // JSON em texto livre (mesmo padrão da porta: 1 retry + degradar). Na
+    // degradação, a moldura padrão determinística assume (comportamento antigo).
+    const { parsed, degradado } = await classificarComFerramenta({
+        systemPrompt: PROMPT_MOLDURA,
+        message: entrada,
+        maxTokens: 300,
+        nomeFerramenta: 'registrar_moldura',
+        descricaoFerramenta: 'Registra a abertura e o fechamento da mensagem.',
+        schema: {
+            type: 'object',
+            properties: {
+                abertura: { type: 'string', description: 'Abertura da mensagem (máx. 2 frases).' },
+                fechamento: { type: 'string', description: 'Fechamento (máx. 2 frases), ou string vazia.' }
+            },
+            required: ['abertura']
+        },
+        // Critério de FORMA, não de tamanho (lição do BUG-067): texto que começa
+        // com "{" nunca é exposto cru ao usuário.
+        validar: (input) => typeof input?.abertura === 'string'
+            && input.abertura.trim().length > 0
+            && !input.abertura.trim().startsWith('{'),
+        motivo: 'moldura_relatorio_falhou',
+        agent: 'relatorios',
+        origem: 'relatorios',
+        fallback: null
+    });
 
-        const raw = resposta.content[0]?.text?.trim() || '';
-        // Critério de FORMA, não de tamanho (lição do BUG-067): texto que começa com "{"
-        // nunca é exposto cru ao usuário.
-        const parsed = JSON.parse(raw.replace(/^```json\s*|```$/g, '').trim());
-        const abertura = typeof parsed.abertura === 'string' ? parsed.abertura.trim() : '';
-        const fechamento = typeof parsed.fechamento === 'string' ? parsed.fechamento.trim() : '';
-
-        if (!abertura || abertura.startsWith('{')) throw new Error('abertura inválida');
-        return { abertura, fechamento: fechamento.startsWith('{') ? '' : fechamento };
-
-    } catch (e) {
-        console.warn(`[relatorios] Moldura via LLM falhou, usando padrão: ${e.message}`);
+    if (degradado || !parsed) {
+        console.warn('[relatorios] Moldura via LLM degradou — usando padrão determinístico');
         return molduraPadrao({ nome, rotuloData, resumo });
     }
+
+    const fechamento = typeof parsed.fechamento === 'string' ? parsed.fechamento.trim() : '';
+    return {
+        abertura: parsed.abertura.trim(),
+        fechamento: fechamento.startsWith('{') ? '' : fechamento
+    };
 }
 
 // ============================================================
@@ -324,23 +340,38 @@ async function relatorioMeusRemedios(user) {
         String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR')
     );
 
-    let msg = `💊 Seus remédios cadastrados, ${firstName}:\n\n`;
+    // P1/P4 (M3): a lista separa Ativos de Pausados pelo estado EXPLÍCITO
+    // (medications.status) — nunca mais tudo misturado. Encerrados só sob
+    // pedido (MH-31).
+    const ativos = ordenados.filter(m => (m.status || 'ativo') === 'ativo');
+    const pausados = ordenados.filter(m => m.status === 'pausado');
 
-    ordenados.forEach((med, i) => {
+    const linhaDoMedicamento = (med, i, semLembretes = false) => {
         const horariosAtivos = (med.schedules || []).filter(s => s.ativo);
         // A-2 (v25): horários também ordenados — antes saíam na ordem do banco ("21:00 e 09:00").
-        const horarios = horariosAtivos.length > 0
-            ? horariosAtivos
-                .map(s => s.horario.substring(0, 5))
-                .sort((x, y) => x.localeCompare(y))
-                .join(' e ')
-            : 'sem horário cadastrado';
+        const horarios = semLembretes
+            ? 'lembretes pausados'
+            : horariosAtivos.length > 0
+                ? horariosAtivos
+                    .map(s => s.horario.substring(0, 5))
+                    .sort((x, y) => x.localeCompare(y))
+                    .join(' e ')
+                : 'sem horário cadastrado';
         const forma = med.forma_farmaceutica || 'unidade';
         // A-4 (v25): dosagem nula era exibida literalmente como "null".
         const dosagem = med.dosagem || 'dosagem não informada';
-        msg += `${i + 1}. *${med.nome}* — ${dosagem} (${forma})\n`;
-        msg += `   ⏰ ${horarios}\n\n`;
-    });
+        return `${i}. *${med.nome}* — ${dosagem} (${forma})\n   ⏰ ${horarios}\n\n`;
+    };
+
+    let msg = `💊 Seus remédios cadastrados, ${firstName}:\n\n`;
+    let n = 0;
+
+    if (pausados.length > 0 && ativos.length > 0) msg += `✅ *Ativos*\n\n`;
+    for (const med of ativos) msg += linhaDoMedicamento(med, ++n);
+    if (pausados.length > 0) {
+        msg += `⏸️ *Pausados*\n\n`;
+        for (const med of pausados) msg += linhaDoMedicamento(med, ++n, true);
+    }
 
     return msg.trim();
 }

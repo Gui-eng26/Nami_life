@@ -250,12 +250,32 @@ export async function julgarEpisodio(episodio) {
         // flutuante em GPU), mas reduz drasticamente.
         temperature: 0,
         system: PROMPT_JUIZ,
+        // v44 M3 P6.2 (A0 estendida): o julgamento chega por tool-use com schema —
+        // nunca JSON em texto livre. O prompt não mudou.
+        tools: [{
+            name: 'registrar_julgamento',
+            description: 'Registra o julgamento estruturado do episódio.',
+            input_schema: {
+                type: 'object',
+                properties: {
+                    desvio: { type: 'boolean' },
+                    categoria: { type: 'string' },
+                    titulo_descritivo: { type: 'string' },
+                    evidencia: { type: 'string' }
+                },
+                required: ['desvio']
+            }
+        }],
+        tool_choice: { type: 'tool', name: 'registrar_julgamento' },
         messages: [{ role: 'user', content: texto }]
     });
 
-    const rawText = response.content[0].text;
-    const parsed = parseJulgamento(rawText);
-    if (!parsed) return null;
+    const toolUse = response.content.find(b => b.type === 'tool_use' && b.name === 'registrar_julgamento');
+    const parsed = toolUse?.input ?? null;
+    if (!parsed) {
+        console.warn('[juizOffline] Julgamento descartado — ferramenta não registrada na resposta');
+        return null;
+    }
 
     if (!parsed.desvio) return { desvio: false };
 
@@ -270,24 +290,6 @@ export async function julgarEpisodio(episodio) {
         tituloDescritivo: parsed.titulo_descritivo,
         evidencia: parsed.evidencia
     };
-}
-
-function parseJulgamento(rawText) {
-    try {
-        return JSON.parse(rawText);
-    } catch {
-        const match = rawText.match(/\{[\s\S]*\}/);
-        if (!match) {
-            console.warn(`[juizOffline] Julgamento descartado — sem JSON na resposta: ${rawText}`);
-            return null;
-        }
-        try {
-            return JSON.parse(match[0]);
-        } catch {
-            console.warn(`[juizOffline] Julgamento descartado — JSON malformado: ${rawText}`);
-            return null;
-        }
-    }
 }
 
 export function formatarEpisodioParaPrompt(episodio) {
