@@ -7,14 +7,12 @@ import { getConversationState, logAgentInteraction, getRecentDoses,
 import { registrarEvento, registrarFeedback } from './observabilidade.js';
 import { buildAlertaEstoquePosConfirmacao, buildConviteEstoqueNaoCadastrado } from './templates/estoqueTemplates.js';
 import { interpretarTurno } from './porta.js';
-import { handleRecepcionista } from './agentes/recepcionista.js';
 import { handlePrincipal } from './agentes/principal.js';
-import { executarRunner, repetirPergunta } from './runner.js';
+import { executarRunner, executarOnboarding, repetirPergunta } from './runner.js';
 import { SCHEMA_CADASTRO } from './schemas/cadastro.js';
 import { handleRelatorios } from './agentes/relatorios.js';
 import { handleConfiguracao } from './agentes/configuracao.js';
 import { handleExclusaoConta, confirmarIntencaoExclusaoConta } from './agentes/exclusaoConta.js';
-import { handleDataNascimento } from './agentes/data_nascimento.js';
 import { isCancelamento, pareceExclusaoConta, medicamentoDiferente, nomeCorrigidoParecido, normalizar } from './nlp_helpers.js';
 
 // ============================================================
@@ -855,19 +853,27 @@ export async function routeMessage({ user, message, image, messageId, referenceM
     let intencaoNaoSuportadaDetectada = false;
     let escalouParaDetectado = null; // MH-48: sinal de escalada consultável em agent_logs
 
-    // 1. Usuário ainda não fez onboarding → recepcionista
-    if (!user.onboarded) {
-        agentName = 'recepcionista';
-        console.log(`👋 Roteando para recepcionista — ${user.phone}`);
-        response = await handleRecepcionista({
-            user,
-            message,
-            historicoConversa,
-            context: {
-                ...state?.context,
-                mensagem_inicial: state?.context?.mensagem_inicial || message
-            }
-        });
+    // 1. Onboarding no RUNNER (v44 M4): usuário ainda não onboarded, ou fluxo
+    // de onboarding em aberto (coleta opcional de nascimento pós-consentimento).
+    // Os antigos ramos do recepcionista e da coleta de nascimento morreram.
+    if (!user.onboarded || currentState === 'onboarding') {
+        agentName = 'onboarding';
+        console.log(`👋 Roteando para o onboarding (runner) — ${user.phone}`);
+        const resultadoOnboarding = await executarOnboarding({ user, message, state, historicoConversa });
+        if (resultadoOnboarding?.escalarParaRoteador) {
+            const escalada = await despacharEscalada({
+                user, message, image, historicoConversa, contextoProativo,
+                contextoPreservado: null,
+                currentState: 'onboarding' // ACH-5: o estado real, nunca 'configurando'
+            });
+            agentName = escalada.agentName;
+            response = escalada.response;
+            feedbackDetectado = escalada.feedback ?? feedbackDetectado;
+            escalouParaDetectado = escalada.escalouPara ?? null;
+            if (escalada.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
+        } else {
+            response = resultadoOnboarding;
+        }
 
     // 2. MH-020 — Confirmação pendente de exclusão de conta (trata o estado antes de tudo)
     } else if (currentState === 'aguardando_confirmacao_exclusao') {
@@ -890,26 +896,6 @@ export async function routeMessage({ user, message, image, messageId, referenceM
         console.log(`🗑️ Pedido de exclusão de conta detectado — ${user.phone}`);
         const r = await handleExclusaoConta({ user, message, etapa: 'solicitar_confirmacao', historicoConversa });
         response = r.response;
-
-    // 3.5. MH-072 Parte A — coleta de data de nascimento no onboarding (fica até o M4).
-    } else if (currentState === 'coletando_nascimento') {
-        agentName = 'data_nascimento';
-        console.log(`🎂 Roteando para coleta de data de nascimento — ${user.phone}`);
-        const resultadoNascimento = await handleDataNascimento({ user, message, state, historicoConversa });
-        if (resultadoNascimento?.escalarParaRoteador) {
-            const escalada = await despacharEscalada({
-                user, message, image, historicoConversa, contextoProativo,
-                contextoPreservado: null,
-                currentState: 'coletando_nascimento' // ACH-5: o estado real, nunca 'configurando'
-            });
-            agentName = escalada.agentName;
-            response = escalada.response;
-            feedbackDetectado = escalada.feedback ?? feedbackDetectado;
-            escalouParaDetectado = escalada.escalouPara ?? null;
-            if (escalada.intencaoNaoSuportadaDetectada) intencaoNaoSuportadaDetectada = true;
-        } else {
-            response = resultadoNascimento;
-        }
 
     // 4+ — v44 §5.1: fast-paths determinísticos → porta → despacho.
     } else {

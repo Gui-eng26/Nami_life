@@ -55,6 +55,18 @@ import { classificarPosologia } from './validadores/posologia.js';
 import { dividirCandidatos, dividirNomeComposto, todosComHorario, contemComFronteira } from './validadores/multiMed.js';
 import { medicamentoDiferente, nomeCorrigidoParecido, normalizar } from './nlp_helpers.js';
 import {
+    SCHEMA_ONBOARDING, montarPersistenciaOnboarding,
+    classificarIntencaoInicial, classificarNomeOnboarding,
+    classificarConsentimentoLgpd, classificarRespostaData,
+    gerarApresentacao, ehParaOutraPessoa, ehAfirmativoOnboarding,
+    renderizarBoasVindas, renderizarPedidoNome, renderizarPedidoConsentimento,
+    renderizarDuvidaLgpd, renderizarReperguntaLgpd, renderizarLgpdRecusada,
+    renderizarLgpdRetorno, renderizarPedidoNascimento, renderizarDataInvalidaOnboarding,
+    renderizarDuvidaNascimento, renderizarConviteAoPrimeiroCadastro,
+    renderizarOutraPessoa, renderizarFechamentoOutraPessoa, renderizarDespedida, renderizarPortaAberta
+} from './schemas/onboarding.js';
+import { extrairComponenteData, montarDataNascimento } from './dataNascimento.js';
+import {
     ACOES_DE_FALHA,
     renderizarPerguntaNome, renderizarPerguntaPosologia, renderizarPerguntaEstoque,
     renderizarPrefacioDuvida, renderizarDeclarativa, renderizarResumoDoMedicamento,
@@ -1412,6 +1424,288 @@ async function perguntarValorPerfil({ user, campo, jaPerguntou }) {
         context: { etapa: 'corrigir_perfil', campoAlvo: campo.nome }
     });
     return campo.pergunta();
+}
+
+// ============================================================
+// ONBOARDING NO RUNNER (v44 M4): nome → LGPD (portão) → nascimento
+// (opcional). A pendência vem da MESMA função única
+// (proximaPendencia) sobre SCHEMA_ONBOARDING; as decisões são
+// determinísticas (listas + classificadores tool-use); o texto de
+// coleta é renderizado em código (schemas/onboarding.js).
+//
+// PORTÃO LGPD (§2): nenhum dado pessoal declarado é persistido antes
+// do aceite identificado — tudo vive no rascunho (estado de
+// conversa). O ponto único de escrita é montarPersistenciaOnboarding,
+// que LANÇA sem consentimento (guarda determinística no A0).
+// ============================================================
+
+const MAX_TENTATIVAS_NOME_ONB = 3;
+const MAX_TENTATIVAS_LGPD_ONB = 3;
+const MAX_TENTATIVAS_NASCIMENTO_ONB = 2;
+const MAX_TENTATIVAS_APRESENTACAO_ONB = 3;
+
+export async function executarOnboarding({ user, message, state, historicoConversa = [] }) {
+    let campos = { ...(state?.context || {}) };
+
+    // Estados legados (pré-M4): a recusa de LGPD é preservada; qualquer outro
+    // estado antigo de onboarding reinicia o fluxo do zero.
+    if (!campos.etapa && state?.state === 'lgpd_recusado') campos.etapa = 'onb_lgpd_recusado';
+    if (campos.etapa && !String(campos.etapa).startsWith('onb_')) {
+        campos = { mensagem_inicial: campos.mensagem_inicial || null };
+    }
+    if (!campos.mensagem_inicial) campos.mensagem_inicial = message;
+
+    const etapa = campos.etapa || null;
+    const salvar = async (proximaEtapa) => {
+        campos.etapa = proximaEtapa;
+        await saveConversationState(user.id, { state: SCHEMA_ONBOARDING.estadoConversa, context: campos });
+    };
+    const encerrarComoRecusaLgpd = async () => {
+        // Comportamento atual preservado (§2.4): nada persistido; o rascunho de
+        // dados pessoais morre com a recusa (decisão do BUG-89 mantida).
+        campos = { etapa: 'onb_lgpd_recusado', mensagem_inicial: campos.mensagem_inicial };
+        await saveConversationState(user.id, { state: SCHEMA_ONBOARDING.estadoConversa, context: campos });
+        console.log(`🔒 [ONBOARDING] LGPD recusada — ${user.phone}`);
+        return renderizarLgpdRecusada();
+    };
+
+    console.log(`👋 Runner (onboarding) — etapa de entrada: ${etapa || 'primeira mensagem'} — ${user.phone}`);
+
+    // ---- PRIMEIRA MENSAGEM: duas portas da v43 (folheto/descobrir — §5) ----
+    if (!etapa) {
+        const intencao = await classificarIntencaoInicial({ message });
+        campos.intencao_inicial = intencao;
+        if (intencao === 'descobrir') {
+            campos.rodadas_duvida = 0;
+            campos.tentativas_ruido = 0;
+            await salvar('onb_apresentacao');
+            return await gerarApresentacao({ message, historicoConversa, mensagemInicial: campos.mensagem_inicial, motivo: 'primeira' });
+        }
+        campos.tentativas_nome = 0;
+        await salvar('onb_nome');
+        return renderizarBoasVindas({ intencao });
+    }
+
+    // ---- APRESENTAÇÃO ("descobrir") e retorno pós-declínio ----
+    if (etapa === 'onb_apresentacao' || etapa === 'onb_declinado') {
+        if (ehParaOutraPessoa(message)) {
+            campos.outra_pessoa_explicado = true;
+            campos.tentativas_nome = 0;
+            await salvar('onb_nome');
+            return renderizarOutraPessoa();
+        }
+        if (ehAfirmativoOnboarding(message)) {
+            campos.tentativas_nome = 0;
+            await salvar('onb_nome');
+            return renderizarPedidoNome({ motivo: 'pos_convite' });
+        }
+        const cls = await classificarNomeOnboarding({ message, historicoConversa });
+        if (cls.tipo === 'nome') {
+            campos.nome_coletado = cls.valor; // segue para a pendência (LGPD) abaixo
+        } else if (cls.tipo === 'contexto_saude') {
+            campos.tentativas_nome = 0;
+            await salvar('onb_nome');
+            return renderizarPedidoNome({ motivo: 'contexto_saude', medNoRascunho: campos.rascunho_cadastro?.nome || null });
+        } else if (cls.tipo === 'pergunta') {
+            // Servir a curiosidade é o propósito da etapa — não consome tentativa.
+            campos.rodadas_duvida = (campos.rodadas_duvida || 0) + 1;
+            await salvar('onb_apresentacao');
+            return await gerarApresentacao({ message, historicoConversa, mensagemInicial: campos.mensagem_inicial, motivo: 'nova_duvida', rodadasDuvida: campos.rodadas_duvida });
+        } else if (cls.tipo === 'recusa') {
+            const despedida = etapa === 'onb_declinado' ? renderizarPortaAberta() : renderizarDespedida({ motivo: 'declinado' });
+            await salvar('onb_declinado');
+            return despedida;
+        } else if (etapa === 'onb_declinado') {
+            // saudação/indeterminado no retorno: acolhe sem cobrar.
+            await salvar('onb_declinado');
+            return renderizarPortaAberta();
+        } else if (cls.tipo === 'saudacao') {
+            await salvar('onb_apresentacao');
+            return renderizarPedidoNome({ motivo: 'saudacao' });
+        } else {
+            // ruído — único ramo que consome tentativa.
+            const tentativas = (campos.tentativas_ruido || 0) + 1;
+            if (tentativas >= MAX_TENTATIVAS_APRESENTACAO_ONB) {
+                await salvar('onb_declinado');
+                return renderizarDespedida({ motivo: 'limite_tentativas' });
+            }
+            campos.tentativas_ruido = tentativas;
+            await salvar('onb_apresentacao');
+            return renderizarPedidoNome({ motivo: 'indeterminado' });
+        }
+    }
+
+    // ---- NOME ----
+    if (etapa === 'onb_nome' && !campos.nome_coletado) {
+        if (ehParaOutraPessoa(message)) {
+            campos.outra_pessoa_explicado = true;
+            await salvar('onb_nome');
+            return renderizarOutraPessoa();
+        }
+        const cls = await classificarNomeOnboarding({ message, historicoConversa });
+        if (cls.tipo === 'nome') {
+            campos.nome_coletado = cls.valor; // segue para a pendência abaixo
+        } else if (campos.outra_pessoa_explicado
+            && (cls.tipo === 'recusa' || (cls.tipo !== 'pergunta' && /\bn[ãa]o (vou|uso|preciso|quero)\b|\bobrigad[oa]\b/i.test(message)))) {
+            // Veio cuidar de alguém e está encerrando: fechamento curto e caloroso,
+            // sem reexplicar o turno anterior (regra 6 do guia — validação do A18).
+            await salvar('onb_declinado');
+            return renderizarFechamentoOutraPessoa();
+        } else if (cls.tipo === 'contexto_saude') {
+            await salvar('onb_nome');
+            return renderizarPedidoNome({ motivo: 'contexto_saude', medNoRascunho: campos.rascunho_cadastro?.nome || null });
+        } else if (cls.tipo === 'pergunta') {
+            await salvar('onb_nome');
+            return await gerarApresentacao({ message, historicoConversa, mensagemInicial: campos.mensagem_inicial, motivo: 'pergunta_no_nome' });
+        } else {
+            // saudacao | recusa | indeterminado — contam para o teto (MH-072 B).
+            const tentativas = (campos.tentativas_nome || 0) + 1;
+            if (tentativas >= MAX_TENTATIVAS_NOME_ONB) {
+                await salvar('onb_declinado');
+                return renderizarDespedida({ motivo: 'limite_tentativas' });
+            }
+            campos.tentativas_nome = tentativas;
+            await salvar('onb_nome');
+            return renderizarPedidoNome({ motivo: cls.tipo });
+        }
+    }
+
+    // ---- LGPD (portão §2) ----
+    if ((etapa === 'onb_lgpd' || etapa === 'onb_lgpd_reapresentacao') && campos.consentimento_lgpd !== true) {
+        const categoria = await classificarConsentimentoLgpd({ message, historicoConversa });
+
+        if (categoria === 'aceite') {
+            campos.consentimento_lgpd = true;
+            campos.lgpd_aceito_em = new Date().toISOString();
+            campos.tentativas_lgpd = 0; // segue para persistência/pendência abaixo
+        } else if (categoria === 'recusa') {
+            return await encerrarComoRecusaLgpd();
+        } else if (categoria === 'duvida') {
+            // Dúvida legítima não consome tentativa (só indeterminado consome).
+            await salvar(etapa);
+            return renderizarDuvidaLgpd();
+        } else {
+            const tentativas = (campos.tentativas_lgpd || 0) + 1;
+            if (tentativas >= MAX_TENTATIVAS_LGPD_ONB) {
+                console.log(`🔒 [ONBOARDING] ${tentativas}ª tentativa indeterminada de LGPD — encerrando como recusa (saída de emergência) — ${user.phone}`);
+                return await encerrarComoRecusaLgpd();
+            }
+            campos.tentativas_lgpd = tentativas;
+            await salvar(etapa);
+            return renderizarReperguntaLgpd();
+        }
+    }
+
+    // ---- LGPD RECUSADO: retorno (comportamento atual preservado — §2.4) ----
+    if (etapa === 'onb_lgpd_recusado') {
+        const categoria = await classificarConsentimentoLgpd({ message, historicoConversa });
+        if (categoria === 'aceite') {
+            await salvar('onb_lgpd_reapresentacao');
+            return renderizarPedidoConsentimento({ nomeColetado: campos.nome_coletado || null, reapresentacao: true });
+        }
+        await salvar('onb_lgpd_recusado');
+        return renderizarLgpdRetorno();
+    }
+
+    // ---- NASCIMENTO (OPCIONAL — decisão 21/09: nunca trava o usuário) ----
+    if (etapa === 'onb_nascimento' && !campos.data_nascimento && !campos.nascimento_encerrado) {
+        const componente = /\d/.test(String(message)) ? extrairComponenteData(message, 'dia') : { tipo: 'indeterminado' };
+        if (componente.tipo === 'data_completa') {
+            const montagem = montarDataNascimento(componente.valor);
+            if (montagem.valida) {
+                campos.data_nascimento = montagem.iso; // segue para gravação/pendência
+            } else {
+                const tentativas = (campos.tentativas_nascimento || 0) + 1;
+                if (tentativas >= MAX_TENTATIVAS_NASCIMENTO_ONB) {
+                    campos.nascimento_encerrado = true;
+                } else {
+                    campos.tentativas_nascimento = tentativas;
+                    await salvar('onb_nascimento');
+                    return renderizarDataInvalidaOnboarding();
+                }
+            }
+        } else if (campos.oferta_pular_ativa && ehAfirmativoOnboarding(message)) {
+            campos.nascimento_encerrado = true;
+        } else {
+            const cls = await classificarRespostaData({ message, historicoConversa });
+            if (cls === 'recusa') {
+                campos.nascimento_encerrado = true;
+            } else if (cls === 'duvida') {
+                campos.oferta_pular_ativa = true;
+                await salvar('onb_nascimento');
+                return renderizarDuvidaNascimento();
+            } else if (cls === 'saudacao') {
+                await salvar('onb_nascimento');
+                return renderizarPedidoNascimento({ nomeColetado: campos.nome_coletado, repeticao: true });
+            } else if (cls === 'nova_intencao') {
+                // Campo opcional nunca segura a pessoa: fecha sem o dado e devolve
+                // o turno ao roteador (o usuário já está onboarded neste ponto).
+                await saveConversationState(user.id, { state: 'idle', context: {} });
+                console.log(`🎂 [ONBOARDING] Nova intenção na pergunta opcional de nascimento — devolvendo ao roteador — ${user.phone}`);
+                return { escalarParaRoteador: true };
+            } else {
+                const tentativas = (campos.tentativas_nascimento || 0) + 1;
+                if (tentativas >= MAX_TENTATIVAS_NASCIMENTO_ONB) {
+                    campos.nascimento_encerrado = true;
+                } else {
+                    campos.tentativas_nascimento = tentativas;
+                    await salvar('onb_nascimento');
+                    return renderizarPedidoNascimento({ nomeColetado: campos.nome_coletado, repeticao: true });
+                }
+            }
+        }
+    }
+
+    // ---- PERSISTÊNCIA (ponto único, guarda A0) ----
+    // Só no instante em que o aceite identificado E o nome existem — tudo que
+    // veio antes viveu no rascunho (estado de conversa), nunca em `users`.
+    if (campos.consentimento_lgpd === true && campos.nome_coletado && !campos.persistido) {
+        await updateUser(user.id, montarPersistenciaOnboarding(campos));
+        campos.persistido = true;
+        campos.data_gravada = !!campos.data_nascimento;
+        console.log(`🔒 [ONBOARDING] Consentimento identificado — dados do rascunho persistidos — ${user.phone}`);
+    }
+    // Data coletada DEPOIS da persistência (campo opcional pós-aceite).
+    if (campos.persistido && campos.data_nascimento && !campos.data_gravada) {
+        await updateUser(user.id, { data_nascimento: campos.data_nascimento });
+        campos.data_gravada = true;
+        console.log(`🎂 [ONBOARDING] Data de nascimento gravada — ${user.phone}`);
+    }
+
+    // ---- PENDÊNCIA (função única) → pergunta seguinte ou fechamento ----
+    const pend = proximaPendencia(SCHEMA_ONBOARDING, campos);
+
+    if (pend.acao === 'concluido') {
+        return await fecharOnboarding({ user, campos, historicoConversa });
+    }
+
+    await salvar(pend.etapa);
+    if (pend.campo.nome === 'nome') {
+        return renderizarPedidoNome({ motivo: 'pos_lgpd' });
+    }
+    if (pend.campo.nome === 'consentimento_lgpd') {
+        return renderizarPedidoConsentimento({
+            nomeColetado: campos.nome_coletado,
+            dataJaInformada: !!campos.data_nascimento,
+            medNoRascunho: campos.rascunho_cadastro?.nome || null
+        });
+    }
+    return renderizarPedidoNascimento({ nomeColetado: campos.nome_coletado });
+}
+
+// Fechamento do onboarding: convite ao primeiro cadastro, com a mensagem
+// inicial preservada como mensagem_rica (P57 — a porta interpreta o turno
+// seguinte com tudo que a pessoa já disse).
+async function fecharOnboarding({ user, campos, historicoConversa }) {
+    await saveConversationState(user.id, {
+        state: 'post_onboarding',
+        context: { mensagem_rica: campos.mensagem_inicial || null }
+    });
+    console.log(`✅ [ONBOARDING] Concluído — ${user.phone}${campos.data_nascimento ? '' : ' (sem data de nascimento)'}`);
+    return renderizarConviteAoPrimeiroCadastro({
+        nomeColetado: campos.nome_coletado,
+        semData: campos.nascimento_encerrado === true
+    });
 }
 
 // ------------------------------------------------------------

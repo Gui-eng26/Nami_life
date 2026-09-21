@@ -26,6 +26,13 @@ export function nomePessoaPlausivel(texto) {
 // por este veto SEMPRE, mesmo vindo de marcador.
 const RE_NAO_E_NOME = /\b(corrig\w*|mudar?|trocar?|alterar?|atualizar?|nome|cadastr\w*|errad\w*|quero|dados?|nascimento|perfil)\b/i;
 
+// Guarda compartilhada com o onboarding (v44 M4, §1: "guardas do A26 valem
+// aqui"): um candidato a nome só é aceito quando é plausível E não é palavra
+// de pedido.
+export function nomeUsuarioAceitavel(candidato) {
+    return nomePessoaPlausivel(candidato) && !RE_NAO_E_NOME.test(candidato);
+}
+
 // Validador do campo nome (contrato dos validadores de campo do runner).
 // O valor SÓ é aceito de um marcador explícito ("me chamo X", "meu nome é X",
 // "pode me chamar de X", "para X") — ou da mensagem inteira quando a Nami

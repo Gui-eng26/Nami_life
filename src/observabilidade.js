@@ -108,6 +108,26 @@ const DEGRADACOES = {
         severidade: 'media',
         titulo: 'Classificador de nome (BUG-30) falhou — assumido indeterminado'
     },
+    'onboarding:classificador_intencao_inicial_falhou': {
+        severidade: 'media',
+        titulo: 'Classificador de intenção inicial do onboarding falhou — assumido neutro'
+    },
+    'onboarding:classificador_nome_falhou': {
+        severidade: 'media',
+        titulo: 'Classificador de nome do onboarding falhou — assumido indeterminado'
+    },
+    'onboarding:classificador_lgpd_falhou': {
+        severidade: 'alta',
+        titulo: 'Classificador de consentimento LGPD falhou — assumido indeterminado, nunca aceite'
+    },
+    'onboarding:classificador_resposta_data_falhou': {
+        severidade: 'baixa',
+        titulo: 'Classificador da resposta de data de nascimento falhou — assumido ruido'
+    },
+    'onboarding:apresentacao_falhou': {
+        severidade: 'media',
+        titulo: 'Geração da apresentação do onboarding falhou — template de boas-vindas'
+    },
     'estado_pos_onboarding:classificador_destino_falhou': {
         severidade: 'media',
         titulo: 'Classificador de destino pós-onboarding falhou — assumido outro (post_onboarding)'
