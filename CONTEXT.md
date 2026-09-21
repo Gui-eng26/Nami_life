@@ -721,8 +721,10 @@ contrato, e contrato de 7 fases envelhece antes de ser cumprido.
 Decisão de Guilherme ("sem medo"): ajustar a arquitetura agentiva com poucos usuários,
 staging isolado e a base real (2.833 turnos) como rede de segurança. Norte do produto:
 **"você fala com a Nami como se tivesse falando com alguém da sua família."**
-Marcos: M0 arnês · M1 porta+funil · M2 runner+schema (**entregues, em produção** —
-§12.7) · M3 configuração/relatórios · M4 onboarding (LGPD, por último).
+Marcos: M0 arnês · M1 porta+funil · M2 runner+schema · M3 configuração/relatórios ·
+M4 onboarding — **TODOS ENTREGUES. A arquitetura-alvo fechou 100% com o M4**
+(§12.9, 21/09/2026): um runner, schemas como dados, uma porta, um funil, arnês sem
+expected-fail.
 Promoção por marco: cada um sobe isolado para `main`, com o arnês verde como portão.
 
 ### 12.1 Arquitetura entregue
@@ -1056,4 +1058,92 @@ staging → main · backlog flipado para `resolvido`
 (`scripts/backlog_promocao_v44_m3.js`). Próximo marco: M4 (onboarding/
 recepcionista/data_nascimento — A10 é o guia).
 
+### 12.9 v44 — M4 (onboarding no runner): ARQUITETURA-ALVO 100% (21/09/2026)
 
+Briefing `briefings/execucao_v44_m4.md`. Commits `92022b2..545e16f` na `staging`, casos
+afetados verdes entre cada um (diretriz de custo de 21/09: só os casos tocados durante o
+desenvolvimento; suíte completa UMA vez no portão de merge). Nenhuma migração de banco.
+
+**`recepcionista.js` (895 linhas) + `agentes/data_nascimento.js` (656) = 1.551 linhas
+morreram** → `src/schemas/onboarding.js` + `executarOnboarding` no MESMO runner do
+cadastro/configuração/perfil. Com isso o **A10 ficou verde** e a arquitetura-alvo fecha:
+**um runner, schemas como dados, uma porta, um funil (M0–M4, 100%)**.
+
+- **Schema do onboarding:** três campos na ordem canônica — `nome` (have-to-have, com as
+  guardas do A26 reusadas de `schemas/perfil.js`), `consentimento_lgpd` (PORTÃO) e
+  `data_nascimento` (OPCIONAL, decisão 21/09). A pendência vem da função ÚNICA
+  (`proximaPendencia`); os textos de coleta são renderizados em código; a única geração
+  por LLM é a apresentação da porta "descobrir" e a resposta a pergunta livre. Estado
+  novo `onboarding` (etapas `onb_*`): os ramos 1 e 3.5 do `routeMessage`, os estados
+  `recep_*`/`coletando_nascimento` e o agente `data_nascimento` morreram por construção
+  (grep-guard no A0). `dataNascimento.js` sobrevive como validador.
+- **Portão LGPD — determinístico na DECISÃO, fluido na CONVERSA:** o rascunho
+  pré-consentimento guarda o schema INTEIRO + campos incidentais (corrige o
+  P57-pela-metade do caso Felipe: nome era recuperado, a data não). Detecção do aceite
+  por lista determinística (vale no meio de um dump; negação anula — BUG-88 vive como
+  guarda) + classificador tool-use só para formas livres; na dúvida REPEDE, nunca assume.
+  Persistência por ponto único `montarPersistenciaOnboarding`, que **lança** sem
+  consentimento identificado — **guarda determinística no A0, teste de unidade sem LLM**.
+  Recusa preserva o comportamento atual (`onb_lgpd_recusado`, morno e reversível).
+- **Dump completo na LGPD (caso real):** nome + telefone + data (+ às vezes um "sim") na
+  resposta do consentimento. Tudo é reconhecido; a data vai ao rascunho e NUNCA é
+  reperguntada; com aceite, o rascunho inteiro persiste e o fluxo segue; sem aceite, a
+  resposta MOSTRA o que entendeu (listagem curta) e repede só o consentimento. Caso A33.
+- **Data de nascimento OPCIONAL (decisão 21/09) — e a revisão da copy no replay:** recusa
+  ou pulo completa o onboarding normalmente, nunca atrasa a chegada ao cadastro, e o
+  campo segue editável pelo perfil (M3). **Decisão de Guilherme no replay (revisa o §1 do
+  briefing): a pergunta NÃO anuncia a opcionalidade** — vale o formato anterior
+  (agradecimento curto + pergunta com exemplo); a saída explícita só aparece quando a
+  pessoa pergunta por quê; na recusa, a Nami acolhe em uma frase e segue. Caso A34.
+- **Pedido chegando ANTES do onboarding — preservar, atravessar, retomar:** o pedido é
+  absorvido no rascunho (nunca no banco), a resposta reconhece o que chegou (regra 3) e o
+  onboarding segue; no fechamento, a porta despacha ao cadastro **com os campos semeados,
+  no mesmo turno** — zero repergunta. Caso A35; **A10 verde encerra a linha Felipe**.
+- **Arnês:** 35 casos (A0–A35), alvo M4, **sem nenhum expected-fail — primeiro estado
+  100% pleno da arquitetura-alvo**. Novos: A33 (dump na LGPD), A34 (data opcional +
+  edição via perfil), A35 (medicamento na 1ª mensagem, incluindo o cenário de DOIS
+  remédios do replay). A0 ganhou os grep-guards do M4, a guarda LGPD e as guardas de copy
+  — todas determinísticas, sem custo de API.
+
+**Replay manual (Guilherme, 21/09, staging, número limpo) — COMPLETO e validado:** (a)
+folheto até o 1º medicamento · (b) dump na LGPD sem e com "sim" · (c) recusa da data
+seguindo até cadastrar · (d) medicamento com posologia na 1ª mensagem · (e) "é para outra
+pessoa". Três defeitos encontrados e corrigidos na mesma sessão, todos travados no arnês:
+1. `mensagem_rica` do pós-onboarding era preservada mesmo sendo um "oi" — o fast-path de
+   aceite sequestrava o turno seguinte ("Quero corrigir minha data de nascimento"). Agora
+   só é preservada quando carrega conteúdo de cadastro (A34).
+2. A recepção e o pedido de LGPD citavam só o 1º medicamento (o rascunho guardava um
+   nome, porque o extrator completo devolve um só) — dava a impressão de que os outros
+   tinham se perdido, embora todos fossem cadastrados. A lista passou a vir da PORTA e
+   todos são citados; a proposta da porta fica guardada e é reusada no fechamento (mesma
+   classe do BUG-101), então a lista não custa chamada a mais (A0 + A35).
+3. **`Predsin 2mg 2mg` (atravessa M2/M3):** a porta devolvia o nome COM a concentração —
+   o campo DECLARA "sem dosagem" — e a divisão multi-med extraía a dosagem da linha outra
+   vez; pior, o nome era GRAVADO sujo num schema em que dosagem é coluna própria.
+   `limparDosagemDoNome` passou a fazer cumprir o contrato no ponto único de normalização
+   da porta (preservando nome legítimo: "Vitamina D", "Ômega 3", "Vitamina de A a Z"), e
+   `rotularNomeComDosagem` é defesa em profundidade nos 5 pontos que compõem o rótulo
+   (A0 + A35). **Correção de produção, não só do M4.**
+
+**Arnês no portão de merge (execução única, 21/09):** **36 casos (A0–A35), 391 asserções,
+0 falhas, 0 expected-fail** — primeiro fechamento 100% pleno da arquitetura-alvo.
+
+**Registros (`scripts/backlog_encerramento_v44_m4.js`, com o "sim, registra" de
+Guilherme):** MH-87 → `em_validacao` (reformulação pós-falha reconhece o que a pessoa
+disse — agora pelos dois lados) · **ACH-11** criado → `em_validacao` (os 3 defeitos do
+replay; a limpeza da dosagem é correção de PRODUÇÃO, não só do M4) · MH-73 Parte B.1 →
+`em_validacao` com a evidência que faltava (ramos recusa/duvida exercitados pelo arnês;
+reentrada cadastro→cadastro virou comportamento declarado; o M4 fechou o último agente sem
+saída) · **MH-46 → `resolvido`** por superação (aguardando_periodo_adesao morreu no M3 e
+os fast-paths rodam antes da porta para qualquer estado desde o M1) · **MH-89 Parte A →
+`resolvido`** (o staging é o banco do arnês e de todos os replays) · **MH-97** criado
+(gate de menores de idade no onboarding, LGPD art. 14 — decisão adiada, exige apoio
+jurídico; nenhuma linha escrita). MH-92 não entrou: já estava resolvido desde a v42 e o M4
+preserva o comportamento. Flip para `resolvido` na promoção: MH-87, ACH-11, MH-73 B.1
+(`scripts/backlog_promocao_v44_m4.js`).
+
+**ARQUITETURA-ALVO CONCLUÍDA (M0–M4, 100%):** um runner genérico sobre schemas declarados
+como dado (cadastro, perfil, configuração/correção, reativação e agora onboarding), uma
+porta única de interpretação, um funil único de saída, um arnês de regressão sem
+expected-fail. Os agentes artesanais de coleta morreram: `cadastro.js` (3.709 linhas, M2),
+`recepcionista.js` (895) e `agentes/data_nascimento.js` (656) no M4.
