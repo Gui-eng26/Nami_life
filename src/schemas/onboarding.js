@@ -413,9 +413,33 @@ function primeiroNome(nome) {
     return nome ? String(nome).split(' ')[0] : null;
 }
 
-export function renderizarBoasVindas({ intencao = 'neutro', medReconhecido = null }) {
-    if (medReconhecido) {
-        return `Oi! 😊 Vi que você já chegou me contando do *${medReconhecido}* — anotei aqui e já te ajudo a organizar ele.\n\nAntes, como posso te chamar?`;
+// Replay manual de Guilherme (21/09, teste (d) com Predsin + Glifage): o
+// rascunho guardava UM nome e a recepção citava só ele — a pessoa achou que a
+// Nami tinha perdido o segundo (que estava lá, e foi cadastrado no fim). Todo
+// texto do onboarding que menciona o que chegou cita TODOS os reconhecidos
+// (regra 3: nada do que a pessoa disse é ignorado — nem na aparência).
+function listaDeMedicamentos(nomes) {
+    const itens = (nomes || []).filter(Boolean).map(n => `*${n}*`);
+    if (itens.length === 0) return null;
+    if (itens.length === 1) return itens[0];
+    return `${itens.slice(0, -1).join(', ')} e ${itens.at(-1)}`;
+}
+
+// "os dois" / "os 3" — mesmo idioma do fechamento de lote do cadastro.
+function pronomeDeQuantidade(n) {
+    return n === 2 ? 'os dois' : `os ${n}`;
+}
+
+export function renderizarBoasVindas({ intencao = 'neutro', medsReconhecidos = null }) {
+    const nomes = (medsReconhecidos || []).filter(Boolean);
+    if (nomes.length > 1) {
+        // 2+ remédios: um por linha (mesmo padrão da abertura de fila do
+        // cadastro) — a pessoa VÊ que todos foram reconhecidos.
+        const lista = nomes.map(n => `• *${n}*`).join('\n');
+        return `Oi! 😊 Vi tudo o que você me mandou:\n${lista}\n\nJá te ajudo a organizar ${pronomeDeQuantidade(nomes.length)}. Antes, como posso te chamar?`;
+    }
+    if (nomes.length === 1) {
+        return `Oi! 😊 Vi que você já chegou me contando do *${nomes[0]}* — anotei aqui e já te ajudo a organizar ele.\n\nAntes, como posso te chamar?`;
     }
     if (intencao === 'cadastrar') {
         return `Oi! 😊 Vou te ajudar a organizar seus remédios, sim — anotei o seu pedido aqui.\n\nAntes de começarmos, como posso te chamar?`;
@@ -423,11 +447,15 @@ export function renderizarBoasVindas({ intencao = 'neutro', medReconhecido = nul
     return `Oi! 😊 Sou a Nami — eu te lembro dos seus remédios na hora certa, aqui mesmo no WhatsApp, sem precisar instalar nada.\n\nComo posso te chamar?`;
 }
 
-export function renderizarPedidoNome({ motivo = null, medNoRascunho = null }) {
+export function renderizarPedidoNome({ motivo = null, medsNoRascunho = null }) {
     if (motivo === 'contexto_saude') {
-        const ack = medNoRascunho
-            ? `Anotei o *${medNoRascunho}* aqui — já cuido dele com você em seguida. 💊`
-            : `Anotei o que você me contou — já cuido disso com você em seguida. 💊`;
+        const nomes = (medsNoRascunho || []).filter(Boolean);
+        const lista = listaDeMedicamentos(nomes);
+        const ack = !lista
+            ? `Anotei o que você me contou — já cuido disso com você em seguida. 💊`
+            : nomes.length > 1
+                ? `Anotei aqui: ${lista} — já cuido ${pronomeDeQuantidade(nomes.length)} com você em seguida. 💊`
+                : `Anotei o ${lista} aqui — já cuido dele com você em seguida. 💊`;
         return `${ack}\n\nAntes, como posso te chamar?`;
     }
     if (motivo === 'saudacao') return `Oi! 😊 E como posso te chamar?`;
@@ -443,20 +471,24 @@ export function renderizarPedidoNome({ motivo = null, medNoRascunho = null }) {
 // (v44 §5.8), agora template: abertura com o porquê; os TRÊS dados como itens
 // de lista, cada um em linha própria aberta por emoji; frase de proteção;
 // pergunta de consentimento sozinha na última linha.
-export function renderizarPedidoConsentimento({ nomeColetado = null, dataJaInformada = false, medNoRascunho = null, reapresentacao = false }) {
+export function renderizarPedidoConsentimento({ nomeColetado = null, dataJaInformada = false, medsNoRascunho = null, reapresentacao = false }) {
     const first = primeiroNome(nomeColetado);
+    const nomes = (medsNoRascunho || []).filter(Boolean);
+    const lista = listaDeMedicamentos(nomes);
     const abertura = reapresentacao
         ? `Que bom que você reconsiderou! 😊 Pra continuar, preciso da sua autorização pra guardar estas informações:`
-        : medNoRascunho
-            ? `Prazer${first ? `, ${first}` : ''}! 😊 Pra eu cadastrar o *${medNoRascunho}* e personalizar seus lembretes, preciso guardar algumas informações suas:`
-            : `Prazer${first ? `, ${first}` : ''}! 😊 Pra personalizar seus lembretes, preciso guardar algumas informações suas:`;
+        : nomes.length > 1
+            ? `Prazer${first ? `, ${first}` : ''}! 😊 Pra eu cadastrar seus ${nomes.length} remédios (${lista}) e personalizar seus lembretes, preciso guardar algumas informações suas:`
+            : nomes.length === 1
+                ? `Prazer${first ? `, ${first}` : ''}! 😊 Pra eu cadastrar o ${lista} e personalizar seus lembretes, preciso guardar algumas informações suas:`
+                : `Prazer${first ? `, ${first}` : ''}! 😊 Pra personalizar seus lembretes, preciso guardar algumas informações suas:`;
 
     const linhaNome = nomeColetado
         ? `✅ *nome* — já tenho aqui`
         : `🙋 *nome* — te pergunto em seguida`;
     const linhaData = dataJaInformada
         ? `📅 *data de nascimento* — você já me passou, deixo guardada`
-        : `📅 *data de nascimento* — te peço em seguida, e é opcional`;
+        : `📅 *data de nascimento* — te peço em seguida`;
 
     return `${abertura}\n\n${linhaNome}\n☎️ *telefone* — o mesmo número desta conversa\n${linhaData}\n\nSeus dados ficam protegidos e são usados só pra isso — nunca vendidos nem compartilhados.\n\nVocê concorda?`;
 }
@@ -464,12 +496,15 @@ export function renderizarPedidoConsentimento({ nomeColetado = null, dataJaInfor
 // Dump sem aceite (§2.2): a resposta MOSTRA que entendeu os dados (listagem
 // curta, cada item em linha própria com emoji) e repede SÓ o consentimento,
 // gentil, com a pergunta sozinha na última linha. Nada ignorado, nada perdido.
-export function renderizarReconhecimentoDump({ nomeColetado = null, dataBR = null, telefone = false, medNome = null }) {
+export function renderizarReconhecimentoDump({ nomeColetado = null, dataBR = null, telefone = false, medsNome = null }) {
     const first = primeiroNome(nomeColetado);
+    const nomes = (medsNome || []).filter(Boolean);
     const itens = [];
     if (dataBR) itens.push(`📅 *data de nascimento* — ${dataBR}, deixo anotada`);
     if (telefone) itens.push(`☎️ *telefone* — esse mesmo número`);
-    if (medNome) itens.push(`💊 *${medNome}* — deixo pronto pra cadastrar em seguida`);
+    if (nomes.length > 0) {
+        itens.push(`💊 ${listaDeMedicamentos(nomes)} — deixo ${nomes.length > 1 ? 'prontos' : 'pronto'} pra cadastrar em seguida`);
+    }
     return `Entendi tudo o que você me mandou${first ? `, ${first}` : ''}! 😊 Fica assim:\n\n${itens.join('\n')}\n\nSó me falta o seu consentimento pra eu poder guardar esses dados.\n\nVocê concorda?`;
 }
 
@@ -489,29 +524,36 @@ export function renderizarLgpdRetorno() {
     return `Que bom te ver por aqui de novo! 😊 Da última vez você preferiu não guardar seus dados — e tá tudo bem.\n\nMudou de ideia?`;
 }
 
-// Pedido gentil da data (OPCIONAL — §1): a porta de saída vem na própria
-// mensagem; recusa/pulo completa o onboarding normalmente.
+// Pedido da data — decisão de Guilherme (21/09, replay manual): o campo é
+// opcional no COMPORTAMENTO (recusa nunca trava e é aceita de primeira), mas
+// a pergunta NÃO anuncia isso. Formato anterior, validado: agradecimento curto
+// + a pergunta com exemplo de data completa. A saída explícita só aparece
+// quando a pessoa pergunta por que (renderizarDuvidaNascimento).
 export function renderizarPedidoNascimento({ nomeColetado = null, repeticao = false }) {
     const first = primeiroNome(nomeColetado);
     const abertura = repeticao
-        ? `A gente tinha parado na sua data de nascimento — e continua opcional, viu: se preferir não informar, é só me dizer que a gente segue.`
-        : `Obrigada por confiar em mim${first ? `, ${first}` : ''}! 😊\n\nSó mais uma coisinha, e é opcional: se preferir não informar, é só me dizer que a gente segue direto.`;
-    return `${abertura}\n\nQual a sua data de nascimento?\nPor exemplo: 06/11/1989`;
+        ? `A gente tinha parado aqui${first ? `, ${first}` : ''} 🌿`
+        : `Obrigada por confiar em mim${first ? `, ${first}` : ''}! 😊`;
+    return `${abertura}\n\nQual a sua *data de nascimento*?\nPor exemplo: 06/11/1989`;
 }
 
 export function renderizarDataInvalidaOnboarding() {
-    return `Acho que essa data não existe no calendário! 😅 E lembrando: se preferir não informar, é só me dizer.\n\nQual a sua data de nascimento?\nPor exemplo: 06/11/1989`;
+    return `Acho que essa data não existe no calendário! 😅\n\nQual a sua *data de nascimento*?\nPor exemplo: 06/11/1989`;
 }
 
+// A pessoa perguntou POR QUE — aqui a saída é oferecida explicitamente
+// (honestidade + nunca insistir); é o gatilho de oferta_pular_ativa.
 export function renderizarDuvidaNascimento() {
-    return `É só pra eu conhecer melhor quem usa a Nami — nada além disso. E é opcional: se preferir não informar, é só me dizer que a gente segue. 🌿\n\nQual a sua data de nascimento?`;
+    return `É só pra eu conhecer melhor quem usa a Nami — nada além disso, e se preferir não informar é só me dizer. 🌿\n\nQual a sua *data de nascimento*?`;
 }
 
 // Fechamento do onboarding — convite ao primeiro cadastro (sem rascunho).
+// Na recusa da data (semData): acolhe em uma frase e segue direto, sem
+// lamentar o dado que não veio (decisão de Guilherme, 21/09).
 export function renderizarConviteAoPrimeiroCadastro({ nomeColetado = null, semData = false }) {
     const first = primeiroNome(nomeColetado);
     const abertura = semData
-        ? `Sem problema nenhum${first ? `, ${first}` : ''} — seguimos sem essa informação! 🌿`
+        ? `Tudo bem${first ? `, ${first}` : ''}! 🌿`
         : `Prontinho${first ? `, ${first}` : ''}, tudo guardado! 📝`;
     return `${abertura}\n\nAgora me conta: qual remédio você quer cadastrar? Pode mandar tudo de uma vez — o nome, quanto você toma por vez e os horários.\nPor exemplo: Losartana 50mg, 1 comprimido, 8h e 20h`;
 }
@@ -520,7 +562,7 @@ export function renderizarConviteAoPrimeiroCadastro({ nomeColetado = null, semDa
 export function renderizarFechamentoCurto({ nomeColetado = null, semData = false }) {
     const first = primeiroNome(nomeColetado);
     return semData
-        ? `Sem problema nenhum${first ? `, ${first}` : ''} — seguimos sem essa informação! 🌿 Agora vamos ao que você me pediu.`
+        ? `Tudo bem${first ? `, ${first}` : ''}! 🌿 Vamos seguir para o cadastro então.`
         : `Prontinho${first ? `, ${first}` : ''}, tudo guardado! 📝 Agora vamos ao que você me pediu.`;
 }
 

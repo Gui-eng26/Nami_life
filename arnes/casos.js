@@ -232,6 +232,48 @@ export const CASOS = [
                     && persistencia.name === 'Ana' && persistencia.data_nascimento === '1990-01-01',
                 detalhe: JSON.stringify(persistencia)
             });
+            // Replay 21/09 (Predsin + Glifage): todo texto do onboarding que
+            // menciona o que chegou cita TODOS os medicamentos reconhecidos —
+            // citar um só dava a impressão de que a Nami perdeu os outros.
+            const { renderizarBoasVindas, renderizarPedidoConsentimento, renderizarPedidoNome, renderizarPedidoNascimento } =
+                await import('../src/schemas/onboarding.js');
+            const doisMeds = ['Predsin', 'Glifage'];
+            const textosComMeds = [
+                renderizarBoasVindas({ intencao: 'cadastrar', medsReconhecidos: doisMeds }),
+                renderizarPedidoConsentimento({ nomeColetado: 'Guilherme', medsNoRascunho: doisMeds }),
+                renderizarPedidoNome({ motivo: 'contexto_saude', medsNoRascunho: doisMeds })
+            ];
+            checks.push({
+                marco: 'M4',
+                nome: 'M4 (replay 21/09): recepção, LGPD e pedido de nome citam TODOS os medicamentos',
+                ok: textosComMeds.every(t => /Predsin/.test(t) && /Glifage/.test(t)),
+                detalhe: textosComMeds.map(t => t.split('\n')[0]).join(' | ')
+            });
+            checks.push({
+                marco: 'M4',
+                nome: 'M4: com UM medicamento a copy segue no singular (sem lista)',
+                ok: /do \*Predsin\*/.test(renderizarBoasVindas({ intencao: 'cadastrar', medsReconhecidos: ['Predsin'] }))
+                    && !/•/.test(renderizarBoasVindas({ intencao: 'cadastrar', medsReconhecidos: ['Predsin'] })),
+                detalhe: renderizarBoasVindas({ intencao: 'cadastrar', medsReconhecidos: ['Predsin'] }).split('\n')[0]
+            });
+
+            // Decisão de Guilherme (21/09): a data de nascimento é opcional no
+            // COMPORTAMENTO, mas a pergunta não anuncia isso — nem o pedido, nem
+            // a repetição, nem o aviso de data inválida.
+            const { renderizarDataInvalidaOnboarding } = await import('../src/schemas/onboarding.js');
+            const perguntasDeData = [
+                renderizarPedidoNascimento({ nomeColetado: 'Guilherme' }),
+                renderizarPedidoNascimento({ nomeColetado: 'Guilherme', repeticao: true }),
+                renderizarDataInvalidaOnboarding()
+            ];
+            checks.push({
+                marco: 'M4',
+                nome: 'M4 (21/09): pergunta da data NÃO anuncia opcionalidade',
+                ok: perguntasDeData.every(t => !/opcional|se preferir n[ãa]o informar|pode pular/i.test(t))
+                    && perguntasDeData.every(t => /data de nascimento/i.test(t)),
+                detalhe: perguntasDeData.map(t => t.replace(/\n/g, ' / ')).join(' || ')
+            });
+
             const aceitesOk = detectarConsentimentoDeterministico('Maria Lima\nsim\n02/02/1975') === 'aceite'
                 && detectarConsentimentoDeterministico('Concordo') === 'aceite';
             const nuncaAceite = detectarConsentimentoDeterministico('prefiro nao passar os dados') === 'recusa'
@@ -1823,11 +1865,15 @@ export const CASOS = [
             await turno(ctx, user, 'Paula');
             const r3 = await turno(ctx, user, 'concordo');
             checagensDeForma(checks, 'pedido da data', r3);
-            checks.push({ nome: 'pedido gentil com a porta de saída na PRÓPRIA mensagem', ...contem(r3, /se preferir n[ãa]o informar/i, 'porta de saída') });
+            checks.push({ nome: 'pedido pergunta a data com exemplo de formato', ...contem(r3, /data de nascimento/i, 'pergunta da data') });
+            // Decisão de Guilherme (21/09): opcional no comportamento, nunca
+            // anunciada na pergunta.
+            checks.push({ nome: 'pedido NÃO anuncia opcionalidade', ...naoContem(r3, /opcional|se preferir n[ãa]o informar|pode pular/i, 'anúncio de opcionalidade') });
 
             const r4 = await turno(ctx, user, 'prefiro não informar');
             checagensDeForma(checks, 'recusa', r4);
             checks.push({ nome: 'recusa: sem insistência e sem nova menção a nascimento', ...naoContem(r4, /nascimento|s[óo] mais uma|rapidinho|prometo/i, 'insistência') });
+            checks.push({ nome: 'recusa: acolhe em uma frase ("tudo bem") e segue', ...contem(r4, /tudo bem/i, 'acolhimento curto') });
             checks.push({ nome: 'recusa: chegada ao cadastro sem atraso (convite ao 1º remédio)', ...contem(r4, /rem[ée]dio|medicamento/i, 'convite ao cadastro') });
 
             const { data: uDepois } = await ctx.db.from('users')
@@ -1891,6 +1937,43 @@ export const CASOS = [
                 detalhe: `${losartana.length} linha(s); horários: ${horarios.join(', ') || 'nenhum'}`
             });
             checks.push({ nome: 'coleta segue no cadastro (estado adding_med, estoque pendente)', ...(await estadoDaConversa(ctx.db, user.id, 'adding_med')) });
+
+            // Parte 2 — replay manual de Guilherme (21/09, teste (d)): DOIS
+            // remédios na 1ª mensagem. Funcionava (os dois eram cadastrados),
+            // mas a recepção e o pedido de LGPD citavam só o primeiro — a
+            // pessoa achava que a Nami tinha perdido o outro.
+            const user2 = await seeds.criarUsuario({ nome: null, onboarded: false, estado: 'idle' });
+            const r2a = await turno(ctx, user2, 'Oi! Quero cadastrar meus remédios:\nPredsin 2mg - 1cp as 10h\nGlifage 850mg - 1cp às 7h');
+            checagensDeForma(checks, 'dois meds: recepção', r2a);
+            checks.push({ nome: 'dois meds: a recepção cita o Predsin', ...contem(r2a, /predsin/i, 'Predsin') });
+            checks.push({ nome: 'dois meds: a recepção cita o Glifage (nenhum some — regra 3)', ...contem(r2a, /glifage/i, 'Glifage') });
+
+            const r2b = await turno(ctx, user2, 'Guilherme');
+            checagensDeForma(checks, 'dois meds: LGPD', r2b);
+            checks.push({ nome: 'dois meds: o pedido de LGPD cita os DOIS', ok: /predsin/i.test(r2b) && /glifage/i.test(r2b), detalhe: r2b.split('\n')[0] });
+            checks.push({ nome: 'dois meds: LGPD não anuncia a data como opcional', ...naoContem(r2b, /opcional/i, 'anúncio de opcionalidade') });
+
+            await turno(ctx, user2, 'Sim');
+            const r2d = await turno(ctx, user2, '06/11/1989');
+            checagensDeForma(checks, 'dois meds: fechamento', r2d);
+            const meds2 = await medicamentos(ctx.db, user2.id);
+            const nomes2 = meds2.map(m => m.nome).join(', ');
+            // Proposta de lote (todos com horário) → confirmação única.
+            if (meds2.length === 0) {
+                checks.push({ nome: 'dois meds: proposta de lote cita os dois antes de gravar', ok: /predsin/i.test(r2d) && /glifage/i.test(r2d), detalhe: r2d.slice(0, 200) });
+                // Usuário recarregado do banco, como o webhook faz a cada
+                // mensagem (getOrCreateUser): depois do aceite ele é onboarded.
+                const { data: user2Atual } = await ctx.db.from('users').select('*').eq('id', user2.id).single();
+                const r2e = await turno(ctx, user2Atual, 'Pode');
+                checagensDeForma(checks, 'dois meds: gravação', r2e);
+            }
+            const meds2fim = await medicamentos(ctx.db, user2.id);
+            const horarios2 = meds2fim.flatMap(m => (m.schedules || []).filter(s => s.ativo).map(s => String(s.horario).slice(0, 5))).sort();
+            checks.push({
+                nome: 'dois meds: AMBOS cadastrados, cada um com o horário da SUA linha',
+                ok: meds2fim.length === 2 && horarios2.join(',') === '07:00,10:00',
+                detalhe: `${meds2fim.length} registro(s): ${meds2fim.map(m => m.nome).join(' | ') || nomes2}; horários: ${horarios2.join(', ')}`
+            });
             return checks;
         }
     }

@@ -1447,26 +1447,36 @@ const MAX_TENTATIVAS_LGPD_ONB = 3;
 const MAX_TENTATIVAS_NASCIMENTO_ONB = 2;
 const MAX_TENTATIVAS_APRESENTACAO_ONB = 3;
 
-// §3: pedido de cadastro chegando ANTES do onboarding (ou no meio) — o
-// extrator completo roda sobre a mensagem e os campos vão ao RASCUNHO
-// (nunca ao banco — §2.1). Um tratamento por vez no rascunho; a mensagem
-// rica preservada cobre o restante no despacho final. Devolve o nome do
-// medicamento quando ele acabou de entrar no rascunho (para reconhecimento
-// na resposta — regra 3), senão null.
+// §3: pedido de cadastro chegando ANTES do onboarding (ou no meio) vai ao
+// RASCUNHO (nunca ao banco — §2.1). Quem lista os medicamentos é a PORTA
+// (campos.medicamentos) — o extrator completo devolve um nome só, e citar só
+// ele dava a impressão de que a Nami tinha perdido os outros (replay de
+// Guilherme, 21/09: Predsin + Glifage). A proposta da porta fica guardada e é
+// REUSADA no fechamento, então a lista não custa uma chamada a mais: com 2+
+// medicamentos o extrator nem roda (a divisão determinística do runner
+// trabalha sobre a mensagem); com um só, ele semeia os campos como antes.
+// Devolve os nomes que acabaram de entrar no rascunho, senão null.
 async function absorverPedidoDeCadastro({ campos, message, historicoConversa }) {
     if (!sugereCadastroDeMedicamento(message)) return null;
+    if (campos.rascunho_cadastro?.medicamentos?.length) return null; // já absorvido
     try {
-        const completo = await extrairCadastroCompleto({ message, historicoConversa });
-        if (!completo?.nome) return null;
-        if (campos.nome_coletado && normalizar(completo.nome) === normalizar(campos.nome_coletado)) return null;
-        const rascunho = campos.rascunho_cadastro || {};
-        if (rascunho.nome && normalizar(rascunho.nome) !== normalizar(completo.nome)) return null;
-        const eraNovo = !rascunho.nome;
-        const mapeados = mapearExtracaoParaCampos(completo);
-        campos.rascunho_cadastro = { ...rascunho, ...aplicarExtracaoEmVazios(rascunho, mapeados) };
-        if (!campos.mensagem_rica_cadastro) campos.mensagem_rica_cadastro = message;
-        console.log(`💊 [ONBOARDING] Pedido de cadastro absorvido no rascunho (${completo.nome}) — nada no banco antes do aceite`);
-        return eraNovo ? campos.rascunho_cadastro.nome : null;
+        const proposta = await interpretarTurno({
+            message, currentState: SCHEMA_ONBOARDING.estadoConversa, historicoConversa
+        });
+        const nomes = (proposta?.campos?.medicamentos || [])
+            .filter(n => !(campos.nome_coletado && normalizar(n) === normalizar(campos.nome_coletado)));
+        if (nomes.length === 0) return null;
+
+        const rascunho = { medicamentos: nomes };
+        if (nomes.length === 1) {
+            const completo = await extrairCadastroCompleto({ message, historicoConversa });
+            if (completo?.nome) Object.assign(rascunho, mapearExtracaoParaCampos(completo));
+        }
+        campos.rascunho_cadastro = rascunho;
+        campos.campos_porta_cadastro = proposta.campos;
+        campos.mensagem_rica_cadastro = message;
+        console.log(`💊 [ONBOARDING] Pedido de cadastro absorvido no rascunho (${nomes.join(', ')}) — nada no banco antes do aceite`);
+        return nomes;
     } catch (e) {
         console.error('⚠️ [ONBOARDING] Absorção do pedido de cadastro falhou (fluxo segue sem ela):', e.message);
         return null;
@@ -1505,7 +1515,7 @@ export async function executarOnboarding({ user, message, state, historicoConver
     // nascimento e pedido de cadastro nunca se perdem, nada vai ao banco.
     const dataAbsorvida = absorverDataNascimento(campos, message);
     const telefoneReconhecido = reconheceTelefone(message);
-    const medAbsorvido = await absorverPedidoDeCadastro({ campos, message, historicoConversa });
+    const medsAbsorvidos = await absorverPedidoDeCadastro({ campos, message, historicoConversa });
 
     // ---- PRIMEIRA MENSAGEM: duas portas da v43 (folheto/descobrir — §5) ----
     if (!etapa) {
@@ -1519,7 +1529,7 @@ export async function executarOnboarding({ user, message, state, historicoConver
         }
         campos.tentativas_nome = 0;
         await salvar('onb_nome');
-        return renderizarBoasVindas({ intencao, medReconhecido: campos.rascunho_cadastro?.nome || null });
+        return renderizarBoasVindas({ intencao, medsReconhecidos: campos.rascunho_cadastro?.medicamentos || null });
     }
 
     // ---- APRESENTAÇÃO ("descobrir") e retorno pós-declínio ----
@@ -1541,7 +1551,7 @@ export async function executarOnboarding({ user, message, state, historicoConver
         } else if (cls.tipo === 'contexto_saude') {
             campos.tentativas_nome = 0;
             await salvar('onb_nome');
-            return renderizarPedidoNome({ motivo: 'contexto_saude', medNoRascunho: campos.rascunho_cadastro?.nome || null });
+            return renderizarPedidoNome({ motivo: 'contexto_saude', medsNoRascunho: campos.rascunho_cadastro?.medicamentos || null });
         } else if (cls.tipo === 'pergunta') {
             // Servir a curiosidade é o propósito da etapa — não consome tentativa.
             campos.rodadas_duvida = (campos.rodadas_duvida || 0) + 1;
@@ -1589,7 +1599,7 @@ export async function executarOnboarding({ user, message, state, historicoConver
             return renderizarFechamentoOutraPessoa();
         } else if (cls.tipo === 'contexto_saude') {
             await salvar('onb_nome');
-            return renderizarPedidoNome({ motivo: 'contexto_saude', medNoRascunho: campos.rascunho_cadastro?.nome || null });
+            return renderizarPedidoNome({ motivo: 'contexto_saude', medsNoRascunho: campos.rascunho_cadastro?.medicamentos || null });
         } else if (cls.tipo === 'pergunta') {
             await salvar('onb_nome');
             return await gerarApresentacao({ message, historicoConversa, mensagemInicial: campos.mensagem_inicial, motivo: 'pergunta_no_nome' });
@@ -1614,13 +1624,13 @@ export async function executarOnboarding({ user, message, state, historicoConver
 
         // Dump SEM aceite (§2.2): mostra que entendeu (listagem curta) e repede
         // SÓ o consentimento — na dúvida, repede, nunca assume.
-        if (!categoria && (dataAbsorvida?.dataBR || telefoneReconhecido || medAbsorvido)) {
+        if (!categoria && (dataAbsorvida?.dataBR || telefoneReconhecido || medsAbsorvidos)) {
             await salvar(etapa);
             return renderizarReconhecimentoDump({
                 nomeColetado: campos.nome_coletado,
                 dataBR: dataAbsorvida?.dataBR || null,
                 telefone: telefoneReconhecido,
-                medNome: medAbsorvido
+                medsNome: medsAbsorvidos
             });
         }
 
@@ -1678,7 +1688,7 @@ export async function executarOnboarding({ user, message, state, historicoConver
                     return renderizarDataInvalidaOnboarding();
                 }
             }
-        } else if (medAbsorvido || (campos.rascunho_cadastro?.nome && sugereCadastroDeMedicamento(message))) {
+        } else if (medsAbsorvidos || (campos.rascunho_cadastro?.medicamentos?.length && sugereCadastroDeMedicamento(message))) {
             // Pedido de cadastro na pergunta OPCIONAL: nunca atrasa a chegada ao
             // cadastro (§1/§3) — fecha sem o dado e segue.
             campos.nascimento_encerrado = true;
@@ -1748,7 +1758,7 @@ export async function executarOnboarding({ user, message, state, historicoConver
         return renderizarPedidoConsentimento({
             nomeColetado: campos.nome_coletado,
             dataJaInformada: !!campos.data_nascimento,
-            medNoRascunho: campos.rascunho_cadastro?.nome || null
+            medsNoRascunho: campos.rascunho_cadastro?.medicamentos || null
         });
     }
     return renderizarPedidoNascimento({ nomeColetado: campos.nome_coletado });
@@ -1761,18 +1771,23 @@ export async function executarOnboarding({ user, message, state, historicoConver
 async function fecharOnboarding({ user, campos, historicoConversa }) {
     const semData = campos.nascimento_encerrado === true;
 
-    if (campos.rascunho_cadastro?.nome && campos.mensagem_rica_cadastro) {
+    if (campos.rascunho_cadastro?.medicamentos?.length && campos.mensagem_rica_cadastro) {
         // O objeto `user` do turno ainda é o pré-persistência — o cadastro
         // renderiza com o nome recém-gravado.
         const userAtualizado = { ...user, name: campos.nome_coletado || user.name, onboarded: true };
         try {
-            const proposta = await interpretarTurno({
+            // A proposta da porta já foi feita na absorção (§3) — reusar evita a
+            // segunda interpretação do MESMO texto (BUG-101, mesma classe).
+            const camposPorta = campos.campos_porta_cadastro ?? (await interpretarTurno({
                 message: campos.mensagem_rica_cadastro,
                 currentState: 'post_onboarding',
                 historicoConversa
-            });
-            const multiMedicamento = (proposta?.campos?.medicamentos || []).length > 1;
-            const camposSemente = { sujeito: 'usuario', ...campos.rascunho_cadastro };
+            }))?.campos ?? null;
+            // `medicamentos` é a lista de reconhecimento do onboarding, não campo
+            // do schema do cadastro — fica fora da semente.
+            const { medicamentos, ...camposRascunho } = campos.rascunho_cadastro;
+            const multiMedicamento = medicamentos.length > 1 || (camposPorta?.medicamentos || []).length > 1;
+            const camposSemente = { sujeito: 'usuario', ...camposRascunho };
             const fechamento = renderizarFechamentoCurto({ nomeColetado: campos.nome_coletado, semData });
 
             // Have-to-have INCOMPLETO com um só medicamento: pergunta direta do
@@ -1800,7 +1815,7 @@ async function fecharOnboarding({ user, campos, historicoConversa }) {
                 state: { state: 'idle', context: {} },
                 context: multiMedicamento ? { etapa: 'cad_nome' } : { ...camposSemente, etapa: 'cad_nome' },
                 historicoConversa,
-                camposPorta: proposta?.campos ?? null
+                camposPorta
             });
             if (typeof resposta === 'string') {
                 console.log(`✅ [ONBOARDING] Concluído — despacho semeado ao cadastro no mesmo turno — ${user.phone}`);
