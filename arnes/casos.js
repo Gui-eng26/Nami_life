@@ -191,6 +191,58 @@ export const CASOS = [
                 ok: decisaoMg.updates.pares_posologia[0].quantidade === 2 && decisaoMg.updates.dosagem === undefined,
                 detalhe: JSON.stringify(decisaoMg.updates)
             });
+
+            // ---- Guardas do M4 (onboarding no runner) ----
+
+            // Grep-guard: recepcionista e o agente de nascimento mortos por construção.
+            const arquivosMortosM4 = ['agentes/recepcionista.js', 'agentes/data_nascimento.js']
+                .filter(f => fs.existsSync(path.join(raizSrc, f)));
+            checks.push({ marco: 'M4', nome: 'grep (M4): recepcionista/data_nascimento mortos por construção', ok: arquivosMortosM4.length === 0, detalhe: arquivosMortosM4.join(', ') || 'limpos' });
+
+            // Grep-guard: nenhum estado legado do onboarding sobrevive em src/.
+            const tokensLegados = ['recep' + '_', 'coletando' + '_nascimento'];
+            const violadoresOnb = [...conteudo.entries()]
+                .filter(([, c]) => tokensLegados.some(t => c.includes(t)))
+                .map(([f]) => f);
+            checks.push({ marco: 'M4', nome: 'grep (M4): estados legados do onboarding ausentes de src/', ok: violadoresOnb.length === 0, detalhe: violadoresOnb.join(', ') || 'limpo' });
+
+            // Guarda LGPD determinística (M4 §2.5, teste de unidade SEM LLM):
+            // nenhum caminho grava dado pessoal declarado sem consentimento —
+            // o ponto único de montagem da escrita LANÇA sem aceite.
+            const { montarPersistenciaOnboarding, detectarConsentimentoDeterministico } = await import('../src/schemas/onboarding.js');
+            let guardaLancou = false;
+            try {
+                montarPersistenciaOnboarding({ nome_coletado: 'Ana', data_nascimento: '1990-01-01' });
+            } catch {
+                guardaLancou = true;
+            }
+            checks.push({
+                marco: 'M4',
+                nome: 'M4 (guarda LGPD): persistência SEM consentimento é recusada (lança)',
+                ok: guardaLancou,
+                detalhe: guardaLancou ? 'lançou como esperado' : 'NÃO lançou — dado pessoal gravável sem aceite'
+            });
+            const persistencia = montarPersistenciaOnboarding({
+                consentimento_lgpd: true, nome_coletado: 'Ana', data_nascimento: '1990-01-01'
+            });
+            checks.push({
+                marco: 'M4',
+                nome: 'M4 (guarda LGPD): persistência COM consentimento monta o rascunho inteiro',
+                ok: persistencia.onboarded === true && persistencia.lgpd_accepted === true
+                    && persistencia.name === 'Ana' && persistencia.data_nascimento === '1990-01-01',
+                detalhe: JSON.stringify(persistencia)
+            });
+            const aceitesOk = detectarConsentimentoDeterministico('Maria Lima\nsim\n02/02/1975') === 'aceite'
+                && detectarConsentimentoDeterministico('Concordo') === 'aceite';
+            const nuncaAceite = detectarConsentimentoDeterministico('prefiro nao passar os dados') === 'recusa'
+                && detectarConsentimentoDeterministico('sim, mas não quero passar a data') !== 'aceite'
+                && detectarConsentimentoDeterministico('Simone') !== 'aceite';
+            checks.push({
+                marco: 'M4',
+                nome: 'M4 (BUG-88 vivo): "sim" no dump aceita; negação/substring nunca viram aceite',
+                ok: aceitesOk && nuncaAceite,
+                detalhe: `aceites: ${aceitesOk}, guardas de negação/substring: ${nuncaAceite}`
+            });
             return checks;
         }
     },

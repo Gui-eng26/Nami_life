@@ -2,7 +2,8 @@
 // contra a matriz de teste das seções 5.A a 5.D do BRIEFING_MH072_PB0.md. Chama a API
 // real do Anthropic (classificarConsentimentoLgpd) — não escreve no banco. Projeto não
 // tem test runner configurado — rodar manualmente: node scripts/verificar_lgpd_bug88.js
-import { classificarConsentimentoLgpd } from '../src/agentes/recepcionista.js';
+// v44 M4: o classificador migrou do recepcionista (morto) para o schema do onboarding.
+import { classificarConsentimentoLgpd } from '../src/schemas/onboarding.js';
 
 let ok = 0;
 let total = 0;

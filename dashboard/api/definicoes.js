@@ -52,7 +52,9 @@ export const TIPOS_DEGRADACAO = ['erro_tecnico', 'desvio_comportamental'];
 export const AGENTES_ACIONAVEIS = ['cadastro', 'relatorios', 'configuracao', 'principal'];
 
 // §6.2 Bloco 2 — caminhos de sistema e onboarding, contados sem ranking.
-export const AGENTES_SISTEMA = ['recepcionista', 'data_nascimento', 'fast_path_resposta_tardia', 'erro'];
+// 'recepcionista' e 'data_nascimento' são agentes LEGADOS (mortos no v44 M4 —
+// onboarding no runner): seguem aqui só para contar logs históricos.
+export const AGENTES_SISTEMA = ['onboarding', 'recepcionista', 'data_nascimento', 'fast_path_resposta_tardia', 'erro'];
 
 // §4.8 — faixas semiabertas de horários por medicamento (razão é fracionária).
 export function faixaHorariosPorMedicamento(razao) {

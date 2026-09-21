@@ -88,26 +88,6 @@ const DEGRADACOES = {
         severidade: 'baixa',
         titulo: 'Quantidade da dose indisponível no follow-up — trecho omitido da mensagem'
     },
-    'data_nascimento:etapa_ruido_nao_reconhecida': {
-        severidade: 'media',
-        titulo: 'Etapa não reconhecida ao montar mensagem de ruído na coleta de nascimento'
-    },
-    'recepcionista:classificador_lgpd_falhou': {
-        severidade: 'alta',
-        titulo: 'Classificador de consentimento LGPD falhou — assumido indeterminado, nunca aceite'
-    },
-    'recepcionista:classificador_intencao_inicial_falhou': {
-        severidade: 'media',
-        titulo: 'Classificador de intenção inicial falhou — assumido neutro'
-    },
-    'recepcionista:classificador_resposta_convite_falhou': {
-        severidade: 'media',
-        titulo: 'Classificador de resposta ao convite (MH-074) falhou — assumido ruido'
-    },
-    'recepcionista:classificador_nome_falhou': {
-        severidade: 'media',
-        titulo: 'Classificador de nome (BUG-30) falhou — assumido indeterminado'
-    },
     'onboarding:classificador_intencao_inicial_falhou': {
         severidade: 'media',
         titulo: 'Classificador de intenção inicial do onboarding falhou — assumido neutro'
@@ -127,10 +107,6 @@ const DEGRADACOES = {
     'onboarding:apresentacao_falhou': {
         severidade: 'media',
         titulo: 'Geração da apresentação do onboarding falhou — template de boas-vindas'
-    },
-    'estado_pos_onboarding:classificador_destino_falhou': {
-        severidade: 'media',
-        titulo: 'Classificador de destino pós-onboarding falhou — assumido outro (post_onboarding)'
     },
     'porta:interpretacao_falhou_duas_vezes': {
         severidade: 'media',
