@@ -221,6 +221,18 @@ function primeiroNome(userName) {
     return userName ? userName.split(' ')[0] : null;
 }
 
+// Rótulo "nome + dosagem" — nunca repete a concentração quando o nome já a
+// carrega (replay 21/09: "Predsin 2mg 2mg"). A limpeza na porta resolve a
+// origem mais comum; esta guarda cobre o nome vindo do extrator ou digitado
+// pela pessoa com a dosagem colada.
+export function rotularNomeComDosagem(nome, dosagem, separador = ' ') {
+    const n = String(nome ?? '').trim();
+    if (!dosagem) return n;
+    const d = String(dosagem).trim();
+    const normaliza = (s) => s.toLowerCase().replace(/\s+/g, '');
+    return normaliza(n).endsWith(normaliza(d)) ? n : `${n}${separador}${d}`;
+}
+
 export function renderizarPerguntaNome({ userName, motivoFalha = null, nomeRecusadoPorDosagem = false }) {
     const first = primeiroNome(userName);
     if (nomeRecusadoPorDosagem) {
@@ -261,7 +273,7 @@ export function renderizarPerguntaPosologia({ campos, userName, acao = null, mot
         if (aberturaFila) {
             // Copy compacta da fila (replay 19/09): destaque em negrito e a
             // pergunta na mesma linha da abertura — sem repetir a lista.
-            const nomeComDosagemFila = campos?.dosagem ? `${nome} ${campos.dosagem}` : nome;
+            const nomeComDosagemFila = rotularNomeComDosagem(nome, campos?.dosagem);
             return `Vamos começar pelo *${nomeComDosagemFila}* (às ${listaHorarios}): quanto você toma ou usa em cada horário?\n`
                 + `Por exemplo: 1 comprimido, ou 20 gotas`;
         }
@@ -288,7 +300,7 @@ export function renderizarPerguntaPosologia({ campos, userName, acao = null, mot
     // Posologia composta — primeira pergunta após o nome (decisão de produto
     // 19/09: quantidade E horários numa pergunta só; a abertura CONFIRMA a ação
     // em curso, conectando com o que a pessoa acabou de mandar).
-    const nomeComDosagem = campos?.dosagem ? `${nome} ${campos.dosagem}` : nome;
+    const nomeComDosagem = rotularNomeComDosagem(nome, campos?.dosagem);
     if (aberturaFila) {
         return `Vamos começar pelo *${nomeComDosagem}*: quanto você toma ou usa por vez, e em quais horários?\n`
             + `Por exemplo: 1 comprimido às 8h`;
@@ -466,7 +478,7 @@ export function renderizarDuplicataNaGravacao(med) {
 // ------------------------------------------------------------
 
 function linhaDoCandidatoNaProposta(c) {
-    const nomeComDosagem = c.dosagem ? `${c.nome} ${c.dosagem}` : c.nome;
+    const nomeComDosagem = rotularNomeComDosagem(c.nome, c.dosagem);
     const qtd = c.quantidade ? `${c.quantidade} ${pluralizarRotulo(c.formaRotulo || 'unidade', c.quantidade)} ` : '';
     return `• ${nomeComDosagem} — ${qtd}às ${c.horarios.join(' e às ')}`;
 }
@@ -504,7 +516,7 @@ export function renderizarPropostaDivisaoNome(nomes) {
 // Transição da fila: o anterior está pronto (pós-escrita), o próximo começa —
 // sempre em negrito (ajuste de copy do replay 19/09).
 export function renderizarTransicaoFila({ proximo }) {
-    const nomeComDosagem = proximo.dosagem ? `${proximo.nome} ${proximo.dosagem}` : proximo.nome;
+    const nomeComDosagem = rotularNomeComDosagem(proximo.nome, proximo.dosagem);
     if ((proximo.horarios || []).length > 0) {
         return `Agora o *${nomeComDosagem}* (às ${proximo.horarios.join(' e às ')}) — quanto você toma ou usa em cada horário?\n`
             + `Por exemplo: 1 comprimido, ou 20 gotas`;
@@ -637,7 +649,7 @@ export function paresCongelados(med) {
 // (schedules com ativo=false, incluindo dias_semana/intervalo do M2).
 export function renderizarFotoCongelada({ med, pares }) {
     const rotulo = rotuloDaDose(med.unidade_dose, med.forma_farmaceutica);
-    const linhas = [`💊 ${med.nome}${med.dosagem ? ` — ${med.dosagem}` : ''}`];
+    const linhas = [`💊 ${rotularNomeComDosagem(med.nome, med.dosagem, ' — ')}`];
     if ((pares || []).length > 0) {
         linhas.push(`⏰ Posologia que estava valendo:\n${renderizarListaPosologia(pares, rotulo)}`);
     }

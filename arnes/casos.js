@@ -232,6 +232,39 @@ export const CASOS = [
                     && persistencia.name === 'Ana' && persistencia.data_nascimento === '1990-01-01',
                 detalhe: JSON.stringify(persistencia)
             });
+            // Replay 21/09 (Predsin 2mg / Glifage 850mg): a porta devolveu o
+            // nome COM a concentração, a divisão multi-med extraiu a dosagem da
+            // linha de novo ("Predsin 2mg 2mg") e o nome foi GRAVADO sujo. A
+            // limpeza é ponto único na porta; o rótulo nunca repete a dosagem.
+            const { limparDosagemDoNome } = await import('../src/porta.js');
+            const limpezas = [
+                ['Predsin 2mg', 'Predsin'], ['Glifage 850mg', 'Glifage'],
+                ['Puran T4 50mcg', 'Puran T4'], ['Dipirona 500 mg', 'Dipirona'],
+                ['Vitamina D', 'Vitamina D'], ['Ômega 3', 'Ômega 3'],
+                ['Vitamina de A a Z', 'Vitamina de A a Z'], ['1000mg', '1000mg']
+            ];
+            const erros = limpezas.filter(([entrada, esperado]) => limparDosagemDoNome(entrada) !== esperado);
+            checks.push({
+                marco: 'M4',
+                nome: 'M4 (replay 21/09): porta limpa a dosagem do NOME e preserva nome legítimo',
+                ok: erros.length === 0,
+                detalhe: erros.map(([e, esp]) => `"${e}" → "${limparDosagemDoNome(e)}" (esperado "${esp}")`).join('; ') || 'todas as 8 corretas'
+            });
+
+            const { rotularNomeComDosagem, renderizarPropostaLote } = await import('../src/schemas/cadastro.js');
+            const propostaSuja = renderizarPropostaLote([
+                { nome: 'Predsin 2mg', dosagem: '2mg', horarios: ['10:00'], quantidade: 1, formaRotulo: 'comprimido' },
+                { nome: 'Glifage', dosagem: '850mg', horarios: ['07:00'], quantidade: 1, formaRotulo: 'comprimido' }
+            ]);
+            checks.push({
+                marco: 'M4',
+                nome: 'M4: rótulo nome+dosagem NUNCA duplica a concentração',
+                ok: rotularNomeComDosagem('Predsin 2mg', '2mg') === 'Predsin 2mg'
+                    && rotularNomeComDosagem('Predsin', '2mg') === 'Predsin 2mg'
+                    && !/2mg\s+2mg/.test(propostaSuja) && /Glifage 850mg/.test(propostaSuja),
+                detalhe: propostaSuja.split('\n').filter(l => l.startsWith('•')).join(' | ')
+            });
+
             // Replay 21/09 (Predsin + Glifage): todo texto do onboarding que
             // menciona o que chegou cita TODOS os medicamentos reconhecidos —
             // citar um só dava a impressão de que a Nami perdeu os outros.
@@ -1973,6 +2006,15 @@ export const CASOS = [
                 nome: 'dois meds: AMBOS cadastrados, cada um com o horário da SUA linha',
                 ok: meds2fim.length === 2 && horarios2.join(',') === '07:00,10:00',
                 detalhe: `${meds2fim.length} registro(s): ${meds2fim.map(m => m.nome).join(' | ') || nomes2}; horários: ${horarios2.join(', ')}`
+            });
+            // Replay 21/09: a concentração é coluna própria — nunca some no nome
+            // (nem na proposta: "Predsin 2mg 2mg").
+            checks.push({ nome: 'dois meds: proposta NÃO duplica a dosagem', ...naoContem(r2d, /(\d+\s*(?:mg|mcg|ml|g))\s+\1/i, 'dosagem duplicada') });
+            checks.push({
+                nome: 'dois meds: nome gravado SEM a dosagem embutida (coluna própria)',
+                ok: meds2fim.length === 2 && meds2fim.every(m => !/\d+\s*(mg|mcg|ml|ui)\b/i.test(m.nome))
+                    && meds2fim.some(m => /^predsin$/i.test(m.nome)) && meds2fim.some(m => /^glifage$/i.test(m.nome)),
+                detalhe: meds2fim.map(m => `${m.nome} (dosagem: ${m.dosagem})`).join(' | ')
             });
             return checks;
         }

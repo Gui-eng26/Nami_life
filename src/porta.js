@@ -135,6 +135,23 @@ MENSAGEM CITADA (o usuário respondeu citando esta mensagem anterior):
 MENSAGEM ATUAL: "${message}"`;
 }
 
+// Replay 21/09 (Predsin 2mg / Glifage 850mg): o campo `medicamentos` DECLARA
+// "sem dosagem", mas o modelo às vezes devolve a concentração junto do nome.
+// Como a saída da porta é proposta e nunca decisão, o contrato é feito cumprir
+// aqui — ponto único, antes de qualquer consumidor. Sem isso, a divisão
+// multi-med extraía a dosagem da linha OUTRA VEZ ("Predsin 2mg 2mg" na
+// proposta de lote) e o nome era GRAVADO com a concentração embutida, num
+// schema em que dosagem é coluna própria.
+const RE_DOSAGEM_NO_FIM = /[\s,–-]+\d+(?:[.,]\d+)?\s*(?:mg\/ml|mg|mcg|g|ml|ui|%)\b\.?$/i;
+
+export function limparDosagemDoNome(nome) {
+    const original = String(nome ?? '').trim();
+    const limpo = original.replace(RE_DOSAGEM_NO_FIM, '').trim();
+    // Nome que é SÓ dosagem ("1000mg") sobrevive intacto: quem o recusa é o
+    // validador de nome do schema (ACH-4), não esta limpeza.
+    return /[a-zà-ú]{2,}/i.test(limpo) ? limpo : original;
+}
+
 function normalizarProposta(input, excluirPrincipal) {
     const intencao = String(input?.intencao || '').trim().toLowerCase();
     const validas = excluirPrincipal ? INTENCOES_VALIDAS.filter(i => i !== 'principal') : INTENCOES_VALIDAS;
@@ -154,7 +171,7 @@ function normalizarProposta(input, excluirPrincipal) {
     const limparTexto = (v) => (typeof v === 'string' && v.trim()) ? v.trim() : null;
     const campos = {
         medicamentos: Array.isArray(camposRaw.medicamentos)
-            ? camposRaw.medicamentos.map(m => String(m).trim()).filter(Boolean) : [],
+            ? camposRaw.medicamentos.map(m => limparDosagemDoNome(m)).filter(Boolean) : [],
         horarios: Array.isArray(camposRaw.horarios)
             ? camposRaw.horarios.map(h => String(h).trim()).filter(Boolean) : [],
         medicamento: limparTexto(camposRaw.medicamento),
