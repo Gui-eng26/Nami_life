@@ -918,7 +918,7 @@ Guilherme, que recarregou os créditos assim que avisado. O arnês falha com cla
 nesse cenário; os casos determinísticos (A0/A21/A22/A23) continuam rodando. Vale um
 alerta de billing na conta para não depender de aviso em sessão.
 
-### 12.8 v44 — M3 (configuração + relatórios no runner): VALIDADO EM STAGING (20/09/2026)
+### 12.8 v44 — M3 (configuração + relatórios no runner): EM PRODUÇÃO (20/09/2026)
 
 Briefing `briefings/execucao_v44_m3.md`. Commits na `staging` (Commit 0 → P6), arnês
 entre cada um; migração `20260920000000_v44_m3_status_tratamento` aplicada no STAGING
@@ -1042,6 +1042,18 @@ universal (nova_intencao devolve ao roteador; recusa fecha; dúvida/ruído
 repergunta). Sem execução do arnês nas rodadas 3+ (decisão de Guilherme —
 custo de API); validação manual.
 
-**Replay pendente:** "encerrar todos" (reteste após a camada 2 do convite).
+**REPLAY COMPLETO VALIDADO por Guilherme em 20/09 (~21h30)** — todos os
+cenários do critério de aceite 3, incluindo o "encerrar todos" retestado.
+Nota de desenho confirmada no replay: o estado de coleta/convite SOBREVIVE a
+desvio de consulta (um "mostra meus remédios" no meio não apaga o convite de
+estoque — é ele que dá destino a um "20 cps" respondido depois); intenção
+NOVA escapa pelo contrato universal.
+
+**PROMOÇÃO (20/09/2026, autorizada por Guilherme):** migração
+`v44_m3_status_tratamento` aplicada em PRODUÇÃO via MCP ANTES do merge e
+verificada (backfill: 28 ativos, 57 encerrados, 0 pausados) · merge
+staging → main · backlog flipado para `resolvido`
+(`scripts/backlog_promocao_v44_m3.js`). Próximo marco: M4 (onboarding/
+recepcionista/data_nascimento — A10 é o guia).
 
 
