@@ -1756,5 +1756,51 @@ export const CASOS = [
             checks.push({ nome: 'dump com "sim": não repergunta data nem consentimento', ...naoContem(r7, /data de nascimento|concorda\?/i, 'repergunta') });
             return checks;
         }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A34',
+        marco: 'M4',
+        titulo: 'Data de nascimento OPCIONAL — recusa completa o onboarding sem atraso; editável via perfil',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: null, onboarded: false, estado: 'idle' });
+
+            await turno(ctx, user, 'oi');
+            await turno(ctx, user, 'Paula');
+            const r3 = await turno(ctx, user, 'concordo');
+            checagensDeForma(checks, 'pedido da data', r3);
+            checks.push({ nome: 'pedido gentil com a porta de saída na PRÓPRIA mensagem', ...contem(r3, /se preferir n[ãa]o informar/i, 'porta de saída') });
+
+            const r4 = await turno(ctx, user, 'prefiro não informar');
+            checagensDeForma(checks, 'recusa', r4);
+            checks.push({ nome: 'recusa: sem insistência e sem nova menção a nascimento', ...naoContem(r4, /nascimento|s[óo] mais uma|rapidinho|prometo/i, 'insistência') });
+            checks.push({ nome: 'recusa: chegada ao cadastro sem atraso (convite ao 1º remédio)', ...contem(r4, /rem[ée]dio|medicamento/i, 'convite ao cadastro') });
+
+            const { data: uDepois } = await ctx.db.from('users')
+                .select('name, onboarded, lgpd_accepted, data_nascimento').eq('id', user.id).single();
+            checks.push({
+                nome: 'onboarding COMPLETO com a data em NULL (nunca trava o usuário)',
+                ok: uDepois?.name === 'Paula' && uDepois?.onboarded === true
+                    && uDepois?.lgpd_accepted === true && uDepois?.data_nascimento === null,
+                detalhe: `name: ${uDepois?.name}, onboarded: ${uDepois?.onboarded}, nasc: ${uDepois?.data_nascimento}`
+            });
+            checks.push({ nome: 'estado pós-onboarding', ...(await estadoDaConversa(ctx.db, user.id, 'post_onboarding')) });
+
+            // Editável DEPOIS via perfil (MH-75/M3) — usuário recarregado do banco,
+            // como o webhook faz em produção.
+            const { data: userAtual } = await ctx.db.from('users').select('*').eq('id', user.id).single();
+            const r5 = await turno(ctx, userAtual, 'Quero corrigir minha data de nascimento');
+            checks.push({ nome: 'perfil: pedido de correção pede a data (nunca ignora)', ...contem(r5, /nascimento/i, 'pergunta da data') });
+            await turno(ctx, userAtual, '19/03/1985');
+            const { data: uFim } = await ctx.db.from('users').select('data_nascimento').eq('id', user.id).single();
+            checks.push({
+                nome: 'editável depois: data gravada pelo perfil',
+                ok: uFim?.data_nascimento === '1985-03-19',
+                detalhe: `data_nascimento: ${uFim?.data_nascimento}`
+            });
+            return checks;
+        }
     }
 ];

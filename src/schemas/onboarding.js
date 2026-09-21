@@ -164,6 +164,20 @@ export function absorverDataNascimento(campos, message) {
     return { dataBR: `${String(dia).padStart(2, '0')}/${String(mes).padStart(2, '0')}/${ano}` };
 }
 
+// Recusa/pulo do dado OPCIONAL (data de nascimento) — lista determinística:
+// a porta de saída oferecida na própria pergunta se aceita sem custo de LLM.
+const TERMOS_RECUSA_DADO = [
+    'prefiro não', 'prefiro nao', 'não quero', 'nao quero', 'não vou informar', 'nao vou informar',
+    'não vou passar', 'nao vou passar', 'pular', 'pula', 'passo', 'depois eu', 'deixa pra depois',
+    'sem a data', 'segue sem', 'melhor não', 'melhor nao'
+];
+
+export function ehRecusaDeDado(message) {
+    const msg = String(message || '').toLowerCase().trim();
+    if (['não', 'nao', 'não.', 'nao.', 'não, obrigado', 'nao, obrigado', 'não, obrigada', 'nao, obrigada'].includes(msg)) return true;
+    return TERMOS_RECUSA_DADO.some(t => msg === t || msg.startsWith(t + ' ') || msg.startsWith(t + ',') || msg.startsWith(t + '.'));
+}
+
 // Telefone no dump: reconhecido (é o mesmo número da conversa), nunca pedido.
 export function reconheceTelefone(message) {
     const semDatas = String(message || '').replace(/\b\d{1,2}[\/\-.]\d{1,2}[\/\-.](?:\d{2}|\d{4})\b/g, ' ');

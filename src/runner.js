@@ -58,7 +58,7 @@ import {
     SCHEMA_ONBOARDING, montarPersistenciaOnboarding,
     classificarIntencaoInicial, classificarNomeOnboarding,
     classificarConsentimentoLgpd, classificarRespostaData,
-    gerarApresentacao, ehParaOutraPessoa, ehAfirmativoOnboarding,
+    gerarApresentacao, ehParaOutraPessoa, ehAfirmativoOnboarding, ehRecusaDeDado,
     detectarConsentimentoDeterministico, absorverDataNascimento, reconheceTelefone,
     sugereCadastroDeMedicamento, renderizarReconhecimentoDump,
     renderizarBoasVindas, renderizarPedidoNome, renderizarPedidoConsentimento,
@@ -1681,6 +1681,9 @@ export async function executarOnboarding({ user, message, state, historicoConver
             // Pedido de cadastro na pergunta OPCIONAL: nunca atrasa a chegada ao
             // cadastro (§1/§3) — fecha sem o dado e segue.
             campos.nascimento_encerrado = true;
+        } else if (ehRecusaDeDado(message)) {
+            // Recusa/pulo determinístico: a porta de saída da própria pergunta.
+            campos.nascimento_encerrado = true;
         } else if (campos.oferta_pular_ativa && ehAfirmativoOnboarding(message)) {
             campos.nascimento_encerrado = true;
         } else {
@@ -1754,9 +1757,11 @@ export async function executarOnboarding({ user, message, state, historicoConver
 // inicial preservada como mensagem_rica (P57 — a porta interpreta o turno
 // seguinte com tudo que a pessoa já disse).
 async function fecharOnboarding({ user, campos, historicoConversa }) {
+    // mensagem_rica só quando realmente carrega conteúdo de cadastro (P57) —
+    // preservar um "oi" fazia o fast-path de aceite sequestrar o turno seguinte.
     await saveConversationState(user.id, {
         state: 'post_onboarding',
-        context: { mensagem_rica: campos.mensagem_inicial || null }
+        context: { mensagem_rica: campos.mensagem_rica_cadastro || null }
     });
     console.log(`✅ [ONBOARDING] Concluído — ${user.phone}${campos.data_nascimento ? '' : ' (sem data de nascimento)'}`);
     return renderizarConviteAoPrimeiroCadastro({
