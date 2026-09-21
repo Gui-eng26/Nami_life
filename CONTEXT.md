@@ -1142,6 +1142,13 @@ jurídico; nenhuma linha escrita). MH-92 não entrou: já estava resolvido desde
 preserva o comportamento. Flip para `resolvido` na promoção: MH-87, ACH-11, MH-73 B.1
 (`scripts/backlog_promocao_v44_m4.js`).
 
+**PROMOÇÃO (21/09/2026, autorizada por Guilherme: "pode promover, faz o merge e roda o
+flip"):** merge `staging` → `main` por fast-forward (9 commits, `92022b2..62d63f3`), SEM
+migração de banco neste marco · backlog flipado para `resolvido`
+(`scripts/backlog_promocao_v44_m4.js`: MH-87, ACH-11, MH-73 Parte B.1). **O M4 está em
+produção — e com ele a correção da dosagem no nome, que já valia para os cadastros
+multi-medicamento existentes.**
+
 **ARQUITETURA-ALVO CONCLUÍDA (M0–M4, 100%):** um runner genérico sobre schemas declarados
 como dado (cadastro, perfil, configuração/correção, reativação e agora onboarding), uma
 porta única de interpretação, um funil único de saída, um arnês de regressão sem
