@@ -64,7 +64,8 @@ async function temDosePendente(userId) {
 // respondida com "sim" — a dose vence como sempre (regra 5, caso A4).
 const ETAPAS_COM_CONFIRMACAO_DE_FLUXO = new Set([
     'confirm_acao', 'reativ_confirmar', 'cad_lote_confirmar',
-    'corrigir_mh79_confirmar', 'pos_alteracao', 'reativ_oferta', 'reativ_manter_ou_mudar'
+    'corrigir_mh79_confirmar', 'pos_alteracao', 'reativ_oferta', 'reativ_manter_ou_mudar',
+    'reativ_com_mudanca_confirmar', 'confirm_acao_lote'
 ]);
 const JANELA_AMBIGUIDADE_DUPLA_PENDENCIA_MS = 90_000;
 
@@ -72,6 +73,7 @@ const JANELA_AMBIGUIDADE_DUPLA_PENDENCIA_MS = 90_000;
 // sem medicamento novo é continuação do fluxo, nunca cadastro do zero.
 const ETAPAS_DE_FLUXO_DE_CONFIGURACAO = new Set([
     'reativ_manter_ou_mudar', 'reativ_oferta', 'reativ_estoque_convite',
+    'reativ_com_mudanca_confirmar',
     'corrigir_campo', 'corrigir_perfil', 'corrigir_mh79_confirmar', 'confirm_acao_lote'
 ]);
 

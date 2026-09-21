@@ -1122,7 +1122,22 @@ async function escreverStatusTratamento(medicationId, status) {
     if (error) throw new Error(`Erro ao escrever status '${status}': ${error.message}`);
 }
 
+// Replay 20/09 (foto do Pratz): a FOTO CONGELADA de um pause/encerramento é
+// "as linhas que sobraram na tabela" — então grades mortas (linhas já
+// inativas de substituições antigas) são APAGADAS antes de congelar a grade
+// vigente. dose_logs.schedule_id é ON DELETE SET NULL.
+async function apagarGradesMortas(medicationId) {
+    const { error } = await supabase
+        .from('schedules')
+        .delete()
+        .eq('medication_id', medicationId)
+        .eq('ativo', false);
+    if (error) throw new Error(`Erro ao limpar grades mortas: ${error.message}`);
+}
+
 export async function pausarMedicamento(medicationId) {
+    await apagarGradesMortas(medicationId);
+
     const { error: errSched } = await supabase
         .from('schedules')
         .update({ ativo: false })
@@ -1155,6 +1170,7 @@ export async function reativarMedicamento(medicationId) {
 }
 
 export async function encerrarTratamento(medicationId) {
+    await apagarGradesMortas(medicationId);
     await escreverStatusTratamento(medicationId, 'encerrado');
 
     const { error: errSched } = await supabase

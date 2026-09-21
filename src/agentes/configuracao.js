@@ -108,6 +108,42 @@ async function concluirReativacao({ user, firstName, medicationId, horariosNovos
     return `${renderizarReativacaoConcluida({ med: depois, pares, firstName })}\n\n${renderizarPerguntaEstoque('cad_estoque', camposConvite)}`;
 }
 
+// Mudança de posologia dita numa mensagem (horários com/sem sufixo, com/sem
+// preposição, recorrência do M2 e quantidades) — compartilhada entre o
+// "manter ou mudar" e o intercepto de ajuste sobre medicamento pausado.
+async function extrairMudancaDePosologia({ message, medicationNome, historicoConversa }) {
+    const estrutura = interpretarRecorrencia(message);
+    if (estrutura && !estrutura.suportada) return { bloqueio: estrutura };
+
+    // "às N" sem sufixo também é horário — número precedido de "às/as" nunca é
+    // quantidade (replay 20/09).
+    const horariosComPreposicao = [...String(message).matchAll(/\b[àa]s?\s+(\d{1,2})\b(?!\s*(?:mg|mcg|gr?s?|ml|cps?|comprimidos?|c[áa]psulas?|gotas?|unidades?|dias?)\b)(?!\s*[:h])/gi)]
+        .map(m => `${String(m[1]).padStart(2, '0')}:00`)
+        .filter(h => Number(h.slice(0, 2)) <= 23);
+    const horariosNovos = estrutura?.diasPorHorario
+        ? Object.keys(estrutura.diasPorHorario)
+        : [...new Set([...extrairHorariosCitados(message), ...horariosComPreposicao])].sort();
+
+    // Quantidades ditas JUNTO dos horários também entram (caso Pratz).
+    let paresQuantidade = null;
+    let quantidadeUnica = null;
+    if (horariosNovos.length > 0 && /\d+\s*(cps?|comprimidos?|c[áa]psulas?|gotas?|ml|unidades?)\b/i.test(message)) {
+        const cls = await classificarPosologia({
+            message, campoEsperado: 'horarios', nomeMedicamento: medicationNome,
+            horariosJaColetados: [], historicoConversa
+        });
+        if ((cls.pares || []).length > 0) paresQuantidade = cls.pares;
+        else if (cls.quantidadeUnica) quantidadeUnica = cls.quantidadeUnica;
+    }
+
+    return {
+        horariosNovos,
+        diasPorHorario: estrutura?.diasPorHorario ?? null,
+        paresQuantidade,
+        quantidadeUnica
+    };
+}
+
 // Passos 2/3: interpreta a resposta ao "manter ou mudar" — manter reativa a
 // grade congelada; horários/quantidade ditos são a alteração via P2.
 async function tratarManterOuMudar({ user, firstName, message, context, medicationsAtivos, historicoConversa }) {
@@ -116,36 +152,18 @@ async function tratarManterOuMudar({ user, firstName, message, context, medicati
         return `Tudo bem, ${firstName}! O *${context.medicationNome}* segue como estava. Se precisar, é só me chamar 🌿`;
     }
 
-    // Alteração de horários dita na resposta (com recorrência do M2).
-    const estrutura = interpretarRecorrencia(message);
-    if (estrutura && !estrutura.suportada) {
-        return renderizarBloqueioRecorrencia(extrairHorariosCitados(message), estrutura.padroes);
+    // Alteração dita na resposta (horários, recorrência do M2 e quantidades).
+    const mudanca = await extrairMudancaDePosologia({
+        message, medicationNome: context.medicationNome, historicoConversa
+    });
+    if (mudanca.bloqueio) {
+        return renderizarBloqueioRecorrencia(extrairHorariosCitados(message), mudanca.bloqueio.padroes);
     }
-    // Replay 20/09 ("Vou tomar 5gr as 10 e as 20hrs"): "às N" sem sufixo
-    // também é horário — o número precedido de "às/as" nunca é quantidade.
-    const horariosComPreposicao = [...String(message).matchAll(/\b[àa]s?\s+(\d{1,2})\b(?!\s*(?:mg|mcg|gr?s?|ml|cps?|comprimidos?|c[áa]psulas?|gotas?|unidades?|dias?)\b)(?!\s*[:h])/gi)]
-        .map(m => `${String(m[1]).padStart(2, '0')}:00`)
-        .filter(h => Number(h.slice(0, 2)) <= 23);
-    const horariosNovos = estrutura?.diasPorHorario
-        ? Object.keys(estrutura.diasPorHorario)
-        : [...new Set([...extrairHorariosCitados(message), ...horariosComPreposicao])].sort();
-    if (horariosNovos.length > 0) {
-        // Replay 20/09 ("2 Cps as 10hrs e 1 cp as 21h"): quantidades ditas
-        // JUNTO dos horários também entram — nunca só a grade.
-        let paresQuantidade = null;
-        let quantidadeUnica = null;
-        if (/\d+\s*(cps?|comprimidos?|c[áa]psulas?|gotas?|ml|unidades?)\b/i.test(message)) {
-            const cls = await classificarPosologia({
-                message, campoEsperado: 'horarios', nomeMedicamento: context.medicationNome,
-                horariosJaColetados: [], historicoConversa
-            });
-            if ((cls.pares || []).length > 0) paresQuantidade = cls.pares;
-            else if (cls.quantidadeUnica) quantidadeUnica = cls.quantidadeUnica;
-        }
+    if (mudanca.horariosNovos.length > 0) {
         return await concluirReativacao({
             user, firstName, medicationId: context.medicationId,
-            horariosNovos, diasPorHorario: estrutura?.diasPorHorario ?? null,
-            paresQuantidade, quantidadeUnica
+            horariosNovos: mudanca.horariosNovos, diasPorHorario: mudanca.diasPorHorario,
+            paresQuantidade: mudanca.paresQuantidade, quantidadeUnica: mudanca.quantidadeUnica
         });
     }
 
@@ -978,6 +996,24 @@ export async function handleConfiguracao({ user, message, state, context, histor
         return { escalarParaRoteador: true };
     }
 
+    // Ajuste sobre pausado: confirmação da reativação com a mudança embutida.
+    if (etapa === 'reativ_com_mudanca_confirmar') {
+        if (isCancelamento(message) || /\b(n[aã]o|nao|n)\b/i.test(message.toLowerCase())) {
+            await saveConversationState(user.id, { state: 'idle', context: {} });
+            return `Tudo bem, ${firstName}! O *${context.medicationNome}* segue pausado, como estava. 🌿`;
+        }
+        if (!isConfirmacao(message)) {
+            return { escalarParaRoteador: true };
+        }
+        return await concluirReativacao({
+            user, firstName, medicationId: context.medicationId,
+            horariosNovos: context.horariosNovos,
+            diasPorHorario: context.diasPorHorario ?? null,
+            paresQuantidade: context.paresQuantidade ?? null,
+            quantidadeUnica: context.quantidadeUnica ?? null
+        });
+    }
+
     // Passo 5: resposta ao convite de estoque (mesmo validador do cadastro).
     if (etapa === 'reativ_estoque_convite') {
         // Replay 20/09 ("Nao, as 10hrs são 2 Cps do Pratz"): mensagem com
@@ -1227,6 +1263,51 @@ async function continuarComAcao({ user, firstName, acao, med, medicationsAtivos,
             medicationId: med.id,
             historicoConversa
         });
+    }
+
+    // Replay 20/09 (caso Kepra): ajuste de HORÁRIO sobre medicamento PAUSADO
+    // nunca mexe na grade por fora — avisa o estado e oferece reativar JÁ COM
+    // a mudança dita (sem isso, adicionar_horario criava schedule ativo num
+    // med pausado e o lembrete disparava "pausado").
+    const ACOES_DE_AJUSTE_DE_HORARIO = ['adicionar_horario', 'alterar_horario', 'remover_horario', 'redefinir_horarios'];
+    if (ACOES_DE_AJUSTE_DE_HORARIO.includes(acao) && med.status === 'pausado') {
+        const mudanca = await extrairMudancaDePosologia({ message, medicationNome: med.nome, historicoConversa });
+        if (mudanca.bloqueio) {
+            return renderizarBloqueioRecorrencia(extrairHorariosCitados(message), mudanca.bloqueio.padroes);
+        }
+        let horariosAlvo = mudanca.horariosNovos || [];
+        if (horariosAlvo.length === 0 && novoHorario) horariosAlvo = [novoHorario];
+
+        const medCompleto = await getMedicationComSchedulesAtivos(med.id);
+        const congelados = paresCongelados(medCompleto).map(par => par.horario);
+        if (acao === 'adicionar_horario') {
+            horariosAlvo = [...new Set([...congelados, ...horariosAlvo])].sort();
+        } else if (acao === 'remover_horario') {
+            horariosAlvo = congelados.filter(h => !horariosAlvo.includes(h));
+        }
+
+        if (horariosAlvo.length === 0) {
+            // Sem mudança aproveitável — segue o fluxo normal de reativação.
+            return await iniciarReativacao({ user, med });
+        }
+
+        await saveConversationState(user.id, {
+            state: 'configurando',
+            context: {
+                etapa: 'reativ_com_mudanca_confirmar',
+                medicationId: med.id,
+                medicationNome: med.nome,
+                horariosNovos: horariosAlvo,
+                diasPorHorario: mudanca.diasPorHorario ?? null,
+                paresQuantidade: mudanca.paresQuantidade ?? null,
+                quantidadeUnica: mudanca.quantidadeUnica ?? null
+            }
+        });
+        const gradeTexto = (mudanca.paresQuantidade && mudanca.paresQuantidade.length > 0)
+            ? mudanca.paresQuantidade.map(par => `${par.horario} — ${par.quantidade}`).join(', ')
+            : horariosAlvo.join(', ');
+        console.log(`⏸️ [P3] Ajuste sobre pausado (${med.nome}) — oferta de reativação com a mudança — ${user.phone}`);
+        return `O *${med.nome}* está com os lembretes pausados. 😴\n\nQuer que eu já reative com essa mudança (${gradeTexto})?`;
     }
 
     // M3 P3 — porta 1 da reativação: foto congelada + manter/mudar (o fluxo
