@@ -21,6 +21,7 @@ import { executarCorrecao, executarCorrecaoPerfil, iniciarCadastroComNome } from
 import { extrairHorariosCitados, interpretarRecorrencia } from '../validadores/recorrencia.js';
 import { classificarPosologia } from '../validadores/posologia.js';
 import { validarEstoque, subEtapaEstoque, calcularAlertaEstoqueCadastro } from '../validadores/estoque.js';
+import { classificarIndeterminadoCadastro } from '../validadores/falha.js';
 import {
     ACOES_DE_FALHA, renderizarPerguntaEstoque, renderizarFechamentoEstoque,
     renderizarBloqueioRecorrencia, renderizarFotoComManterOuMudar,
@@ -1066,12 +1067,27 @@ export async function handleConfiguracao({ user, message, state, context, histor
         }
 
         if (ACOES_DE_FALHA.has(v.acao)) {
+            // Contrato universal (replay 20/09, "encerrar todos" engolido pelo
+            // convite): a falha da camada 1 passa pela camada 2 — intenção NOVA
+            // devolve ao roteador; recusa fecha; dúvida/ruído repergunta.
+            const motivo = await classificarIndeterminadoCadastro({
+                message, etapa: 'reativ_estoque_convite', nomeMedicamento: medAtual.nome, historicoConversa
+            });
+            if (motivo === 'nova_intencao') {
+                console.log(`🔁 [P3] Convite de estoque: intenção nova — devolvendo ao roteador — ${user.phone}`);
+                await saveConversationState(user.id, { state: 'idle', context: {} });
+                return { escalarParaRoteador: true };
+            }
+            if (motivo === 'recusa') {
+                await saveConversationState(user.id, { state: 'idle', context: {} });
+                return `Tudo bem${firstName ? `, ${firstName}` : ''}! O estoque fica pra depois — quando souber, é só me mandar a quantidade. 🌿`;
+            }
             const camposNovos = { ...camposEstoque, ...(v.updates || {}) };
             await saveConversationState(user.id, {
                 state: 'configurando',
                 context: { ...context, camposEstoque: { ...(context.camposEstoque || {}), ...(v.updates || {}) } }
             });
-            return renderizarPerguntaEstoque(subEtapaEstoque(camposNovos), camposNovos, ACOES_DE_FALHA.has(v.acao) ? v.acao : null);
+            return renderizarPerguntaEstoque(subEtapaEstoque(camposNovos), camposNovos, v.acao);
         }
 
         // Sub-etapa intermediária do líquido (status/volume/fração pendentes).

@@ -1034,6 +1034,14 @@ com lembrete de dose RECENTE (≤10 min); uma desambiguação indevida apareceu 
 como "ok" logo após uma resposta da Nami, com dose pendente antiga no fundo,
 confirma a dose (regra 5 — principal). Refinamento possível da família BUG-86.
 
-**Replay pendente:** "encerrar todos" (Guilherme testa após estas correções).
+**3ª rodada do replay (Guilherme, 20/09 ~21h):** Pratz e Kepra passaram
+(foto limpa + oferta de reativar com a mudança). Defeito 9: "Quero encerrar
+todos os meus tratamentos" com o estado preso em `reativ_estoque_convite` foi
+engolido pela repergunta de estoque → a etapa ganhou a camada 2 do contrato
+universal (nova_intencao devolve ao roteador; recusa fecha; dúvida/ruído
+repergunta). Sem execução do arnês nas rodadas 3+ (decisão de Guilherme —
+custo de API); validação manual.
+
+**Replay pendente:** "encerrar todos" (reteste após a camada 2 do convite).
 
 
