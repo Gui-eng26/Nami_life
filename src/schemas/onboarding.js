@@ -25,6 +25,7 @@ import { formatarHistoricoConversa } from '../database.js';
 import { degradar } from '../observabilidade.js';
 import { GUIA_COMPOSICAO } from '../templates/composicao.js';
 import { nomeUsuarioAceitavel } from './perfil.js';
+import { extrairComponenteData, montarDataNascimento } from '../dataNascimento.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -97,6 +98,76 @@ export function ehAfirmativoOnboarding(message) {
     const msg = String(message || '').toLowerCase().trim();
     return ['sim', 's', 'quero', 'bora', 'vamos', 'pode ser', 'pode', 'claro', 'ok', 'como faço', 'como faco']
         .some(t => msg === t || msg.startsWith(t + ' ') || msg.startsWith(t + ','));
+}
+
+// ------------------------------------------------------------
+// DETECÇÃO DE CONSENTIMENTO (§2.3): lista determinística de termos
+// primeiro; classificador tool-use só para formas livres. O aceite
+// por termo vale também no MEIO de um dump ("nome + telefone + data
+// + sim"), desde que sem negação por perto; na dúvida, o chamador
+// REPEDE o consentimento — nunca assume.
+// ------------------------------------------------------------
+
+const TERMOS_ACEITE_LGPD = ['sim', 'concordo', 'aceito', 'autorizo', 'de acordo', 'pode guardar', 'com certeza', 'claro'];
+const TERMOS_ACEITE_EXATOS = ['ok', 'pode', 'tudo bem', 'beleza', 'pode ser', 'uhum', 'aham', 's'];
+const TERMOS_RECUSA_LGPD = [
+    'não quero', 'nao quero', 'prefiro não', 'prefiro nao', 'não concordo', 'nao concordo',
+    'não aceito', 'nao aceito', 'não autorizo', 'nao autorizo', 'agora não', 'agora nao',
+    'deixa pra lá', 'deixa pra la'
+];
+
+export function detectarConsentimentoDeterministico(message) {
+    const msg = String(message || '').toLowerCase().trim();
+    if (!msg) return null;
+    if (['não', 'nao', 'não.', 'nao.', 'não!', 'nao!'].includes(msg)) return 'recusa';
+    if (TERMOS_RECUSA_LGPD.some(t => msg === t || msg.startsWith(t + ' ') || msg.startsWith(t + ',') || msg.startsWith(t + '.'))) {
+        return 'recusa';
+    }
+    // BUG-88 vive como guarda: nenhuma checagem por substring solta — termo
+    // exato ou com fronteira de palavra, e negação presente anula o aceite.
+    if (/\b(n[ãa]o|nunca|nem)\b/.test(msg)) return null;
+    if (TERMOS_ACEITE_EXATOS.some(t => msg === t || msg === t + '!' || msg === t + '.')) return 'aceite';
+    if (TERMOS_ACEITE_LGPD.some(t => contemPalavraLivre(msg, t))) return 'aceite';
+    return null;
+}
+
+// ------------------------------------------------------------
+// ABSORÇÃO DETERMINÍSTICA DO RASCUNHO (§2.1/§2.2): data de nascimento
+// e telefone ditos em QUALQUER ponto do onboarding são reconhecidos —
+// a data vai ao rascunho (nunca ao banco antes do aceite) e NUNCA é
+// reperguntada; o telefone é reconhecido (já é o número da conversa).
+// ------------------------------------------------------------
+
+const RE_SUGERE_CADASTRO = new RegExp([
+    '\\b(?:rem[ée]dios?|medicamentos?|cadastr\\w*|tom(?:o|ar|ando)|comprimidos?|c[áa]psulas?|gotas?|xarope|col[íi]rio|pomada|inje[çc]\\w*|vitaminas?|dosagem|posologia)\\b',
+    '\\d\\s*(?:mg|mcg|ml)\\b',
+    '\\b\\d{1,2}\\s*(?:h|hs|hrs|horas)\\b',
+    '\\b\\d{1,2}:\\d{2}\\b'
+].join('|'), 'i');
+
+export function sugereCadastroDeMedicamento(message) {
+    return RE_SUGERE_CADASTRO.test(String(message || ''));
+}
+
+// Preenche campos.data_nascimento (rascunho) quando a mensagem traz uma data
+// completa válida. Data dentro de mensagem de medicamento não é nascimento.
+export function absorverDataNascimento(campos, message) {
+    if (campos.data_nascimento || !/\d/.test(String(message || ''))) return null;
+    if (sugereCadastroDeMedicamento(message)) return null;
+    const componente = extrairComponenteData(message, 'dia');
+    if (componente.tipo !== 'data_completa') return null;
+    const montagem = montarDataNascimento(componente.valor);
+    if (!montagem.valida) return { invalida: true };
+    campos.data_nascimento = montagem.iso;
+    const { dia, mes, ano } = componente.valor;
+    console.log(`🎂 [ONBOARDING] Data de nascimento absorvida no rascunho — nunca será reperguntada`);
+    return { dataBR: `${String(dia).padStart(2, '0')}/${String(mes).padStart(2, '0')}/${ano}` };
+}
+
+// Telefone no dump: reconhecido (é o mesmo número da conversa), nunca pedido.
+export function reconheceTelefone(message) {
+    const semDatas = String(message || '').replace(/\b\d{1,2}[\/\-.]\d{1,2}[\/\-.](?:\d{2}|\d{4})\b/g, ' ');
+    return /(?:\(?\d{2}\)?[\s.-]?)?\d{4,5}[\s.-]?\d{4}/.test(semDatas);
 }
 
 // ------------------------------------------------------------
@@ -374,6 +445,18 @@ export function renderizarPedidoConsentimento({ nomeColetado = null, dataJaInfor
         : `📅 *data de nascimento* — te peço em seguida, e é opcional`;
 
     return `${abertura}\n\n${linhaNome}\n☎️ *telefone* — o mesmo número desta conversa\n${linhaData}\n\nSeus dados ficam protegidos e são usados só pra isso — nunca vendidos nem compartilhados.\n\nVocê concorda?`;
+}
+
+// Dump sem aceite (§2.2): a resposta MOSTRA que entendeu os dados (listagem
+// curta, cada item em linha própria com emoji) e repede SÓ o consentimento,
+// gentil, com a pergunta sozinha na última linha. Nada ignorado, nada perdido.
+export function renderizarReconhecimentoDump({ nomeColetado = null, dataBR = null, telefone = false, medNome = null }) {
+    const first = primeiroNome(nomeColetado);
+    const itens = [];
+    if (dataBR) itens.push(`📅 *data de nascimento* — ${dataBR}, deixo anotada`);
+    if (telefone) itens.push(`☎️ *telefone* — esse mesmo número`);
+    if (medNome) itens.push(`💊 *${medNome}* — deixo pronto pra cadastrar em seguida`);
+    return `Entendi tudo o que você me mandou${first ? `, ${first}` : ''}! 😊 Fica assim:\n\n${itens.join('\n')}\n\nSó me falta o seu consentimento pra eu poder guardar esses dados.\n\nVocê concorda?`;
 }
 
 export function renderizarDuvidaLgpd() {

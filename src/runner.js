@@ -59,6 +59,8 @@ import {
     classificarIntencaoInicial, classificarNomeOnboarding,
     classificarConsentimentoLgpd, classificarRespostaData,
     gerarApresentacao, ehParaOutraPessoa, ehAfirmativoOnboarding,
+    detectarConsentimentoDeterministico, absorverDataNascimento, reconheceTelefone,
+    sugereCadastroDeMedicamento, renderizarReconhecimentoDump,
     renderizarBoasVindas, renderizarPedidoNome, renderizarPedidoConsentimento,
     renderizarDuvidaLgpd, renderizarReperguntaLgpd, renderizarLgpdRecusada,
     renderizarLgpdRetorno, renderizarPedidoNascimento, renderizarDataInvalidaOnboarding,
@@ -1444,6 +1446,32 @@ const MAX_TENTATIVAS_LGPD_ONB = 3;
 const MAX_TENTATIVAS_NASCIMENTO_ONB = 2;
 const MAX_TENTATIVAS_APRESENTACAO_ONB = 3;
 
+// §3: pedido de cadastro chegando ANTES do onboarding (ou no meio) — o
+// extrator completo roda sobre a mensagem e os campos vão ao RASCUNHO
+// (nunca ao banco — §2.1). Um tratamento por vez no rascunho; a mensagem
+// rica preservada cobre o restante no despacho final. Devolve o nome do
+// medicamento quando ele acabou de entrar no rascunho (para reconhecimento
+// na resposta — regra 3), senão null.
+async function absorverPedidoDeCadastro({ campos, message, historicoConversa }) {
+    if (!sugereCadastroDeMedicamento(message)) return null;
+    try {
+        const completo = await extrairCadastroCompleto({ message, historicoConversa });
+        if (!completo?.nome) return null;
+        if (campos.nome_coletado && normalizar(completo.nome) === normalizar(campos.nome_coletado)) return null;
+        const rascunho = campos.rascunho_cadastro || {};
+        if (rascunho.nome && normalizar(rascunho.nome) !== normalizar(completo.nome)) return null;
+        const eraNovo = !rascunho.nome;
+        const mapeados = mapearExtracaoParaCampos(completo);
+        campos.rascunho_cadastro = { ...rascunho, ...aplicarExtracaoEmVazios(rascunho, mapeados) };
+        if (!campos.mensagem_rica_cadastro) campos.mensagem_rica_cadastro = message;
+        console.log(`💊 [ONBOARDING] Pedido de cadastro absorvido no rascunho (${completo.nome}) — nada no banco antes do aceite`);
+        return eraNovo ? campos.rascunho_cadastro.nome : null;
+    } catch (e) {
+        console.error('⚠️ [ONBOARDING] Absorção do pedido de cadastro falhou (fluxo segue sem ela):', e.message);
+        return null;
+    }
+}
+
 export async function executarOnboarding({ user, message, state, historicoConversa = [] }) {
     let campos = { ...(state?.context || {}) };
 
@@ -1471,6 +1499,13 @@ export async function executarOnboarding({ user, message, state, historicoConver
 
     console.log(`👋 Runner (onboarding) — etapa de entrada: ${etapa || 'primeira mensagem'} — ${user.phone}`);
 
+    // ---- ABSORÇÃO EM TODA MENSAGEM (§2.1/§2.2/§3): tudo que a pessoa disser
+    // antes do aceite vive no RASCUNHO (estado de conversa) — data de
+    // nascimento e pedido de cadastro nunca se perdem, nada vai ao banco.
+    const dataAbsorvida = absorverDataNascimento(campos, message);
+    const telefoneReconhecido = reconheceTelefone(message);
+    const medAbsorvido = await absorverPedidoDeCadastro({ campos, message, historicoConversa });
+
     // ---- PRIMEIRA MENSAGEM: duas portas da v43 (folheto/descobrir — §5) ----
     if (!etapa) {
         const intencao = await classificarIntencaoInicial({ message });
@@ -1483,7 +1518,7 @@ export async function executarOnboarding({ user, message, state, historicoConver
         }
         campos.tentativas_nome = 0;
         await salvar('onb_nome');
-        return renderizarBoasVindas({ intencao });
+        return renderizarBoasVindas({ intencao, medReconhecido: campos.rascunho_cadastro?.nome || null });
     }
 
     // ---- APRESENTAÇÃO ("descobrir") e retorno pós-declínio ----
@@ -1570,9 +1605,26 @@ export async function executarOnboarding({ user, message, state, historicoConver
         }
     }
 
-    // ---- LGPD (portão §2) ----
+    // ---- LGPD (portão §2): decisão determinística, conversa fluida ----
     if ((etapa === 'onb_lgpd' || etapa === 'onb_lgpd_reapresentacao') && campos.consentimento_lgpd !== true) {
-        const categoria = await classificarConsentimentoLgpd({ message, historicoConversa });
+        // Lista determinística primeiro (§2.3); o aceite vale também no MEIO de
+        // um dump ("nome + telefone + data + sim").
+        let categoria = detectarConsentimentoDeterministico(message);
+
+        // Dump SEM aceite (§2.2): mostra que entendeu (listagem curta) e repede
+        // SÓ o consentimento — na dúvida, repede, nunca assume.
+        if (!categoria && (dataAbsorvida?.dataBR || telefoneReconhecido || medAbsorvido)) {
+            await salvar(etapa);
+            return renderizarReconhecimentoDump({
+                nomeColetado: campos.nome_coletado,
+                dataBR: dataAbsorvida?.dataBR || null,
+                telefone: telefoneReconhecido,
+                medNome: medAbsorvido
+            });
+        }
+
+        // Classificador tool-use só para as formas livres (§2.3).
+        if (!categoria) categoria = await classificarConsentimentoLgpd({ message, historicoConversa });
 
         if (categoria === 'aceite') {
             campos.consentimento_lgpd = true;
@@ -1598,7 +1650,8 @@ export async function executarOnboarding({ user, message, state, historicoConver
 
     // ---- LGPD RECUSADO: retorno (comportamento atual preservado — §2.4) ----
     if (etapa === 'onb_lgpd_recusado') {
-        const categoria = await classificarConsentimentoLgpd({ message, historicoConversa });
+        const categoria = detectarConsentimentoDeterministico(message)
+            || await classificarConsentimentoLgpd({ message, historicoConversa });
         if (categoria === 'aceite') {
             await salvar('onb_lgpd_reapresentacao');
             return renderizarPedidoConsentimento({ nomeColetado: campos.nome_coletado || null, reapresentacao: true });
@@ -1624,6 +1677,10 @@ export async function executarOnboarding({ user, message, state, historicoConver
                     return renderizarDataInvalidaOnboarding();
                 }
             }
+        } else if (medAbsorvido || (campos.rascunho_cadastro?.nome && sugereCadastroDeMedicamento(message))) {
+            // Pedido de cadastro na pergunta OPCIONAL: nunca atrasa a chegada ao
+            // cadastro (§1/§3) — fecha sem o dado e segue.
+            campos.nascimento_encerrado = true;
         } else if (campos.oferta_pular_ativa && ehAfirmativoOnboarding(message)) {
             campos.nascimento_encerrado = true;
         } else {

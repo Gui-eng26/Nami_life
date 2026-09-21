@@ -1698,5 +1698,63 @@ export const CASOS = [
             checks.push({ nome: '"sem estoque" só com estoque cadastrado (nenhum aqui)', ...naoContem(r1, /sem estoque/i, 'sem estoque indevido') });
             return checks;
         }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A33',
+        marco: 'M4',
+        titulo: 'Dump completo na etapa LGPD (§2.2) — nada persistido antes do aceite; nada perdido',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+
+            // Parte 1 — dump SEM aceite: listagem curta + só o consentimento.
+            const user1 = await seeds.criarUsuario({ nome: null, onboarded: false, estado: 'idle' });
+            await turno(ctx, user1, 'oi');
+            await turno(ctx, user1, 'Carlos');
+            const r3 = await turno(ctx, user1, 'Carlos Alberto Souza\n11 91234 5678\n05/07/1980');
+            checagensDeForma(checks, 'dump sem aceite', r3);
+            checks.push({ nome: 'dump: reconhece a data de nascimento', ...contem(r3, /05\/07\/1980/, 'data reconhecida') });
+            checks.push({ nome: 'dump: repede SÓ o consentimento', ...contem(r3, /concorda|consentimento/i, 'repergunta de consentimento') });
+
+            const { data: u1meio } = await ctx.db.from('users')
+                .select('name, data_nascimento, lgpd_accepted, onboarded').eq('id', user1.id).single();
+            checks.push({
+                nome: 'dump: NADA persistido antes do aceite (users intocado)',
+                ok: u1meio?.name === null && u1meio?.data_nascimento === null
+                    && u1meio?.lgpd_accepted === false && u1meio?.onboarded === false,
+                detalhe: `name: ${u1meio?.name}, nasc: ${u1meio?.data_nascimento}, lgpd: ${u1meio?.lgpd_accepted}, onboarded: ${u1meio?.onboarded}`
+            });
+
+            const r4 = await turno(ctx, user1, 'Sim');
+            checagensDeForma(checks, 'aceite', r4);
+            const { data: u1fim } = await ctx.db.from('users')
+                .select('name, data_nascimento, lgpd_accepted, onboarded').eq('id', user1.id).single();
+            checks.push({
+                nome: 'aceite: rascunho INTEIRO persistido (nome + data) com o consentimento',
+                ok: u1fim?.name === 'Carlos' && u1fim?.data_nascimento === '1980-07-05'
+                    && u1fim?.lgpd_accepted === true && u1fim?.onboarded === true,
+                detalhe: `name: ${u1fim?.name}, nasc: ${u1fim?.data_nascimento}, lgpd: ${u1fim?.lgpd_accepted}, onboarded: ${u1fim?.onboarded}`
+            });
+            checks.push({ nome: 'aceite: data de nascimento NUNCA reperguntada', ...naoContem(r4, /data de nascimento/i, 'repergunta da data') });
+            checks.push({ nome: 'aceite: segue direto para o primeiro cadastro', ...contem(r4, /rem[ée]dio|medicamento/i, 'convite ao cadastro') });
+
+            // Parte 2 — dump COM "sim" no meio: aceite identificado, nada reperguntado.
+            const user2 = await seeds.criarUsuario({ nome: null, onboarded: false, estado: 'idle' });
+            await turno(ctx, user2, 'oi');
+            await turno(ctx, user2, 'Maria');
+            const r7 = await turno(ctx, user2, 'Maria Lima\nsim\n02/02/1975');
+            checagensDeForma(checks, 'dump com sim', r7);
+            const { data: u2fim } = await ctx.db.from('users')
+                .select('name, data_nascimento, lgpd_accepted, onboarded').eq('id', user2.id).single();
+            checks.push({
+                nome: 'dump com "sim" no meio: aceite identificado e tudo persistido',
+                ok: u2fim?.lgpd_accepted === true && u2fim?.onboarded === true
+                    && u2fim?.data_nascimento === '1975-02-02',
+                detalhe: `lgpd: ${u2fim?.lgpd_accepted}, onboarded: ${u2fim?.onboarded}, nasc: ${u2fim?.data_nascimento}`
+            });
+            checks.push({ nome: 'dump com "sim": não repergunta data nem consentimento', ...naoContem(r7, /data de nascimento|concorda\?/i, 'repergunta') });
+            return checks;
+        }
     }
 ];
