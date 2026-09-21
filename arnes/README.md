@@ -49,4 +49,10 @@ Checagem de marco **acima** do alvo da execução que falha aparece como
 🟡 CONHECIDO — nunca como regressão, e não derruba o exit code. A entrega do M1
 exige: todos os M1 verdes + nenhum caso já-verde regredido.
 
+Desde o v44 M4 (onboarding no runner) **não há mais expected-fail**: a suíte
+inteira (A0–A35) roda verde com `--alvo M4` — primeiro estado 100% pleno da
+arquitetura-alvo. Diretriz de custo (21/09): durante o desenvolvimento rodam
+só os casos afetados pelo commit; a suíte completa roda UMA vez, no portão de
+merge; caso flaky → rerun individual, nunca a suíte.
+
 Baseline pré-M1 documentado em `arnes/BASELINE.md`.
