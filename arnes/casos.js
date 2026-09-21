@@ -1802,5 +1802,44 @@ export const CASOS = [
             });
             return checks;
         }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A35',
+        marco: 'M4',
+        titulo: 'Medicamento com posologia na 1ª mensagem (pré-onboarding) — semeadura sem repergunta (§3)',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: null, onboarded: false, estado: 'idle' });
+
+            const r1 = await turno(ctx, user, 'Oi! Preciso de ajuda com a Losartana 50mg, tomo 1 comprimido às 8h');
+            checagensDeForma(checks, 'turno 1', r1);
+            checks.push({ nome: 'turno 1: reconhece a Losartana na hora (regra 3)', ...contem(r1, /losartana/i, 'Losartana') });
+            checks.push({ nome: 'turno 1: o onboarding segue (pede o nome)', ...contem(r1, /chamar|nome/i, 'pedido do nome') });
+            let meds = await medicamentos(ctx.db, user.id);
+            checks.push({ nome: 'turno 1: NADA no banco antes do aceite', ok: meds.length === 0, detalhe: `${meds.length} linha(s) em medications` });
+
+            await turno(ctx, user, 'Felipe');
+            meds = await medicamentos(ctx.db, user.id);
+            checks.push({ nome: 'pré-aceite: medications segue vazio', ok: meds.length === 0, detalhe: `${meds.length} linha(s) em medications` });
+
+            await turno(ctx, user, 'Concordo');
+            const r4 = await turno(ctx, user, 'prefiro não dizer');
+            checagensDeForma(checks, 'fechamento + cadastro', r4);
+            checks.push({ nome: 'pós-onboarding: zero repergunta do nome do medicamento', ...naoContem(r4, /qual o \*?nome\*?/i, 'repergunta de nome') });
+            checks.push({ nome: 'pós-onboarding: zero repergunta dos horários', ...naoContem(r4, /quais .{0,12}hor[áa]rios/i, 'repergunta de horários') });
+            checks.push({ nome: 'pós-onboarding: cadastro declarado na resposta (regra 2)', ...contem(r4, /losartana/i, 'Losartana no fechamento') });
+
+            const losartana = await medicamentos(ctx.db, user.id, { nomeIlike: 'Losartana%' });
+            const horarios = losartana.flatMap(m => (m.schedules || []).filter(s => s.ativo).map(s => String(s.horario).slice(0, 5)));
+            checks.push({
+                nome: 'cadastro semeado GRAVADO no mesmo turno (Losartana às 08:00)',
+                ok: losartana.length === 1 && horarios.length === 1 && horarios[0] === '08:00',
+                detalhe: `${losartana.length} linha(s); horários: ${horarios.join(', ') || 'nenhum'}`
+            });
+            checks.push({ nome: 'coleta segue no cadastro (estado adding_med, estoque pendente)', ...(await estadoDaConversa(ctx.db, user.id, 'adding_med')) });
+            return checks;
+        }
     }
 ];

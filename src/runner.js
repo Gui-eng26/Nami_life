@@ -64,10 +64,11 @@ import {
     renderizarBoasVindas, renderizarPedidoNome, renderizarPedidoConsentimento,
     renderizarDuvidaLgpd, renderizarReperguntaLgpd, renderizarLgpdRecusada,
     renderizarLgpdRetorno, renderizarPedidoNascimento, renderizarDataInvalidaOnboarding,
-    renderizarDuvidaNascimento, renderizarConviteAoPrimeiroCadastro,
+    renderizarDuvidaNascimento, renderizarConviteAoPrimeiroCadastro, renderizarFechamentoCurto,
     renderizarOutraPessoa, renderizarFechamentoOutraPessoa, renderizarDespedida, renderizarPortaAberta
 } from './schemas/onboarding.js';
 import { extrairComponenteData, montarDataNascimento } from './dataNascimento.js';
+import { interpretarTurno } from './porta.js';
 import {
     ACOES_DE_FALHA,
     renderizarPerguntaNome, renderizarPerguntaPosologia, renderizarPerguntaEstoque,
@@ -1753,10 +1754,64 @@ export async function executarOnboarding({ user, message, state, historicoConver
     return renderizarPedidoNascimento({ nomeColetado: campos.nome_coletado });
 }
 
-// Fechamento do onboarding: convite ao primeiro cadastro, com a mensagem
-// inicial preservada como mensagem_rica (P57 — a porta interpreta o turno
-// seguinte com tudo que a pessoa já disse).
+// Fechamento do onboarding. Com pedido preservado no rascunho, a PORTA
+// despacha ao cadastro com os campos semeados NO MESMO turno (§3) — retomada
+// no momento certo, sem repergunta de nada que já foi dito (A10/A35). Sem
+// rascunho, convite ao primeiro cadastro.
 async function fecharOnboarding({ user, campos, historicoConversa }) {
+    const semData = campos.nascimento_encerrado === true;
+
+    if (campos.rascunho_cadastro?.nome && campos.mensagem_rica_cadastro) {
+        // O objeto `user` do turno ainda é o pré-persistência — o cadastro
+        // renderiza com o nome recém-gravado.
+        const userAtualizado = { ...user, name: campos.nome_coletado || user.name, onboarded: true };
+        try {
+            const proposta = await interpretarTurno({
+                message: campos.mensagem_rica_cadastro,
+                currentState: 'post_onboarding',
+                historicoConversa
+            });
+            const multiMedicamento = (proposta?.campos?.medicamentos || []).length > 1;
+            const camposSemente = { sujeito: 'usuario', ...campos.rascunho_cadastro };
+            const fechamento = renderizarFechamentoCurto({ nomeColetado: campos.nome_coletado, semData });
+
+            // Have-to-have INCOMPLETO com um só medicamento: pergunta direta do
+            // que falta (sem revalidar a mensagem já extraída — P57).
+            const pendSemente = proximaPendencia(SCHEMA_CADASTRO, camposSemente);
+            if (!multiMedicamento && pendSemente.acao === 'perguntar') {
+                await saveConversationState(user.id, {
+                    state: SCHEMA_CADASTRO.estadoConversa,
+                    context: { ...camposSemente, etapa: pendSemente.etapa }
+                });
+                console.log(`✅ [ONBOARDING] Concluído — cadastro semeado aguardando ${pendSemente.etapa} — ${user.phone}`);
+                return juntarPartes(fechamento, montarPerguntaPendente({
+                    pend: pendSemente, campos: camposSemente,
+                    userName: campos.nome_coletado, nomeRecemColetado: true
+                }));
+            }
+
+            // Completo (gravação no mesmo turno) ou multi-medicamento (a divisão
+            // determinística trabalha sobre a MENSAGEM — o rascunho de um só não
+            // entra para não competir com a fila).
+            const resposta = await executarRunner({
+                schema: SCHEMA_CADASTRO,
+                user: userAtualizado,
+                message: campos.mensagem_rica_cadastro,
+                state: { state: 'idle', context: {} },
+                context: multiMedicamento ? { etapa: 'cad_nome' } : { ...camposSemente, etapa: 'cad_nome' },
+                historicoConversa,
+                camposPorta: proposta?.campos ?? null
+            });
+            if (typeof resposta === 'string') {
+                console.log(`✅ [ONBOARDING] Concluído — despacho semeado ao cadastro no mesmo turno — ${user.phone}`);
+                return juntarPartes(fechamento, resposta);
+            }
+            console.warn(`⚠️ [ONBOARDING] Despacho semeado devolveu sinal — caindo no convite padrão — ${user.phone}`);
+        } catch (e) {
+            console.error('⚠️ [ONBOARDING] Despacho semeado ao cadastro falhou — caindo no convite padrão:', e.message);
+        }
+    }
+
     // mensagem_rica só quando realmente carrega conteúdo de cadastro (P57) —
     // preservar um "oi" fazia o fast-path de aceite sequestrar o turno seguinte.
     await saveConversationState(user.id, {
@@ -1764,10 +1819,7 @@ async function fecharOnboarding({ user, campos, historicoConversa }) {
         context: { mensagem_rica: campos.mensagem_rica_cadastro || null }
     });
     console.log(`✅ [ONBOARDING] Concluído — ${user.phone}${campos.data_nascimento ? '' : ' (sem data de nascimento)'}`);
-    return renderizarConviteAoPrimeiroCadastro({
-        nomeColetado: campos.nome_coletado,
-        semData: campos.nascimento_encerrado === true
-    });
+    return renderizarConviteAoPrimeiroCadastro({ nomeColetado: campos.nome_coletado, semData });
 }
 
 // ------------------------------------------------------------
