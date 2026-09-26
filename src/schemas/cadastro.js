@@ -233,16 +233,30 @@ export function rotularNomeComDosagem(nome, dosagem, separador = ' ') {
     return normaliza(n).endsWith(normaliza(d)) ? n : `${n}${separador}${d}`;
 }
 
+// v45 P1-copy §9 (decisão de 26/09): todo cadastro novo começa pelo MESMO
+// convite — mandar tudo de uma vez, com os obrigatórios do schema (nome e
+// posologia) em linhas separadas. Nunca coleta campo a campo começando pelo
+// nome. Ponto único do texto; a abertura varia por ponto de uso.
+export function renderizarConviteCadastro({ abertura }) {
+    return `${abertura}\n\n`
+        + `Pode me mandar tudo de uma vez, se quiser:\n`
+        + `• o nome do remédio\n`
+        + `• quanto você toma por vez\n`
+        + `• os horários\n\n`
+        + `Por exemplo: Losartana 50mg, 1 comprimido, 8h e 20h`;
+}
+
 export function renderizarPerguntaNome({ userName, motivoFalha = null, nomeRecusadoPorDosagem = false }) {
     const first = primeiroNome(userName);
+    // Única exceção ao convite: ali só falta o nome.
     if (nomeRecusadoPorDosagem) {
         return `Esse valor parece a concentração do remédio — o que eu preciso primeiro é o nome dele. 😊\n\n`
             + `Qual o *nome* do medicamento?`;
     }
     if (motivoFalha) {
-        return `Desculpa, não consegui identificar 😊\n\nQual o *nome* do medicamento?`;
+        return renderizarConviteCadastro({ abertura: 'Desculpa, não consegui identificar o remédio 😊' });
     }
-    return `Vamos cadastrar seu medicamento${first ? `, ${first}` : ''}! 💊\n\nQual o *nome* dele?`;
+    return renderizarConviteCadastro({ abertura: `Vamos cadastrar${first ? `, ${first}` : ''}! 💊` });
 }
 
 export function renderizarPerguntaPosologia({ campos, userName, acao = null, motivoFalha = null, mencionaConcentracao = false, nomeRecemColetado = false, aberturaFila = false, mensagemUsuario = '' }) {

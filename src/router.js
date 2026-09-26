@@ -301,6 +301,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
     const partes = [...textosAnteriores];
     let agentName = 'principal';
     let dosesExecutadas = false;
+    let textoDepoisDaMensagem = '';
     let intencaoNaoSuportada = false;
 
     // Na volta de uma devolução, doses e ações já foram executadas na 1ª rodada.
@@ -316,17 +317,20 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
             return { agentName: 'principal_degradado', response: juntar(partes, reperguntaSegura(user)), feedback: decisao.feedback };
         }
         if (r.soJaRegistradas) {
-            // Copy provisória (sessão de copy do §12).
             if (!decisao.message) partes.push('Tudo certo — isso já estava registrado aqui ✅');
-        } else {
+        } else if (!r.soAindaNao) {
             partes.push(r.texto);
+            textoDepoisDaMensagem = r.textoDepois;
             dosesExecutadas = true;
             agentName = 'principal_dose';
         }
     }
 
-    // Texto do próprio principal (responder/perguntar, ou complemento).
+    // Texto do próprio principal (responder/perguntar, ou o acolhimento de uma
+    // resposta negativa). P1-copy §2.2: a linha fixa do fato ("ficou registrado
+    // como não tomado") vem DEPOIS do acolhimento.
     if (decisao.message && decisao.tipo !== 'delegar') partes.push(decisao.message);
+    if (textoDepoisDaMensagem) partes.push(textoDepoisDaMensagem);
 
     // 7b. Ações do domínio do principal.
     if (primeiraRodada && decisao.actions.length) {
@@ -339,7 +343,12 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
         if (decisao.delegar.especialista === 'nao_suportado') {
             intencaoNaoSuportada = true;
             partes.push(decisao.tipo === 'delegar' && decisao.message ? decisao.message : '');
-            if (!decisao.message) partes.push(`${respostaHonestaAindaNao()}\n\nPosso te ajudar com outra coisa? 🌿`);
+            // P1-copy §8: a reserva nomeia o item do inventário (nunca "isso").
+            // Sem chave de AINDA_NAO, a mensagem do principal é obrigatória
+            // (validada na decisão).
+            if (!decisao.message && decisao.delegar.chaveAindaNao) {
+                partes.push(`${respostaHonestaAindaNao(decisao.delegar.chaveAindaNao)}\n\nPosso te ajudar com outra coisa? 🌿`);
+            }
         } else {
             const r = await despacharDelegacao({ user, message, image, state, historicoConversa, delegar: decisao.delegar });
             if (r.devolveu) {

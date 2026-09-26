@@ -1237,6 +1237,19 @@ export async function getDosesPorIds(doseLogIds) {
     return data || [];
 }
 
+// P1-copy §2.1: as últimas respostas da Nami para a pessoa (mais recente
+// primeiro) — a abertura da próxima confirmação sai diferente da última.
+export async function getUltimasRespostasDaNami(userId, limite = 20) {
+    const { data } = await supabase
+        .from('agent_logs')
+        .select('agent_response')
+        .eq('user_id', userId)
+        .not('agent_response', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(limite);
+    return (data || []).map(r => r.agent_response);
+}
+
 // Último turno do usuário (guarda 2 do atalho: o lembrete esgotado conta como
 // candidato só se saiu DEPOIS da última mensagem da pessoa).
 export async function getUltimoTurnoUsuario(userId) {

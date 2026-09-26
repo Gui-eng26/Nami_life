@@ -568,12 +568,13 @@ function buildReminderMessage(firstName, reminder) {
 // MENSAGEM DE ESTOQUE ZERADO
 // ============================================================
 
-function buildEstoqueZeradoMessage(firstName, reminder) {
+export function buildEstoqueZeradoMessage(firstName, reminder) {
     return (
+        // v45 P1-copy §1: desde o P1 um "SIM" a este lembrete REGISTRA a dose
+        // (e o estoque vira desconhecido) — "não foi possível registrar" ficou falso.
         `⏰ ${firstName}, está na hora do seu *${reminder.med_nome}*!\n\n` +
-        `⚠️ Seu estoque está zerado — não foi possível registrar a dose.\n\n` +
-        `Quando fizer a recompra, me avise a nova quantidade:\n` +
-        `*"Comprei 30 comprimidos de ${reminder.med_nome}"* 💊`
+        `Pelas minhas contas o estoque acabou — mas se você ainda tem e já tomou, é só responder SIM que eu registro. 💊\n\n` +
+        `Se comprou mais, me conta quantos: *"Comprei 30 comprimidos de ${reminder.med_nome}"*`
     );
 }
 

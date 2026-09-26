@@ -26,6 +26,7 @@ import { degradar, contarChamadaLLM } from '../observabilidade.js';
 import { GUIA_COMPOSICAO } from '../templates/composicao.js';
 import { nomeUsuarioAceitavel } from './perfil.js';
 import { extrairComponenteData, montarDataNascimento } from '../dataNascimento.js';
+import { renderizarConviteCadastro } from './cadastro.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -556,7 +557,8 @@ export function renderizarConviteAoPrimeiroCadastro({ nomeColetado = null, semDa
     const abertura = semData
         ? `Tudo bem${first ? `, ${first}` : ''}! 🌿`
         : `Prontinho${first ? `, ${first}` : ''}, tudo guardado! 📝`;
-    return `${abertura}\n\nAgora me conta: qual remédio você quer cadastrar? Pode mandar tudo de uma vez — o nome, quanto você toma por vez e os horários.\nPor exemplo: Losartana 50mg, 1 comprimido, 8h e 20h`;
+    // v45 P1-copy §9: o mesmo convite de todo cadastro novo (ponto único).
+    return renderizarConviteCadastro({ abertura });
 }
 
 // Fechamento curto — usado quando o cadastro semeado continua no MESMO turno.

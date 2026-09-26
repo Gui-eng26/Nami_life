@@ -380,6 +380,68 @@ export const CASOS = [
                 ok: !/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(blocoP1) && /\[D1\] Ômega 3/.test(blocoP1) && mapaP1.get('D1')?.id === uuidDose,
                 detalhe: blocoP1.split('\n').filter(l => l.includes('[D')).join(' | ')
             });
+            // ---- Guardas do v45 P1-copy (textos, sem LLM) ----
+            const { buildEstoqueZeradoMessage } = await import('../src/scheduler.js');
+            const zerado = buildEstoqueZeradoMessage('Eloísa', { med_nome: 'Desogestrel' });
+            checks.push({
+                marco: 'M4',
+                nome: 'P1-copy §1: lembrete de estoque zerado NÃO diz "não foi possível registrar" e oferece o SIM',
+                ok: !/não foi possível registrar/i.test(zerado) && /responder SIM que eu registro/.test(zerado),
+                detalhe: zerado.replace(/\n/g, ' / ')
+            });
+            const { textoDeConfirmacao, escolherAbertura, aberturaUsada, linhaNaoTomada, ABERTURAS_CONFIRMACAO } = await import('../src/dosesDoTurno.js');
+            const agoraP1 = new Date();
+            const doseHoje = { scheduled_at: new Date(agoraP1.getTime() - 60_000).toISOString(), horario_agendado: '06:28', medications: { nome: 'Roacutan' } };
+            const doseOntem = { scheduled_at: new Date(agoraP1.getTime() - 24 * 60 * 60 * 1000).toISOString(), horario_agendado: '06:28', medications: { nome: 'Roacutan' } };
+            const ddmmOntem = new Date(doseOntem.scheduled_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo' });
+            const tHoje = textoDeConfirmacao({ abertura: 'Isso aí, João!', confirmadas: [doseHoje] });
+            const tOntem = textoDeConfirmacao({ abertura: 'Tudo certo, João!', confirmadas: [doseOntem] });
+            checks.push({
+                marco: 'M4',
+                nome: 'P1-copy §2: confirmação de HOJE sem data; de ONTEM com data (formato do fato)',
+                ok: tHoje === 'Isso aí, João! ✅ *Roacutan* de hoje (06:28) confirmada 💊'
+                    && tOntem === `Tudo certo, João! ✅ *Roacutan* de ontem (${ddmmOntem}, 06:28) confirmada 💊`,
+                detalhe: `${tHoje} | ${tOntem}`
+            });
+            const sorteios = Array.from({ length: 30 }, () => escolherAbertura({ nome: 'João', ultima: 'Boa' }));
+            checks.push({
+                marco: 'M4',
+                nome: 'P1-copy §2.1: abertura nunca repete a última; sem nome, sem vírgula',
+                ok: sorteios.every(a => !a.startsWith('Boa') && ABERTURAS_CONFIRMACAO.includes(aberturaUsada(`${a} ✅ x`)))
+                    && /^[A-Za-zÀ-ú ]+!$/.test(escolherAbertura({ nome: null })),
+                detalhe: `${[...new Set(sorteios)].join(' · ')} | sem nome: ${escolherAbertura({ nome: null })}`
+            });
+            const tParcial = textoDeConfirmacao({ abertura: 'Show, João!', confirmadas: [doseHoje], jaRegistradas: [doseOntem] });
+            checks.push({
+                marco: 'M4',
+                nome: 'P1-copy §4: confirmação parcial lista "Confirmei agora" e "Já estavam registradas"',
+                ok: tParcial === `Show, João! ✅ Confirmei agora:\n• Roacutan de hoje (06:28)\n\nJá estavam registradas: Roacutan (${ddmmOntem}, 06:28).`,
+                detalhe: tParcial.replace(/\n/g, ' / ')
+            });
+            checks.push({
+                marco: 'M4',
+                nome: 'P1-copy §2.2: linha fixa da dose fechada como não tomada',
+                ok: linhaNaoTomada(doseOntem) === `O *Roacutan* de ontem (${ddmmOntem}, 06:28) ficou registrado como não tomado.`,
+                detalhe: linhaNaoTomada(doseOntem)
+            });
+            const { renderizarPerguntaNome } = await import('../src/schemas/cadastro.js');
+            const conviteP1 = renderizarPerguntaNome({ userName: 'Fran' });
+            const conviteFalha = renderizarPerguntaNome({ userName: 'Fran', motivoFalha: 'ruido' });
+            checks.push({
+                marco: 'M4',
+                nome: 'P1-copy §9: cadastro novo abre com o convite de três linhas, sem "Qual o *nome*"',
+                ok: conviteP1.startsWith('Vamos cadastrar, Fran! 💊') && /• o nome do remédio\n• quanto você toma por vez\n• os horários/.test(conviteP1)
+                    && !/Qual o \*nome\*/.test(conviteP1) && conviteFalha.startsWith('Desculpa, não consegui identificar o remédio 😊')
+                    && /Qual o \*nome\*/.test(renderizarPerguntaNome({ userName: 'Fran', nomeRecusadoPorDosagem: true })),
+                detalhe: conviteP1.replace(/\n/g, ' / ')
+            });
+            const { respostaHonestaAindaNao } = await import('../src/inventario.js');
+            checks.push({
+                marco: 'M4',
+                nome: 'P1-copy §8: "ainda não faço" com chave nomeia o item do inventário (nunca "isso")',
+                ok: /ouvir áudios/.test(respostaHonestaAindaNao('audio')) && !/\bisso\b/.test(respostaHonestaAindaNao('audio')),
+                detalhe: respostaHonestaAindaNao('audio')
+            });
             checks.push({
                 marco: 'M4',
                 nome: 'P1: normalização do atalho reduz letras repetidas e bordas ("Simmm!" → "sim")',
@@ -2196,7 +2258,7 @@ export const CASOS = [
             checks.push({ nome: 'a dose de ONTEM confirmada', ok: st(ontem) === 'confirmado', detalhe: `ontem: ${st(ontem)}` });
             checks.push({ nome: 'a dose de HOJE segue aberta', ok: st(hoje) === 'nao_informado', detalhe: `hoje: ${st(hoje)}` });
             checks.push({ nome: 'a de anteontem segue aberta', ok: st(anteontem) === 'nao_informado', detalhe: `anteontem: ${st(anteontem)}` });
-            checks.push({ nome: 'o texto cita o dia da dose registrada', ...contem(r, /ontem/i, '"ontem"') });
+            checks.push({ nome: 'o texto cita o dia da dose registrada, com data (§2)', ...contem(r, /\*Roacutan\* de ontem \(\d{2}\/\d{2}, 06:28\) confirmada/, 'ontem + data + hora') });
             return checks;
         }
     },
@@ -2278,6 +2340,7 @@ export const CASOS = [
             const { data: movs } = await ctx.db.from('stock_movements').select('tipo, estoque_novo').eq('medication_id', med.id);
             checks.push({ nome: 'movimento estoque_contestado registrado', ok: (movs || []).some(m => m.tipo === 'estoque_contestado' && m.estoque_novo === null), detalhe: JSON.stringify(movs) });
             checks.push({ nome: 'nenhuma chamada de LLM (atalho exato)', ok: r.chamadasLLM === 0, detalhe: `chamadas: ${r.chamadasLLM}` });
+            checks.push({ nome: 'P1-copy §7: convite do estoque contestado (não o convite comum)', ...contem(r.texto, /Pelo que eu tinha anotado, o \*Desogestrel\* tinha acabado — então deixei o estoque em aberto/, 'convite contestado') });
             return checks;
         }
     },
@@ -2294,7 +2357,7 @@ export const CASOS = [
             const { med: regenesis, schedules: sR } = await seeds.criarMedicamento({ userId: user.id, nome: 'Regenesis e ofolato D', estoque: 0, horarios: ['11:58'] });
             const { envio, messageId } = await seeds.criarEnvioFunil({
                 user, minutosAtras: 4, origem: 'proativo:alerta_estoque_zerado',
-                texto: '⏰ Flávia, está na hora do seu *Regenesis e ofolato D*!\n\n⚠️ Seu estoque está zerado — não foi possível registrar a dose.\n\nQuando fizer a recompra, me avise a nova quantidade:\n*"Comprei 30 comprimidos de Regenesis e ofolato D"* 💊'
+                texto: '⏰ Flávia, está na hora do seu *Regenesis e ofolato D*!\n\nPelas minhas contas o estoque acabou — mas se você ainda tem e já tomou, é só responder SIM que eu registro. 💊\n\nSe comprou mais, me conta quantos: *"Comprei 30 comprimidos de Regenesis e ofolato D"*'
             });
             await seeds.criarDose({ medicationId: ofolato.id, scheduleId: sO[0].id, horario: '11:58', minutosAtras: 4 });
             const doseR = await seeds.criarDose({ medicationId: regenesis.id, scheduleId: sR[0].id, horario: '11:58', minutosAtras: 4, status: 'sem_estoque', funilEnvioId: envio.id });
@@ -2314,18 +2377,29 @@ export const CASOS = [
     {
         id: 'A43',
         marco: 'M4',
-        titulo: 'Fran 25–26/09 — "Não" depois do lembrete = "ainda não"',
+        titulo: 'Fran 25–26/09 — "Não"/"não tomei" com a dose aberta = ainda não; "pulei" fecha (P1-copy §3)',
         async executar({ ctx, seeds }) {
             const checks = [];
             const user = await seeds.criarUsuario({ nome: 'Fran', onboarded: true, estado: 'idle' });
             const { med, schedules } = await seeds.criarMedicamento({ userId: user.id, nome: 'Ferro quelato', estoque: null, horarios: ['12:18'] });
             const dose = await seeds.criarDose({ medicationId: med.id, scheduleId: schedules[0].id, horario: '12:18', minutosAtras: 3 });
+            const statusDaDose = async () => (await doseLogs(ctx.db, med.id)).find(d => d.id === dose.id)?.status;
 
-            const r = await turno(ctx, user, 'Não');
-            checagensDeForma(checks, '"Não"', r);
-            const logs = await doseLogs(ctx.db, med.id);
-            checks.push({ nome: 'nenhuma dose marcada como não tomada', ok: !logs.some(d => d.status === 'nao_tomado'), detalhe: `status: ${logs.map(d => d.status).join(',')}` });
-            checks.push({ nome: 'a dose segue aguardando', ok: logs.find(d => d.id === dose.id)?.status === 'pendente', detalhe: `status: ${logs.find(d => d.id === dose.id)?.status}` });
+            const r1 = await turno(ctx, user, 'Não');
+            checagensDeForma(checks, '"Não" (1)', r1);
+            checks.push({ nome: '"Não": a dose segue aguardando', ok: (await statusDaDose()) === 'pendente', detalhe: `status: ${await statusDaDose()}` });
+
+            const r2 = await turno(ctx, user, 'Não');
+            checks.push({ nome: '"Não" de novo: a resposta NÃO é idêntica à anterior (§2.2)', ok: r1.trim() !== r2.trim() && r2.trim().length > 0, detalhe: `1: "${r1.slice(0, 60)}" | 2: "${r2.slice(0, 60)}"` });
+
+            const r3 = await turno(ctx, user, 'Não tomei');
+            checks.push({ nome: '"Não tomei" com a dose aguardando: nada gravado, segue pendente (§3)', ok: (await statusDaDose()) === 'pendente', detalhe: `status: ${await statusDaDose()} — "${r3.slice(0, 60)}"` });
+
+            const r4 = await turno(ctx, user, 'Pulei essa, hoje não vou tomar');
+            checagensDeForma(checks, '"pulei"', r4);
+            checks.push({ nome: '"pulei": dose fechada como não tomada', ok: (await statusDaDose()) === 'nao_tomado', detalhe: `status: ${await statusDaDose()}` });
+            checks.push({ nome: '"pulei": linha fixa do fato', ...contem(r4, /O \*Ferro quelato\* de hoje \(12:18\) ficou registrado como não tomado\./, 'linha fixa') });
+            checks.push({ nome: '"pulei": sem "se tomar mais tarde"', ...naoContem(r4, /se tomar mais tarde/i, 'porta aberta indevida') });
             return checks;
         }
     },
@@ -2353,6 +2427,8 @@ export const CASOS = [
                 detalhe: `estado: ${depois?.state}, etapa: ${depois?.context?.etapa}, nome: ${depois?.context?.nome}`
             });
             checks.push({ nome: 'o convite anterior NÃO é repetido', ...naoContem(r, /quantos comprimidos|se voc[êe] souber quantos/i, 'convite de estoque repetido') });
+            checks.push({ nome: 'P1-copy §9: abre com o convite de três linhas', ...contem(r, /Pode me mandar tudo de uma vez, se quiser:\n• o nome do remédio\n• quanto você toma por vez\n• os horários/, 'convite único') });
+            checks.push({ nome: 'P1-copy §9: sem "Qual o *nome*"', ...naoContem(r, /Qual o \*nome\*/, 'pergunta campo a campo') });
             const meds = await medicamentos(ctx.db, user.id, { nomeIlike: 'Ferro%' });
             checks.push({ nome: 'o Ferro quelato continua cadastrado e ativo', ok: meds.length === 1 && meds[0].ativo === true, detalhe: `${meds.length} linha(s)` });
             return checks;
@@ -2421,7 +2497,17 @@ export const CASOS = [
             const depois = (await doseLogs(ctx.db, med.id)).find(d => d.id === dose.id);
             checks.push({ nome: 'dose confirmada', ok: depois?.status === 'confirmado', detalhe: `status: ${depois?.status}` });
             checks.push({ nome: 'nenhuma chamada de LLM', ok: r.chamadasLLM === 0, detalhe: `chamadas: ${r.chamadasLLM}` });
-            checks.push({ nome: 'o texto diz qual dose e de qual dia', ...contem(r.texto, /Puran T4\* de hoje/i, 'medicamento + dia') });
+            checks.push({ nome: 'o texto diz qual dose e de qual dia (hoje: só a hora)', ...contem(r.texto, /Puran T4\* de hoje \(\d{2}:\d{2}\) confirmada 💊/, 'medicamento + dia + hora, sem data') });
+
+            // P1-copy §2.1: a confirmação seguinte da MESMA pessoa sai com outra
+            // abertura; a linha do fato mantém o formato.
+            const { aberturaUsada } = await import('../src/dosesDoTurno.js');
+            const dose2 = await seeds.criarDose({ medicationId: med.id, scheduleId: schedules[0].id, horario: '06:28', minutosAtras: 2 });
+            const r2 = await turnoCompleto(ctx, user, 'sim');
+            const a1 = aberturaUsada(r.texto), a2 = aberturaUsada(r2.texto);
+            checks.push({ nome: 'segunda dose confirmada, também sem LLM', ok: (await doseLogs(ctx.db, med.id)).find(d => d.id === dose2.id)?.status === 'confirmado' && r2.chamadasLLM === 0, detalhe: `chamadas: ${r2.chamadasLLM}` });
+            checks.push({ nome: 'duas confirmações seguidas com aberturas DIFERENTES', ok: !!a1 && !!a2 && a1 !== a2, detalhe: `"${a1}" → "${a2}"` });
+            checks.push({ nome: 'a linha do fato mantém o formato', ...contem(r2.texto, /^[^✅]+! ✅ \*Puran T4\* de hoje \(\d{2}:\d{2}\) confirmada 💊/, 'formato do §2.1') });
             return checks;
         }
     }

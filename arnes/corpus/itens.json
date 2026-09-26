@@ -2728,7 +2728,7 @@
       "doses": [
         {
           "ref": "D4",
-          "fato": "nao_tomou"
+          "fato": "desfazer"
         }
       ]
     },
@@ -2743,8 +2743,8 @@
       ],
       "correto": true
     },
-    "revisar": true,
-    "nota": "A dose estava confirmada e a pessoa afirma que NÃO tomou: o gabarito usa nao_tomou. `desfazer` (volta a sem resposta) é a leitura alternativa. As duas linhas de 01/07 08:58 e de 30/06 14:58 são duplicatas reais de dose_logs daquela época."
+    "revisar": false,
+    "nota": "A dose estava confirmada e a pessoa afirma que NÃO tomou: pela tabela do §6.2 do P1, dose confirmada só aceita \"desfazer\" (o sistema desfaz a confirmação; sem cobranças restantes, a dose fica não tomada). Decisão de Guilherme, 26/09. As duas linhas de 01/07 08:58 e de 30/06 14:58 são duplicatas reais de dose_logs daquela época."
   },
   {
     "id": "D-22",

@@ -110,6 +110,16 @@ export function buildEstoqueAtualizadoMessage({ medNome, estoqueAnterior, estoqu
 // v43 Bloco C Adendo 1 (seção 2) — estoque nunca informado (MH-094 / P49). NÃO é
 // alerta de falta: a Nami não sabe quanto existe, então não afirma nada sobre a
 // quantidade. É um convite a completar o cadastro, com o benefício explícito.
+// v45 P1-copy §7: a confirmação do turno CONTESTOU um estoque <= 0 (a palavra
+// da pessoa prevaleceu e o estoque ficou em aberto). Nos dias seguintes, com o
+// estoque já nulo, volta o convite comum (buildConviteEstoqueNaoCadastrado).
+export function buildConviteEstoqueContestado({ medNome }) {
+    return (
+        `\n\n📦 Pelo que eu tinha anotado, o *${medNome}* tinha acabado — então deixei o estoque em aberto. ` +
+        `Se souber quantos você tem em casa, me conta que eu volto a te avisar quando estiver acabando.`
+    );
+}
+
 export function buildConviteEstoqueNaoCadastrado({ medNome, medForma, unidadeEstoque }) {
     const rotulo = rotuloEstoquePlural({ unidade_estoque: unidadeEstoque, forma_farmaceutica: medForma });
     // v44 (replay 19/09, Constituição regra 1): convite, nunca ordem — com a porta

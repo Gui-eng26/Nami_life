@@ -17,6 +17,7 @@ import { NAMI_SYSTEM_PROMPT } from '../prompts.js';
 import { classificarComFerramenta } from '../validadores/llm.js';
 import { limparDosagemDoNome } from '../porta.js';
 import { nomeEscritoNaMensagem } from '../nlp_helpers.js';
+import { AINDA_NAO, NUNCA } from '../inventario.js';
 import {
     updateUserName,
     registrarMovimentoEstoque,
@@ -31,7 +32,12 @@ import { buildAlertaEstoquePosAjuste, buildEstoqueAtualizadoMessage } from '../t
 export const MODELO_PRINCIPAL = process.env.PRINCIPAL_MODEL || 'claude-sonnet-4-6';
 
 const TIPOS = ['responder', 'dose', 'delegar', 'perguntar'];
-const FATOS = ['tomou', 'nao_tomou', 'desfazer'];
+// P1-copy §3: `ainda_nao` = a dose segue aguardando (nada é gravado).
+const FATOS = ['tomou', 'nao_tomou', 'ainda_nao', 'desfazer'];
+// P1-copy §8: o item do inventário que a pessoa pediu — a reserva do "ainda
+// não faço" nomeia o item em vez de dizer "isso".
+const CHAVES_AINDA_NAO = AINDA_NAO.map(i => i.chave);
+const CHAVES_INVENTARIO = [...CHAVES_AINDA_NAO, ...NUNCA.map(i => i.chave)];
 const ESPECIALISTAS = ['cadastro', 'configuracao', 'relatorios', 'excluir_conta', 'nao_suportado'];
 const RELACOES = ['responde', 'novo', 'sem_pendencia'];
 const SUBTIPOS = ['balanco_do_dia', 'meus_remedios', 'estoque', 'proximo_remedio', 'progresso_tratamento', 'historico_encerrados', 'nenhum'];
@@ -151,7 +157,7 @@ const FERRAMENTA = {
     type: 'object',
     properties: {
         tipo: { type: 'string', enum: TIPOS, description: 'A parte principal do turno.' },
-        message: { type: 'string', description: 'Texto para a pessoa. Obrigatório em responder/perguntar (e em nao_suportado); VAZIO em dose/delegar puros.' },
+        message: { type: 'string', description: 'Texto para a pessoa. Obrigatório em responder/perguntar, em nao_suportado sem chave e em toda resposta negativa (nao_tomou/ainda_nao); VAZIO em confirmação pura e em delegação.' },
         doses: {
             type: 'array',
             description: 'Fatos relatados sobre doses do bloco DOSES. Vazio se nenhum.',
@@ -171,6 +177,7 @@ const FERRAMENTA = {
             properties: {
                 especialista: { type: 'string', enum: ESPECIALISTAS },
                 relacao_pendencia: { type: 'string', enum: RELACOES },
+                chave_ainda_nao: { type: 'string', enum: CHAVES_INVENTARIO, description: 'Só com especialista "nao_suportado": o item do inventário que a pessoa pediu.' },
                 campos: {
                     type: 'object',
                     properties: {
@@ -198,6 +205,11 @@ function decisaoValida(input) {
     if (input.doses.some(d => !d?.ref || !FATOS.includes(d.fato))) return false;
     if ((input.tipo === 'responder' || input.tipo === 'perguntar') && !input.message.trim()) return false;
     if (input.tipo === 'delegar' && !ESPECIALISTAS.includes(input.delegar?.especialista)) return false;
+    // Sem texto do principal, a reserva do "ainda não faço" precisa da chave.
+    if (input.delegar?.especialista === 'nao_suportado' && !input.message.trim()
+        && !CHAVES_AINDA_NAO.includes(input.delegar?.chave_ainda_nao)) return false;
+    // P1-copy §2.2: resposta negativa sempre tem o acolhimento do principal.
+    if (input.doses.some(d => d.fato === 'nao_tomou' || d.fato === 'ainda_nao') && !input.message.trim()) return false;
     if (input.tipo === 'dose' && input.doses.length === 0) return false;
     return true;
 }
@@ -217,6 +229,7 @@ export function normalizarDecisao(input, mensagem = null) {
         delegar: d ? {
             especialista: d.especialista,
             relacao_pendencia: RELACOES.includes(d.relacao_pendencia) ? d.relacao_pendencia : 'sem_pendencia',
+            chaveAindaNao: CHAVES_AINDA_NAO.includes(d.chave_ainda_nao) ? d.chave_ainda_nao : null,
             campos: {
                 // O campo DECLARA "sem dosagem": o contrato é feito cumprir aqui, no
                 // mesmo ponto único da porta (replay 21/09, "Predsin 2mg 2mg").
