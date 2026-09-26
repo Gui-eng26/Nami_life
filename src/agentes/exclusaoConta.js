@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import 'dotenv/config';
 import { saveConversationState, excluirContaUsuario, formatarHistoricoConversa } from '../database.js';
 import { normalizar } from '../nlp_helpers.js';
-import { degradar } from '../observabilidade.js';
+import { degradar, contarChamadaLLM } from '../observabilidade.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -10,7 +10,8 @@ const CONTATO_GUILHERME = 'Guilherme Silveira pelo (11) 94106-5858';
 
 // ============================================================
 // ESTÁGIO 2 — CONFIRMAÇÃO SEMÂNTICA VIA LLM
-// Roda SÓ quando pareceExclusaoConta() (estágio 1) já sinalizou candidato.
+// v45 P1: roda quando o principal delega excluir_conta — é o passo de segurança
+// que confirma a intenção antes de abrir a exclusão.
 // Distingue: exclusão real de conta  vs.  "cancelar cadastro" (abortar cadastro de
 // remédio no meio do fluxo)  vs.  excluir só um remédio/lembrete/horário  vs.
 // negação ("não quero excluir minha conta")  vs.  pergunta sobre dados.
@@ -46,6 +47,7 @@ CONVERSA RECENTE:
 ${historicoTexto}`;
 
     try {
+        contarChamadaLLM();
         const resposta = await anthropic.messages.create({
             model: 'claude-sonnet-4-6',
             max_tokens: 5,

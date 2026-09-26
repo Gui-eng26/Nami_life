@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import 'dotenv/config';
 
 const supabase = createClient(
@@ -238,4 +239,26 @@ export async function registrarExecucaoJuizOffline({
     } catch (e) {
         console.error(`[observabilidade] Exceção ao registrar execução do juiz offline: ${e.message}`);
     }
+}
+
+// ============================================================
+// CONTAGEM DE CHAMADAS DE LLM POR TURNO (v45 P1 §10)
+// O roteador abre um escopo por turno; todo ponto que chama o modelo
+// registra a chamada. Fora de escopo (scheduler, juiz offline) a
+// contagem é ignorada — ela mede o turno do usuário, não o sistema.
+// ============================================================
+
+const escopoTurno = new AsyncLocalStorage();
+
+export function executarComContagemLLM(fn) {
+    const contador = { chamadas: 0 };
+    return escopoTurno.run(contador, async () => {
+        const resultado = await fn();
+        return { resultado, chamadasLLM: contador.chamadas };
+    });
+}
+
+export function contarChamadaLLM() {
+    const contador = escopoTurno.getStore();
+    if (contador) contador.chamadas++;
 }

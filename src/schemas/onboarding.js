@@ -22,7 +22,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import 'dotenv/config';
 import { classificarComFerramenta } from '../validadores/llm.js';
 import { formatarHistoricoConversa } from '../database.js';
-import { degradar } from '../observabilidade.js';
+import { degradar, contarChamadaLLM } from '../observabilidade.js';
 import { GUIA_COMPOSICAO } from '../templates/composicao.js';
 import { nomeUsuarioAceitavel } from './perfil.js';
 import { extrairComponenteData, montarDataNascimento } from '../dataNascimento.js';
@@ -383,6 +383,7 @@ ${formatarHistoricoConversa(historicoConversa)}
 Responda APENAS com a mensagem que deve ser enviada ao usuário. Sem explicações, sem prefixos, sem aspas.`;
 
     try {
+        contarChamadaLLM();
         const resposta = await anthropic.messages.create({
             model: 'claude-sonnet-4-6',
             max_tokens: 512,

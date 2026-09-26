@@ -94,5 +94,50 @@ export function fabricaSeeds(db) {
         return data;
     }
 
-    return { limparUsuariosDoArnes, criarUsuario, criarMedicamento, criarDosePendente };
+    // v45 P1: dose em qualquer status do ciclo (esgotada, sem_estoque, confirmada),
+    // com o lembrete já enviado. `quando` sobrepõe minutosAtras quando o caso
+    // precisa de um dia específico (ontem, anteontem).
+    async function criarDose({ medicationId, scheduleId = null, horario = null, minutosAtras = 30, quando = null,
+                               status = 'pendente', tentativas = 1, minutosDesdeUltimaTentativa = null,
+                               funilEnvioId = null }) {
+        const agendada = quando ?? new Date(Date.now() - minutosAtras * 60_000).toISOString();
+        const ultima = minutosDesdeUltimaTentativa !== null
+            ? new Date(Date.now() - minutosDesdeUltimaTentativa * 60_000).toISOString()
+            : agendada;
+        const confirmada = status === 'confirmado';
+        const { data, error } = await db.from('dose_logs').insert({
+            medication_id: medicationId,
+            schedule_id: scheduleId,
+            scheduled_at: agendada,
+            reminder_sent: true,
+            reminder_sent_at: agendada,
+            confirmed: confirmada,
+            taken_at: confirmada ? agendada : null,
+            status,
+            tentativas,
+            ultima_tentativa_at: ultima,
+            horario_agendado: horario,
+            funil_envio_id: funilEnvioId
+        }).select().single();
+        if (error) throw new Error(`Seed de dose (${status}) falhou: ${error.message}`);
+        return data;
+    }
+
+    // Envio do funil (para citação): o messageId é o que o webhook devolve
+    // em referenceMessageId (T0 de 19/09).
+    async function criarEnvioFunil({ user, texto, origem = 'proativo:lembrete', minutosAtras = 10 }) {
+        const messageId = `arnes-envio-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const { data, error } = await db.from('funil_envios').insert({
+            user_id: user.id,
+            phone: user.phone,
+            texto,
+            origem,
+            message_id: messageId,
+            created_at: new Date(Date.now() - minutosAtras * 60_000).toISOString()
+        }).select().single();
+        if (error) throw new Error(`Seed de envio do funil falhou: ${error.message}`);
+        return { envio: data, messageId };
+    }
+
+    return { limparUsuariosDoArnes, criarUsuario, criarMedicamento, criarDosePendente, criarDose, criarEnvioFunil };
 }

@@ -1,442 +1,279 @@
+// ============================================================
+// PRINCIPAL — a porta única (v45 P1 §3–§4)
+//
+// UMA chamada de interpretação por turno: o principal recebe o turno
+// inteiro (doses do bloco único com refs curtas, pendência aberta,
+// eventos proativos, mensagem citada) e devolve UMA decisão:
+//   { tipo, message, doses, delegar, actions, candidatas, ... }
+// O LLM relata o fato; o código executa (router + dosesDoTurno).
+//
+// A montagem do contexto é PURA (sem banco): o roteador passa os dados
+// lidos do banco e o adaptador `principal_p1` do corpus passa os dados
+// do itens.json — os dois pelo mesmo caminho.
+// ============================================================
+
 import 'dotenv/config';
 import { NAMI_SYSTEM_PROMPT } from '../prompts.js';
 import { classificarComFerramenta } from '../validadores/llm.js';
 import {
-    getConversationState,
-    updateConversationState,
-    confirmDose,
-    confirmDoseByLogId,
     updateUserName,
-    getRecentDoses,
-    getUserMedications,
     registrarMovimentoEstoque,
     getEstoqueStatusSimples,
-    getEstoqueInfoParaAlerta,
-    contarConfirmacoesHoje,
-    calcularAlertaEstoque,
-    registrarNaoTomado,
     calcularProximaDose,
-    formatarHistoricoConversa,
-    getDosesRetroativas,
-    getDosesConfirmadasHoje,
-    confirmarDoseRetroativa,
-    reverterConfirmacao
+    formatarHistoricoConversa
 } from '../database.js';
-// v44 §5.7: nenhum template de estoque vive mais aqui — autor único é
+// v44 §5.7: nenhum template de estoque vive aqui — autor único é
 // src/templates/estoqueTemplates.js (P30), montado de leitura pós-escrita.
-import {
-    buildAlertaEstoquePosConfirmacao, buildConviteEstoqueNaoCadastrado,
-    buildAlertaEstoquePosAjuste, buildEstoqueAtualizadoMessage
-} from '../templates/estoqueTemplates.js';
+import { buildAlertaEstoquePosAjuste, buildEstoqueAtualizadoMessage } from '../templates/estoqueTemplates.js';
 
+export const MODELO_PRINCIPAL = process.env.PRINCIPAL_MODEL || 'claude-sonnet-4-6';
 
+const TIPOS = ['responder', 'dose', 'delegar', 'perguntar'];
+const FATOS = ['tomou', 'nao_tomou', 'desfazer'];
+const ESPECIALISTAS = ['cadastro', 'configuracao', 'relatorios', 'excluir_conta', 'nao_suportado'];
+const RELACOES = ['responde', 'novo', 'sem_pendencia'];
+const SUBTIPOS = ['balanco_do_dia', 'meus_remedios', 'estoque', 'proximo_remedio', 'progresso_tratamento', 'historico_encerrados', 'nenhum'];
+const FEEDBACKS = ['elogio', 'critica', 'sugestao'];
 
-export async function handlePrincipal({ user, message, image, historicoConversa = [], intencaoNaoSuportada = false }) {
-    const state = await getConversationState(user.id);
-    console.log(`📊 Estado atual de ${user.phone}: ${state.state}`);
+// ------------------------------------------------------------
+// Contexto (§3) — montado por código, em blocos, nesta ordem.
+// ------------------------------------------------------------
 
-    const medications = await getUserMedications(user.id);
-    const recentDoses = await getRecentDoses(user.id, 3);
-
-    const [dosesRetroativas, dosesConfirmadasHoje] = await Promise.all([
-        getDosesRetroativas(user.id, 2),
-        getDosesConfirmadasHoje(user.id)
-    ]);
-
-    const userMessage = buildUserMessage({ text: message, image, user, state, medications, recentDoses, dosesRetroativas, dosesConfirmadasHoje, historicoConversa, intencaoNaoSuportada });
-
-    console.log(`🤖 Chamando Claude para: "${message}"`);
-    let claudeResponse = await callClaude({ userMessage, image });
-    const acoesTipos = (claudeResponse.actions || []).map(a => a.type).join(', ') || claudeResponse.action?.type || 'nenhuma';
-    console.log(`✅ Claude respondeu — newState: ${claudeResponse.newState}, actions: ${acoesTipos}`);
-
-    // v44 §5.3 — contrato universal de devolução: o pedido pertence a outro agente.
-    // Nada é executado, nada é prometido — o roteador reinterpreta o turno na porta.
-    if (claudeResponse.devolver === true) {
-        console.log(`🔁 [PRINCIPAL] devolver=true — escalando ao roteador — ${user.phone}`);
-        return { escalarParaRoteador: true };
-    }
-
-    // Compatibilidade: aceita tanto o formato novo (actions: array)
-    // quanto o formato antigo (action: objeto único)
-    let listaAcoes = [];
-    if (Array.isArray(claudeResponse.actions)) {
-        listaAcoes = claudeResponse.actions;
-    } else if (claudeResponse.action) {
-        listaAcoes = [claudeResponse.action];
-    }
-
-    // Processa todas as ações em sequência.
-    // Alertas de estoque de cada confirmação são acumulados e anexados à mensagem.
-    let alertasEstoque = '';
-    for (const acao of listaAcoes) {
-        const override = await processAction(acao, user);
-        if (override) {
-            if (override.alertaEstoque) {
-                alertasEstoque += override.alertaEstoque;
-            } else {
-                claudeResponse = { ...claudeResponse, ...override };
-            }
-        }
-    }
-    if (alertasEstoque) {
-        claudeResponse = {
-            ...claudeResponse,
-            message: claudeResponse.message + alertasEstoque
-        };
-    }
-
-    await updateConversationState(
-        user.id,
-        claudeResponse.newState || 'idle',
-        claudeResponse.context || {}
-    );
-
-    return claudeResponse.message;
-}
-
-function buildUserMessage({ text, image, user, state, medications, recentDoses, dosesRetroativas = [], dosesConfirmadasHoje = [], historicoConversa = [], intencaoNaoSuportada = false }) {
-    const dosesPendentes = recentDoses.filter(d =>
-        d.reminder_sent === true &&
-        d.confirmed === false &&
-        d.status !== 'nao_informado' &&
-        d.status !== 'pausado' &&
-        d.status !== 'nao_tomado' &&
-        d.status !== 'sem_estoque'
-    );
-
-    const blocoPendentes = dosesPendentes.length === 0
-        ? 'Nenhuma dose aguardando confirmação no momento.'
-        : dosesPendentes.map(d => {
-            const nome = d.medications?.nome || 'medicamento';
-            const hora = new Date(d.scheduled_at).toLocaleTimeString('pt-BR', {
-                hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo'
-            });
-            return `⚠️ ${nome} — dose das ${hora} [ref: ${d.id}]`;
-        }).join('\n');
-
-    // BUG-059: o Claude não recebia nenhuma âncora de "hoje" para julgar se uma dose
-    // retroativa era de hoje, ontem ou anteontem — e adivinhava errado no texto livre.
-    // calcularRotuloDia() resolve isso deterministicamente (mesmo princípio já aplicado
-    // em calcularProximaDose, ver prompts.js), comparando a data local (America/Sao_Paulo)
-    // do scheduled_at com a data local de agora.
-    function calcularRotuloDia(scheduledDate) {
-        const opts = { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'America/Sao_Paulo' };
-        const dataStr = scheduledDate.toLocaleDateString('pt-BR', opts);
-
-        const hojeStr = new Date().toLocaleDateString('pt-BR', opts);
-        if (dataStr === hojeStr) return 'hoje';
-
-        const ontemStr = new Date(Date.now() - 24 * 60 * 60 * 1000).toLocaleDateString('pt-BR', opts);
-        if (dataStr === ontemStr) return 'ontem';
-
-        const anteontemStr = new Date(Date.now() - 48 * 60 * 60 * 1000).toLocaleDateString('pt-BR', opts);
-        if (dataStr === anteontemStr) return 'anteontem';
-
-        return null; // fora da janela de 2 dias coberta por getDosesRetroativas — não deveria ocorrer
-    }
-
-    const blocoRetroativo = dosesRetroativas.length === 0 ? null :
-        dosesRetroativas.map(d => {
-            const nome = d.medications?.nome || 'medicamento';
-            const scheduledDate = new Date(d.scheduled_at);
-            const dataStr = scheduledDate.toLocaleDateString('pt-BR', {
-                day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo'
-            });
-            const hora = scheduledDate.toLocaleTimeString('pt-BR', {
-                hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo'
-            });
-            const rotulo = calcularRotuloDia(scheduledDate);
-            const rotuloStr = rotulo ? `${rotulo} (${dataStr})` : dataStr;
-            return `⏰ ${nome} — dose de ${rotuloStr} às ${hora} [ref-retro: ${d.id}]`;
-        }).join('\n');
-
-    const blocoConfirmadasHoje = dosesConfirmadasHoje.length === 0 ? null :
-        dosesConfirmadasHoje.map(d => {
-            const nome = d.medications?.nome || 'medicamento';
-            const hora = new Date(d.taken_at).toLocaleTimeString('pt-BR', {
-                hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo'
-            });
-            return `✅ ${nome} — confirmada às ${hora} [ref-conf: ${d.id}]`;
-        }).join('\n');
-
-    const agora = new Date();
-    const dataAtualStr = agora.toLocaleDateString('pt-BR', {
+function textoAgora(agora) {
+    const data = agora.toLocaleDateString('pt-BR', {
         day: '2-digit', month: '2-digit', year: 'numeric', weekday: 'long', timeZone: 'America/Sao_Paulo'
     });
-    const horaAtualStr = agora.toLocaleTimeString('pt-BR', {
-        hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo'
-    });
-
-    const context = `
-=== CONTEXTO DO USUÁRIO ===
-Nome: ${user.name || 'ainda não informado'}
-Agora é ${dataAtualStr}, ${horaAtualStr} (horário de Brasília). Use esta data como
-referência para qualquer menção a "hoje", "ontem", "amanhã" ou datas relativas — nunca
-calcule isso de outra forma.
-Estado da conversa: ${state.state}
-Dados parciais em andamento: ${JSON.stringify(state.context)}
-
-Medicamentos cadastrados: ${medications.length === 0
-        ? 'nenhum ainda'
-        : medications.map(m => {
-            const schedulesAtivos = m.schedules ? m.schedules.filter(s => s.ativo) : [];
-            const horarios = schedulesAtivos.length > 0
-                ? schedulesAtivos.map(s => s.horario).join(', ')
-                : 'nenhum horário cadastrado';
-
-            const proximaDose = calcularProximaDose(schedulesAtivos);
-            const proximaDoseStr = proximaDose
-                ? `próxima dose: ${proximaDose.horario} (${proximaDose.quando})`
-                : 'sem próxima dose calculada';
-
-            const tratamentoInfo = `tipo: ${m.tipo_tratamento || 'contínuo'}`;
-
-            // v43 Bloco C Adendo 1 (P49): "não informado" nunca vira "estoque: null"
-            // no prompt — o LLM levaria isso ao pé da letra.
-            // v44 §5.7: com dose pendente deste medicamento, o número PRÉ-débito é
-            // neutralizado — era ele que a LLM copiava para o texto, contradizendo o
-            // bloco pós-débito do template (evidência A5: Eloísa/Wellington/Flávia).
-            const temDosePendenteDesteMed = dosesPendentes.some(d => d.medication_id === m.id);
-            const estoqueTexto = (m.estoque_atual === null || m.estoque_atual === undefined)
-                ? 'estoque: não informado'
-                : temDosePendenteDesteMed
-                    ? 'estoque: registrado (número comunicado pelo sistema após a confirmação — não cite)'
-                    : `estoque: ${m.estoque_atual}`;
-
-            return `[id:${m.id}] ${m.nome} (${m.dosagem}, ${estoqueTexto}, horários: ${horarios}, ${proximaDoseStr}, ${tratamentoInfo})`;
-        }).join(' | ')
-    }
-
-=== DOSES AGUARDANDO CONFIRMAÇÃO ===
-${blocoPendentes}
-
-Como usar este bloco:
-- Se o usuário responder confirmando que tomou (qualquer forma: "sim", "tomei", "já tomei", "isso", "tomei sim", etc.), emita CONFIRM_DOSE para a(s) dose(s) correspondente(s), usando o valor [ref: ...] no campo doseLogId.
-- Se houver várias doses pendentes e o usuário confirmar coletivamente ("tomei todos", "tomei os dois"), emita um CONFIRM_DOSE para cada [ref] da lista.
-- Se o usuário mencionar um medicamento ou horário específico, confirme apenas a dose correspondente.
-- Se o usuário falar de OUTRA coisa (estoque, horário, dúvida, "comprei mais X"), ajude normalmente com o assunto dele. NÃO force confirmação. As doses continuam pendentes e serão cobradas depois.
-${blocoRetroativo ? `
-=== DOSES SEM CONFIRMAÇÃO — ÚLTIMOS 2 DIAS ===
-${blocoRetroativo}
-
-Como usar este bloco:
-- O rótulo do dia (hoje/ontem/anteontem) já vem calculado no bloco acima — use-o exatamente como está, nunca calcule ou infira esse rótulo por conta própria.
-- Se o usuário mencionar ter tomado uma dose do passado (ex: "tomei o ômega 3 de ontem", "tomei os remédios de anteontem"), apresente a dose específica ao usuário e PEÇA CONFIRMAÇÃO EXPLÍCITA antes de registrar. Aguarde "sim" / "isso" / "tomei".
-- Após confirmação explícita → CONFIRM_RETROATIVA com o [ref-retro: ...] correspondente.
-- Se o usuário disser que não tomou → REGISTER_NAO_TOMADO com o [ref-retro: ...].
-- Se a referência for além de 2 dias → informe o limite e ofereça UPDATE_STOCK.
-- NUNCA use [ref-retro: ...] em CONFIRM_DOSE. Contextos completamente separados.
-` : ''}${blocoConfirmadasHoje ? `
-=== DOSES CONFIRMADAS HOJE ===
-${blocoConfirmadasHoje}
-
-Como usar este bloco:
-- Se o usuário disser que NÃO tomou um medicamento listado aqui (ex: "na verdade não tomei o X", "errei, não foi esse", "confirmei sem querer"), emita REVERSE_CONFIRMATION com o [ref-conf: ...] correspondente. A declaração já é suficiente, não peça confirmação.
-- NUNCA use [ref-conf: ...] em CONFIRM_DOSE ou CONFIRM_RETROATIVA.
-` : ''}
-Doses recentes (contexto histórico): ${recentDoses.length === 0
-        ? 'nenhuma ainda'
-        : JSON.stringify(recentDoses.slice(0, 5))
-    }
-
-=== CONVERSA RECENTE (apenas para entender referências como "ele", "esse", "ok") ===
-${formatarHistoricoConversa(historicoConversa)}
-
-IMPORTANTE: O bloco "DOSES AGUARDANDO CONFIRMAÇÃO" acima tem PRECEDÊNCIA. Se há dose pendente e o usuário responde algo afirmativo ("sim", "tomei", etc.), isso é confirmação de dose — NUNCA trate como fechamento social, mesmo que a conversa recente sugira fim de papo. Use a CONVERSA RECENTE apenas para: (1) resolver pronomes ("dele", "esse") referindo-se ao último medicamento/assunto mencionado; (2) reconhecer fechamentos curtos ("ok", "obrigado", "entendi") como encerramento acolhedor SOMENTE quando NÃO há dose pendente.
-
-=== FIM DO CONTEXTO ===
-${intencaoNaoSuportada ? `
-=== ATENÇÃO: INTENÇÃO NÃO SUPORTADA ===
-O usuário pediu algo que a Nami AINDA NÃO faz. Responda com honestidade e gentileza:
-- Explique que essa funcionalidade ainda está em desenvolvimento
-- NÃO invente que consegue fazer
-- NÃO derive para pausar/encerrar/cadastrar
-- Pergunte se pode ajudar com outra coisa (cadastrar, consultar, alterar horários, pausar/reativar)
-` : ''}
-Mensagem do usuário: ${text || '[usuário enviou uma imagem]'}
-    `.trim();
-    return context;
+    const hora = agora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+    return `${data}, ${hora}`;
 }
 
-// v44 M3 P6.2: a resposta do principal chega por TOOL-USE com schema — nunca
-// mais JSON em texto livre (mata a família parse_json_falhou por construção).
-// O contrato do prompt não mudou: { message, newState, context, actions, devolver }.
-async function callClaude({ userMessage, image }) {
-    const content = image
-        ? [
-            { type: 'image', source: { type: 'url', url: image } },
-            { type: 'text', text: userMessage }
-        ]
-        : [{ type: 'text', text: userMessage }];
+function textoMedicamentos(medicamentos) {
+    if (!medicamentos?.length) return 'nenhum ainda';
+    return medicamentos.map(m => {
+        if (typeof m === 'string') return `- ${m}`;
+        const schedulesAtivos = (m.schedules || []).filter(s => s.ativo);
+        const horarios = schedulesAtivos.length
+            ? schedulesAtivos.map(s => String(s.horario).slice(0, 5)).join(', ')
+            : 'nenhum horário cadastrado';
+        const proxima = calcularProximaDose(schedulesAtivos);
+        const proximaStr = proxima ? `próxima dose: ${proxima.horario} (${proxima.quando})` : 'sem próxima dose calculada';
+        // P49: "não informado" nunca vira "estoque: null". §5.7: com dose em
+        // aberto, o número pré-débito é neutralizado (autor único do número).
+        const estoque = (m.estoque_atual === null || m.estoque_atual === undefined)
+            ? 'estoque: não informado'
+            : m.temDoseEmAberto
+                ? 'estoque: registrado (número comunicado pelo sistema após a confirmação — não cite)'
+                : `estoque: ${m.estoque_atual}`;
+        const status = m.status && m.status !== 'ativo' ? `, ${m.status}` : '';
+        return `- [id:${m.id}] ${m.nome} (${m.dosagem || 'dosagem não informada'}, ${estoque}, horários: ${horarios}, ${proximaStr}, tipo: ${m.tipo_tratamento || 'contínuo'}${status})`;
+    }).join('\n');
+}
 
-    const { parsed } = await classificarComFerramenta({
+function textoPendencia(pendencia) {
+    if (!pendencia) return 'Nenhuma — a conversa está livre (estado idle).';
+    const linhas = [
+        `Fluxo: ${pendencia.fluxo}${pendencia.etapa ? ` · etapa ${pendencia.etapa}` : ''}`,
+        pendencia.pergunta ? `Pergunta que ficou aberta: "${String(pendencia.pergunta).replace(/\s+/g, ' ').slice(0, 400)}"` : null,
+        pendencia.obrigatoria === true ? 'Resposta: obrigatória para o fluxo terminar.'
+            : pendencia.obrigatoria === false ? 'Resposta: OPCIONAL (convite) — nunca prende a pessoa.' : null,
+        pendencia.quando ? `Perguntada: ${pendencia.quando}` : null,
+        pendencia.maisRecente ? `Mais recente entre a pergunta aberta e o último lembrete de dose: ${pendencia.maisRecente}` : null,
+        pendencia.mensagemPreservada ? `Mensagem preservada da pessoa (pós-cadastro inicial): "${String(pendencia.mensagemPreservada).slice(0, 600)}"` : null
+    ];
+    return linhas.filter(Boolean).join('\n');
+}
+
+const ROTULOS_EVENTO_PROATIVO = {
+    lembrete: 'lembrete de dose',
+    follow_up: 'cobrança de dose',
+    alerta_estoque_zerado: 'aviso de estoque zerado (lembrete da dose)',
+    alerta_estoque_nao_informado: 'aviso de dose sem confirmação',
+    resumo_semanal: 'resumo semanal de adesão',
+    conclusao_tratamento: 'aviso de conclusão de tratamento'
+};
+
+function textoEventosProativos(eventos) {
+    if (!eventos?.length) return 'Nenhum desde a última mensagem da pessoa.';
+    return eventos.map(ev => {
+        const rotulo = ROTULOS_EVENTO_PROATIVO[ev.tipo] || 'mensagem automática';
+        const tentativa = ev.tipo === 'follow_up' && ev.tentativa ? ` (cobrança ${ev.tentativa})` : '';
+        const med = ev.medicamento ? ` — ${ev.medicamento}${ev.horarioAgendado ? ` (dose das ${ev.horarioAgendado})` : ''}` : '';
+        const quando = ev.enviadoAt
+            ? ` — ${new Date(ev.enviadoAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' })}`
+            : '';
+        return `- ${rotulo}${tentativa}${med}${quando}`;
+    }).join('\n');
+}
+
+export function montarContextoPrincipal({
+    user = null, agora = new Date(), estado = 'idle', blocoDoses, pendencia = null,
+    eventosProativos = [], medicamentos = [], historicoConversa = [],
+    especialistaDevolveu = null, mensagem, temImagem = false
+}) {
+    return `
+=== CONTEXTO ===
+Nome da pessoa: ${user?.name || 'ainda não informado'}
+Agora é ${textoAgora(agora)} (horário de Brasília). Nunca calcule datas por conta própria.
+Estado da conversa: ${estado}
+
+=== DOSES ===
+${blocoDoses}
+
+=== PENDÊNCIA ABERTA ===
+${textoPendencia(pendencia)}
+
+=== EVENTOS PROATIVOS DESDE O ÚLTIMO TURNO DA PESSOA ===
+${textoEventosProativos(eventosProativos)}
+
+=== MEDICAMENTOS CADASTRADOS ===
+${textoMedicamentos(medicamentos)}
+
+=== CONVERSA RECENTE (para resolver referências como "ele", "esse", "ok") ===
+${formatarHistoricoConversa(historicoConversa)}
+${especialistaDevolveu ? `
+=== ATENÇÃO: O ESPECIALISTA "${especialistaDevolveu}" DEVOLVEU ESTE TURNO ===
+Ele concluiu que a mensagem não é dele. As doses e ações deste turno JÁ foram executadas — não as
+repita. Decida só o destino: outro especialista, ou responder/perguntar você mesma.
+` : ''}
+=== FIM DO CONTEXTO ===
+
+Mensagem da pessoa: ${mensagem || (temImagem ? '[a pessoa enviou uma imagem]' : '')}
+`.trim();
+}
+
+// ------------------------------------------------------------
+// Decisão (§4) — tool-use com schema.
+// ------------------------------------------------------------
+
+const FERRAMENTA = {
+    type: 'object',
+    properties: {
+        tipo: { type: 'string', enum: TIPOS, description: 'A parte principal do turno.' },
+        message: { type: 'string', description: 'Texto para a pessoa. Obrigatório em responder/perguntar (e em nao_suportado); VAZIO em dose/delegar puros.' },
+        doses: {
+            type: 'array',
+            description: 'Fatos relatados sobre doses do bloco DOSES. Vazio se nenhum.',
+            items: {
+                type: 'object',
+                properties: {
+                    ref: { type: 'string', description: 'Referência do bloco, ex.: "D2".' },
+                    fato: { type: 'string', enum: FATOS }
+                },
+                required: ['ref', 'fato']
+            }
+        },
+        candidatas: { type: 'array', items: { type: 'string' }, description: 'Em "perguntar" sobre dose: as refs candidatas.' },
+        delegar: {
+            type: 'object',
+            description: 'Preencha quando o turno tem parte para um especialista.',
+            properties: {
+                especialista: { type: 'string', enum: ESPECIALISTAS },
+                relacao_pendencia: { type: 'string', enum: RELACOES },
+                campos: {
+                    type: 'object',
+                    properties: {
+                        medicamentos: { type: 'array', items: { type: 'string' } },
+                        horarios: { type: 'array', items: { type: 'string' } },
+                        medicamento: { type: 'string' },
+                        expressaoData: { type: 'string' },
+                        subtipo: { type: 'string', enum: SUBTIPOS }
+                    }
+                }
+            },
+            required: ['especialista', 'relacao_pendencia']
+        },
+        actions: { type: 'array', items: { type: 'object' }, description: 'Ações do seu domínio: UPDATE_STOCK, SET_USER_NAME.' },
+        newState: { type: 'string', enum: ['idle', 'confirming'] },
+        feedback: { type: 'string', enum: [...FEEDBACKS, 'nenhum'] },
+        mensagem_citada_relevante: { type: 'boolean' }
+    },
+    required: ['tipo', 'message', 'doses', 'feedback']
+};
+
+function decisaoValida(input) {
+    if (!input || !TIPOS.includes(input.tipo) || typeof input.message !== 'string') return false;
+    if (!Array.isArray(input.doses)) return false;
+    if (input.doses.some(d => !d?.ref || !FATOS.includes(d.fato))) return false;
+    if ((input.tipo === 'responder' || input.tipo === 'perguntar') && !input.message.trim()) return false;
+    if (input.tipo === 'delegar' && !ESPECIALISTAS.includes(input.delegar?.especialista)) return false;
+    if (input.tipo === 'dose' && input.doses.length === 0) return false;
+    return true;
+}
+
+export const DECISAO_DEGRADADA = { tipo: 'degradado', message: '', doses: [], actions: [], delegar: null, feedback: 'nenhum' };
+
+// Normaliza a proposta: o que o código vai de fato olhar, sem campo solto.
+export function normalizarDecisao(input) {
+    const d = input?.delegar && ESPECIALISTAS.includes(input.delegar.especialista) ? input.delegar : null;
+    const campos = d?.campos || {};
+    const texto = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+    return {
+        tipo: input.tipo,
+        message: (input.message || '').trim(),
+        doses: (input.doses || []).map(x => ({ ref: String(x.ref).trim(), fato: x.fato })),
+        candidatas: Array.isArray(input.candidatas) ? input.candidatas.map(String) : [],
+        delegar: d ? {
+            especialista: d.especialista,
+            relacao_pendencia: RELACOES.includes(d.relacao_pendencia) ? d.relacao_pendencia : 'sem_pendencia',
+            campos: {
+                medicamentos: Array.isArray(campos.medicamentos) ? campos.medicamentos.map(m => String(m).trim()).filter(Boolean) : [],
+                horarios: Array.isArray(campos.horarios) ? campos.horarios.map(h => String(h).trim()).filter(Boolean) : [],
+                medicamento: texto(campos.medicamento),
+                expressaoData: texto(campos.expressaoData),
+                subtipo: SUBTIPOS.includes(campos.subtipo) && campos.subtipo !== 'nenhum' ? campos.subtipo : null
+            }
+        } : null,
+        actions: Array.isArray(input.actions) ? input.actions : [],
+        newState: input.newState === 'confirming' ? 'confirming' : 'idle',
+        feedback: FEEDBACKS.includes(input.feedback) ? input.feedback : null,
+        mensagemCitadaRelevante: input.mensagem_citada_relevante === true
+    };
+}
+
+// UMA chamada de interpretação. Duas tentativas; na falha dupla, degradar()
+// e o roteador faz a pergunta segura.
+export async function interpretarComPrincipal({ contexto, image = null, model = MODELO_PRINCIPAL }) {
+    const content = image
+        ? [{ type: 'image', source: { type: 'url', url: image } }, { type: 'text', text: contexto }]
+        : [{ type: 'text', text: contexto }];
+
+    const { parsed, degradado } = await classificarComFerramenta({
         systemPrompt: NAMI_SYSTEM_PROMPT,
         messages: [{ role: 'user', content }],
-        maxTokens: 1024,
+        maxTokens: 1200,
+        model,
         nomeFerramenta: 'responder_usuario',
-        descricaoFerramenta: 'Registra a resposta da Nami: mensagem ao usuário, novo estado, contexto, ações e devolução.',
-        schema: {
-            type: 'object',
-            properties: {
-                message: { type: 'string', description: 'Texto da mensagem para enviar ao usuário. Vazia quando devolver=true.' },
-                newState: { type: 'string', enum: ['idle', 'confirming'] },
-                context: { type: 'object', description: 'Contexto da conversa a persistir. {} na maioria dos casos.' },
-                actions: {
-                    type: 'array',
-                    items: { type: 'object' },
-                    description: 'Lista de ações a executar (pode ser vazia).'
-                },
-                devolver: { type: 'boolean', description: 'true SOMENTE quando o pedido pertence a outro agente.' }
-            },
-            required: ['message', 'newState', 'devolver']
-        },
-        validar: (input) => typeof input?.message === 'string'
-            && (input.devolver === true || input.message.trim().length > 0),
-        motivo: 'parse_json_falhou',
+        descricaoFerramenta: 'Registra a decisão do turno: responder, relatar doses, delegar ou perguntar.',
+        schema: FERRAMENTA,
+        validar: decisaoValida,
+        motivo: 'principal_decisao_invalida',
         agent: 'principal',
         origem: 'principal',
-        fallback: {
-            message: 'Desculpe, não entendi bem. Pode repetir? 🌿',
-            newState: 'idle',
-            context: {},
-            actions: [],
-            devolver: false
-        }
+        fallback: DECISAO_DEGRADADA
     });
-
-    return parsed;
+    if (degradado || parsed?.tipo === 'degradado') return null;
+    return normalizarDecisao(parsed);
 }
 
-async function processAction(action, user) {
-    switch (action.type) {
+// ------------------------------------------------------------
+// Ações do domínio do principal (sem mudança de comportamento).
+// ------------------------------------------------------------
 
+async function executarAcao(action, user) {
+    switch (action?.type) {
         case 'SET_USER_NAME':
-            await updateUserName(user.id, action.name);
-            return null;
-
-        case 'CONFIRM_DOSE': {
-            let medId;
-            if (action.doseLogId) {
-                medId = await confirmDoseByLogId(action.doseLogId);
-            } else if (action.medicationId) {
-                await confirmDose(action.medicationId);
-                medId = action.medicationId;
-            } else {
-                console.warn('⚠️ CONFIRM_DOSE sem doseLogId nem medicationId');
-                return null;
-            }
-
-            // Verificar se deve emitir alerta de estoque pós-confirmação
-            try {
-                const estoqueInfo = await getEstoqueInfoParaAlerta(medId);
-                if (estoqueInfo?.estoqueDesconhecido) {
-                    // v43 Bloco C Adendo 1: convite (não alerta) na 1ª confirmação do
-                    // dia, persistindo enquanto o estoque continuar NULL.
-                    const confirmacoesDoDia = await contarConfirmacoesHoje(medId);
-                    if (confirmacoesDoDia <= 1) {
-                        return { alertaEstoque: buildConviteEstoqueNaoCadastrado(estoqueInfo) };
-                    }
-                } else if (estoqueInfo) {
-                    const confirmacoesDoDia = await contarConfirmacoesHoje(medId);
-                    const deveAlertar = calcularAlertaEstoque({
-                        diasRestantes: estoqueInfo.diasRestantes,
-                        tipo_tratamento: estoqueInfo.tipo_tratamento,
-                        tratamento_dias: estoqueInfo.tratamento_dias,
-                        confirmacoesDoDia
-                    });
-                    if (deveAlertar) {
-                        return { alertaEstoque: buildAlertaEstoquePosConfirmacao(estoqueInfo) };
-                    }
-                }
-            } catch (e) {
-                console.error('⚠️ Erro ao verificar alerta de estoque pós-confirmação:', e.message);
-            }
-            return null;
-        }
-
-        case 'CONFIRM_RETROATIVA': {
-            if (!action.doseLogId) {
-                console.warn('⚠️ CONFIRM_RETROATIVA sem doseLogId — ignorando');
-                return null;
-            }
-            let medIdRetro;
-            try {
-                medIdRetro = await confirmarDoseRetroativa(
-                    action.doseLogId,
-                    'usuário confirmou retroativamente via chat'
-                );
-            } catch (e) {
-                console.error('⚠️ Erro em CONFIRM_RETROATIVA:', e.message);
-                return null;
-            }
-            try {
-                const estoqueInfo = await getEstoqueInfoParaAlerta(medIdRetro);
-                if (estoqueInfo?.estoqueDesconhecido) {
-                    const confirmacoesDoDia = await contarConfirmacoesHoje(medIdRetro);
-                    if (confirmacoesDoDia <= 1) {
-                        return { alertaEstoque: buildConviteEstoqueNaoCadastrado(estoqueInfo) };
-                    }
-                } else if (estoqueInfo) {
-                    const confirmacoesDoDia = await contarConfirmacoesHoje(medIdRetro);
-                    const deveAlertar = calcularAlertaEstoque({
-                        diasRestantes: estoqueInfo.diasRestantes,
-                        tipo_tratamento: estoqueInfo.tipo_tratamento,
-                        tratamento_dias: estoqueInfo.tratamento_dias,
-                        confirmacoesDoDia
-                    });
-                    if (deveAlertar) {
-                        return { alertaEstoque: buildAlertaEstoquePosConfirmacao(estoqueInfo) };
-                    }
-                }
-            } catch (e) {
-                console.error('⚠️ Erro ao verificar alerta pós-CONFIRM_RETROATIVA:', e.message);
-            }
-            return null;
-        }
-
-        case 'REVERSE_CONFIRMATION': {
-            if (!action.doseLogId) {
-                console.warn('⚠️ REVERSE_CONFIRMATION sem doseLogId — ignorando');
-                return null;
-            }
-            try {
-                const { novoStatus } = await reverterConfirmacao(
-                    action.doseLogId,
-                    'usuário informou que confirmação foi por engano'
-                );
-                console.log(`↩️ Confirmação revertida via chat — novo status: ${novoStatus}`);
-            } catch (e) {
-                console.error('⚠️ Erro em REVERSE_CONFIRMATION:', e.message);
-            }
-            return null;
-        }
-
-        case 'REGISTER_NAO_TOMADO':
-            if (action.doseLogId) {
-                await registrarNaoTomado(null, action.doseLogId);
-                console.log(`🚫 Dose retroativa registrada como não tomada — doseLogId: ${action.doseLogId}`);
-            } else if (action.medicationId) {
-                await registrarNaoTomado(action.medicationId);
-                console.log(`🚫 Dose registrada como não tomada — medicationId: ${action.medicationId}`);
-            } else {
-                console.warn('⚠️ REGISTER_NAO_TOMADO sem doseLogId nem medicationId — ignorando');
-            }
-            return null;
+            if (action.name) await updateUserName(user.id, action.name);
+            return '';
 
         case 'UPDATE_STOCK': {
             if (!action.medicationId) {
                 console.warn('⚠️ UPDATE_STOCK sem medicationId — ignorando');
-                return null;
+                return '';
             }
-
             let params;
             switch (action.modo) {
                 case 'soma':
-                    params = {
-                        tipo: action.motivo === 'recompra' ? 'recompra' : 'correcao_soma',
-                        delta: action.quantidade
-                    };
+                    params = { tipo: action.motivo === 'recompra' ? 'recompra' : 'correcao_soma', delta: action.quantidade };
                     break;
                 case 'subtracao':
                     params = { tipo: 'correcao_subtracao', delta: -action.quantidade };
@@ -446,7 +283,7 @@ async function processAction(action, user) {
                     break;
                 default:
                     console.warn(`⚠️ UPDATE_STOCK com modo desconhecido: ${action.modo}`);
-                    return null;
+                    return '';
             }
 
             const { estoqueAnterior, estoqueNovo, deltaAplicado } = await registrarMovimentoEstoque({
@@ -456,31 +293,37 @@ async function processAction(action, user) {
                 ...params
             });
 
-            let textoFinal = '';
             try {
                 const statusInfo = await getEstoqueStatusSimples(action.medicationId);
-                if (statusInfo) {
-                    // Passo 1 — informativo determinístico (nunca o número que o LLM escreveu)
-                    textoFinal += buildEstoqueAtualizadoMessage({
-                        medNome: statusInfo.medNome,
-                        estoqueAnterior,
-                        estoqueNovo,
-                        deltaAplicado,
-                        // "quantidade" só representa um delta pedido em soma/subtracao; em "set" é o
-                        // total desejado, não comparável a deltaAplicado — não faz sentido de clamp aqui.
-                        quantidadeSolicitada: action.modo === 'set' ? null : action.quantidade
-                    });
-                    // Passo 2 — alerta de limiar, função existente e intocada
-                    textoFinal += buildAlertaEstoquePosAjuste(statusInfo);
-                }
+                if (!statusInfo) return '';
+                // Informativo determinístico (nunca o número que o LLM escreveu).
+                return buildEstoqueAtualizadoMessage({
+                    medNome: statusInfo.medNome,
+                    estoqueAnterior,
+                    estoqueNovo,
+                    deltaAplicado,
+                    quantidadeSolicitada: action.modo === 'set' ? null : action.quantidade
+                }) + buildAlertaEstoquePosAjuste(statusInfo);
             } catch (e) {
                 console.error('⚠️ Erro ao montar mensagem de estoque atualizado:', e.message);
+                return '';
             }
-            return textoFinal ? { alertaEstoque: textoFinal } : null;
         }
 
         default:
-            console.warn(`⚠️ Ação desconhecida no agente principal: ${action.type}`);
-            return null;
+            console.warn(`⚠️ Ação fora do domínio do principal: ${action?.type}`);
+            return '';
     }
+}
+
+export async function executarAcoesDoPrincipal(actions, user) {
+    let texto = '';
+    for (const acao of actions || []) {
+        try {
+            texto += await executarAcao(acao, user);
+        } catch (e) {
+            console.error(`⚠️ Erro ao executar ${acao?.type}:`, e.message);
+        }
+    }
+    return texto.replace(/^\n+/, '');
 }

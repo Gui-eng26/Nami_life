@@ -34,6 +34,34 @@ async function turno(ctx, user, mensagem, extras = {}) {
     return typeof resposta === 'string' ? resposta : (resposta.texto ?? '');
 }
 
+// v45 P1: o turno inteiro (texto + agente + chamadas de LLM) — para as
+// asserções de "nenhuma chamada de LLM" do atalho exato.
+async function turnoCompleto(ctx, user, mensagem, extras = {}) {
+    contadorTurno++;
+    const r = await ctx.routeMessage({
+        user,
+        message: mensagem,
+        image: null,
+        messageId: `arnes-${Date.now()}-${contadorTurno}`,
+        referenceMessageId: extras.referenceMessageId || null
+    });
+    return { texto: r?.texto ?? '', chamadasLLM: r?.chamadasLLM ?? null, agente: r?.agente ?? null };
+}
+
+// Momento "hoje", N minutos atrás, sem nunca cruzar a meia-noite de Brasília
+// (a suíte pode rodar de madrugada; o rótulo de dia é o que o caso mede).
+function hojeHaMinutos(minutos) {
+    const agora = new Date();
+    const hhmm = agora.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+    const [h, m] = hhmm.split(':').map(Number);
+    const desdeMeiaNoite = h * 60 + m;
+    const efetivo = Math.max(1, Math.min(minutos, desdeMeiaNoite - 1));
+    return new Date(agora.getTime() - efetivo * 60_000).toISOString();
+}
+function diasAtras(dias, minutos = 120) {
+    return new Date(new Date(hojeHaMinutos(minutos)).getTime() - dias * 24 * 60 * 60 * 1000).toISOString();
+}
+
 // Checagens de forma da Constituição (regras 8 e 9) — aplicadas a toda resposta.
 function checagensDeForma(checks, rotuloTurno, resposta) {
     checks.push({ nome: `${rotuloTurno}: uma pergunta, na última linha`, ...umaPerguntaNaUltimaLinha(resposta) });
@@ -317,6 +345,46 @@ export const CASOS = [
                 nome: 'M4 (BUG-88 vivo): "sim" no dump aceita; negação/substring nunca viram aceite',
                 ok: aceitesOk && nuncaAceite,
                 detalhe: `aceites: ${aceitesOk}, guardas de negação/substring: ${nuncaAceite}`
+            });
+
+            // ---- Guardas do v45 P1 (o principal é a porta única) ----
+
+            // Nada que interpretava linguagem ANTES do principal volta ao caminho
+            // do routeMessage.
+            const proibidosNoRouter = ['interpretarTurno', 'confirmarDosePendenteDeterministico',
+                'tentarConfirmarRespostaTardia', 'pareceExclusaoConta', 'isAffirmativeSimple',
+                'detectarConfirmacaoDose', 'despacharPorProposta', 'excluirPrincipal'];
+            const router = conteudo.get('router.js') || '';
+            const noRouter = proibidosNoRouter.filter(t => router.includes(t));
+            checks.push({ marco: 'M4', nome: 'grep (P1): atalhos/porta/S1–S4 fora do caminho do routeMessage', ok: noRouter.length === 0, detalhe: noRouter.join(', ') || 'limpo' });
+            const decisorVivo = [...conteudo.entries()].filter(([, c]) => /detectarConfirmacaoDose/.test(c)).map(([f]) => f);
+            checks.push({ marco: 'M4', nome: 'grep (P1): detectarConfirmacaoDose não existe mais', ok: decisorVivo.length === 0, detalhe: decisorVivo.join(', ') || 'limpo' });
+            const vocabularioVelho = [...conteudo.entries()]
+                .filter(([f, c]) => ['prompts.js', path.join('agentes', 'principal.js')].includes(f) && /CONFIRM_DOSE|CONFIRM_RETROATIVA|REVERSE_CONFIRMATION|REGISTER_NAO_TOMADO/.test(c))
+                .map(([f]) => f);
+            checks.push({ marco: 'M4', nome: 'grep (P1): CONFIRM_*/REVERSE/REGISTER fora do vocabulário do LLM', ok: vocabularioVelho.length === 0, detalhe: vocabularioVelho.join(', ') || 'limpo' });
+
+            // Nenhum UUID de dose no prompt do principal: o bloco usa refs curtas.
+            const { estruturarDoses, renderizarBlocoDoses, normalizarParaAtalho } = await import('../src/dosesDoTurno.js');
+            const uuidDose = '3f1c2a9e-7b1d-4c6e-9a8f-0d2e4b6c8a10';
+            const { estrutura: estP1, mapa: mapaP1 } = estruturarDoses({ doses: [{
+                id: uuidDose, medication_id: 'b2a1c3d4-0000-4000-8000-000000000000', status: 'pendente', confirmed: false,
+                reminder_sent: true, scheduled_at: new Date(Date.now() - 60_000).toISOString(),
+                reminder_sent_at: new Date(Date.now() - 60_000).toISOString(), horario_agendado: '08:00',
+                tentativas: 1, quantidade_por_dose: 1, medications: { nome: 'Ômega 3', forma_farmaceutica: 'capsula', unidade_dose: 'unidade' }
+            }] });
+            const blocoP1 = renderizarBlocoDoses(estP1);
+            checks.push({
+                marco: 'M4',
+                nome: 'P1: nenhum UUID de dose no bloco do principal (ref curta D1, mapa só no turno)',
+                ok: !/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(blocoP1) && /\[D1\] Ômega 3/.test(blocoP1) && mapaP1.get('D1')?.id === uuidDose,
+                detalhe: blocoP1.split('\n').filter(l => l.includes('[D')).join(' | ')
+            });
+            checks.push({
+                marco: 'M4',
+                nome: 'P1: normalização do atalho reduz letras repetidas e bordas ("Simmm!" → "sim")',
+                ok: normalizarParaAtalho('Simmm!') === 'sim' && normalizarParaAtalho('Já tomei 👍') === 'ja tomei' && normalizarParaAtalho('Não') === 'nao',
+                detalhe: `${normalizarParaAtalho('Simmm!')} | ${normalizarParaAtalho('Já tomei 👍')} | ${normalizarParaAtalho('Não')}`
             });
             return checks;
         }
@@ -2073,6 +2141,287 @@ export const CASOS = [
             // 4. nada de boas-vindas de primeira mensagem.
             checks.push({ nome: 'retomada: sem boas-vindas de primeira mensagem', ...naoContem(r1, /sou a Nami|vi que voc[êe] j[áa] chegou|vou te ajudar a organizar seus rem[ée]dios, sim/i, 'boas-vindas de primeira mensagem') });
 
+            return checks;
+        }
+    },
+
+    // ========================================================
+    // v45 P1 — o principal vira a porta única (casos A37–A47).
+    // Conversas reais; asserções sobre o banco e o texto, nunca sobre o
+    // nome do agente.
+    // ========================================================
+
+    // --------------------------------------------------------
+    {
+        id: 'A37',
+        marco: 'M4',
+        titulo: 'João 24/09 08:43 — "Yes" com a dose de hoje esgotada',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'João', onboarded: true, estado: 'idle' });
+            const { med, schedules } = await seeds.criarMedicamento({ userId: user.id, nome: 'Roacutan', dosagem: '20mg', estoque: 10, horarios: ['06:28'] });
+            await seeds.criarDose({ medicationId: med.id, scheduleId: schedules[0].id, horario: '06:28', quando: diasAtras(1), status: 'confirmado' });
+            const hoje = await seeds.criarDose({
+                medicationId: med.id, scheduleId: schedules[0].id, horario: '06:28',
+                quando: hojeHaMinutos(135), status: 'nao_informado', tentativas: 3, minutosDesdeUltimaTentativa: 45
+            });
+
+            const r = await turno(ctx, user, 'Yes');
+            checagensDeForma(checks, '"Yes"', r);
+            const depois = (await doseLogs(ctx.db, med.id)).find(d => d.id === hoje.id);
+            checks.push({ nome: 'dose de hoje confirmada', ok: depois?.status === 'confirmado', detalhe: `status: ${depois?.status}` });
+            checks.push({ nome: 'nunca diz que não há dose pendente', ...naoContem(r, /n[ãa]o h[áa] (nenhuma )?dose/i, 'negação da dose') });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A38',
+        marco: 'M4',
+        titulo: 'João 26/09 12:01 — "Ontem eu tomei" com três doses esgotadas',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'João', onboarded: true, estado: 'idle' });
+            const { med, schedules } = await seeds.criarMedicamento({ userId: user.id, nome: 'Roacutan', dosagem: '20mg', estoque: 10, horarios: ['06:28'] });
+            const base = { medicationId: med.id, scheduleId: schedules[0].id, horario: '06:28', status: 'nao_informado', tentativas: 3 };
+            const hoje = await seeds.criarDose({ ...base, quando: hojeHaMinutos(200), minutosDesdeUltimaTentativa: 110 });
+            const ontem = await seeds.criarDose({ ...base, quando: diasAtras(1, 200) });
+            const anteontem = await seeds.criarDose({ ...base, quando: diasAtras(2, 200) });
+
+            const r = await turno(ctx, user, 'Ontem eu tomei');
+            checagensDeForma(checks, '"Ontem eu tomei"', r);
+            const logs = await doseLogs(ctx.db, med.id);
+            const st = (d) => logs.find(x => x.id === d.id)?.status;
+            checks.push({ nome: 'a dose de ONTEM confirmada', ok: st(ontem) === 'confirmado', detalhe: `ontem: ${st(ontem)}` });
+            checks.push({ nome: 'a dose de HOJE segue aberta', ok: st(hoje) === 'nao_informado', detalhe: `hoje: ${st(hoje)}` });
+            checks.push({ nome: 'a de anteontem segue aberta', ok: st(anteontem) === 'nao_informado', detalhe: `anteontem: ${st(anteontem)}` });
+            checks.push({ nome: 'o texto cita o dia da dose registrada', ...contem(r, /ontem/i, '"ontem"') });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A39',
+        marco: 'M4',
+        titulo: 'Guilherme 26/09 13:21 — "Yes" com dose pendente durante cad_estoque',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Guilherme', onboarded: true, estado: 'post_onboarding' });
+            const { med: omega, schedules } = await seeds.criarMedicamento({ userId: user.id, nome: 'Ômega 3', estoque: 30, horarios: ['12:58'] });
+
+            await turno(ctx, user, 'Aerolin spray, 4 jatos às 7h');
+            const { data: estadoAntes } = await ctx.db.from('conversation_state').select('state, context').eq('user_id', user.id).single();
+            if (estadoAntes?.state !== 'adding_med' || !String(estadoAntes?.context?.etapa || '').startsWith('cad_estoque')) {
+                return [{ nome: 'setup: coleta de estoque aberta', ok: false, detalhe: `estado: ${estadoAntes?.state}, etapa: ${estadoAntes?.context?.etapa}` }];
+            }
+            const dose = await seeds.criarDose({ medicationId: omega.id, scheduleId: schedules[0].id, horario: '12:58', minutosAtras: 20 });
+
+            const r = await turno(ctx, user, 'Yes');
+            checagensDeForma(checks, '"Yes"', r);
+            const depois = (await doseLogs(ctx.db, omega.id)).find(d => d.id === dose.id);
+            checks.push({ nome: 'dose do Ômega 3 confirmada (confirmação vence coleta)', ok: depois?.status === 'confirmado', detalhe: `status: ${depois?.status}` });
+            checks.push({ nome: 'coleta de estoque preservada', ...(await estadoDaConversa(ctx.db, user.id, 'adding_med')) });
+            checks.push({ nome: 'retoma o convite de estoque', ...contem(r, /estoque/i, 'menção ao estoque') });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A40',
+        marco: 'M4',
+        titulo: 'Guilherme 26/09 13:25 — "Yes" CITANDO o lembrete: confirma o grupo citado',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Guilherme', onboarded: true, estado: 'post_onboarding' });
+            const { med: omega, schedules: sO } = await seeds.criarMedicamento({ userId: user.id, nome: 'Ômega 3', estoque: 30, horarios: ['09:00'] });
+            const { med: creatina, schedules: sC } = await seeds.criarMedicamento({ userId: user.id, nome: 'Creatina', estoque: 30, horarios: ['12:00'] });
+
+            await turno(ctx, user, 'Aerolin spray, 4 jatos às 7h');
+            // O grupo CITADO é o mais antigo — sem a citação, a pista seria o último lembrete.
+            const { envio, messageId } = await seeds.criarEnvioFunil({
+                user, minutosAtras: 40,
+                texto: '⏰ Olá, Guilherme!\n\nHora do seu *Ômega 3*.\nQuantidade: 1 comprimido\n\nJá tomou? Responda *SIM* ou *NÃO* 💊'
+            });
+            const citada = await seeds.criarDose({ medicationId: omega.id, scheduleId: sO[0].id, horario: '09:00', minutosAtras: 40, funilEnvioId: envio.id });
+            const outra = await seeds.criarDose({ medicationId: creatina.id, scheduleId: sC[0].id, horario: '12:00', minutosAtras: 5 });
+
+            const r = await turno(ctx, user, 'Yes', { referenceMessageId: messageId });
+            checagensDeForma(checks, '"Yes" citando', r);
+            const stCitada = (await doseLogs(ctx.db, omega.id)).find(d => d.id === citada.id)?.status;
+            const stOutra = (await doseLogs(ctx.db, creatina.id)).find(d => d.id === outra.id)?.status;
+            checks.push({ nome: 'a dose do grupo CITADO confirmada', ok: stCitada === 'confirmado', detalhe: `Ômega 3: ${stCitada}` });
+            checks.push({ nome: 'a dose do outro grupo segue pendente', ok: stOutra === 'pendente', detalhe: `Creatina: ${stOutra}` });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A41',
+        marco: 'M4',
+        titulo: 'Eloísa 22/09 — "Simmm" com dose sem_estoque: estoque contestado, sem LLM',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Eloísa', onboarded: true, estado: 'idle' });
+            const { med, schedules } = await seeds.criarMedicamento({ userId: user.id, nome: 'Desogestrel', dosagem: '75mcg', estoque: 0, horarios: ['11:58'] });
+            const dose = await seeds.criarDose({ medicationId: med.id, scheduleId: schedules[0].id, horario: '11:58', minutosAtras: 15, status: 'sem_estoque' });
+
+            const r = await turnoCompleto(ctx, user, 'Simmm');
+            checagensDeForma(checks, '"Simmm"', r.texto);
+            const depois = (await doseLogs(ctx.db, med.id)).find(d => d.id === dose.id);
+            checks.push({ nome: 'dose confirmada', ok: depois?.status === 'confirmado' && depois?.confirmed === true, detalhe: `status: ${depois?.status}` });
+            const { data: medDepois } = await ctx.db.from('medications').select('estoque_atual').eq('id', med.id).single();
+            checks.push({ nome: 'estoque passa a NULO (a palavra da pessoa prevalece)', ok: medDepois?.estoque_atual === null, detalhe: `estoque_atual: ${medDepois?.estoque_atual}` });
+            const { data: movs } = await ctx.db.from('stock_movements').select('tipo, estoque_novo').eq('medication_id', med.id);
+            checks.push({ nome: 'movimento estoque_contestado registrado', ok: (movs || []).some(m => m.tipo === 'estoque_contestado' && m.estoque_novo === null), detalhe: JSON.stringify(movs) });
+            checks.push({ nome: 'nenhuma chamada de LLM (atalho exato)', ok: r.chamadasLLM === 0, detalhe: `chamadas: ${r.chamadasLLM}` });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A42',
+        marco: 'M4',
+        titulo: 'Flávia 24/09 — "Comprei 60 comprimidos / Sim": dose confirmada E estoque atualizado',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Flávia', onboarded: true, estado: 'idle' });
+            const { med: ofolato, schedules: sO } = await seeds.criarMedicamento({ userId: user.id, nome: 'Ofolato D', estoque: 20, horarios: ['11:58'] });
+            const { med: regenesis, schedules: sR } = await seeds.criarMedicamento({ userId: user.id, nome: 'Regenesis e ofolato D', estoque: 0, horarios: ['11:58'] });
+            const { envio, messageId } = await seeds.criarEnvioFunil({
+                user, minutosAtras: 4, origem: 'proativo:alerta_estoque_zerado',
+                texto: '⏰ Flávia, está na hora do seu *Regenesis e ofolato D*!\n\n⚠️ Seu estoque está zerado — não foi possível registrar a dose.\n\nQuando fizer a recompra, me avise a nova quantidade:\n*"Comprei 30 comprimidos de Regenesis e ofolato D"* 💊'
+            });
+            await seeds.criarDose({ medicationId: ofolato.id, scheduleId: sO[0].id, horario: '11:58', minutosAtras: 4 });
+            const doseR = await seeds.criarDose({ medicationId: regenesis.id, scheduleId: sR[0].id, horario: '11:58', minutosAtras: 4, status: 'sem_estoque', funilEnvioId: envio.id });
+
+            const r = await turno(ctx, user, 'Comprei 60 comprimidos\nSim', { referenceMessageId: messageId });
+            checagensDeForma(checks, 'compra + sim', r);
+            const stR = (await doseLogs(ctx.db, regenesis.id)).find(d => d.id === doseR.id)?.status;
+            checks.push({ nome: 'dose do Regenesis (citado) confirmada', ok: stR === 'confirmado', detalhe: `status: ${stR}` });
+            const { data: medR } = await ctx.db.from('medications').select('estoque_atual').eq('id', regenesis.id).single();
+            checks.push({ nome: 'estoque do Regenesis atualizado com a compra (60)', ok: Number(medR?.estoque_atual) === 60, detalhe: `estoque_atual: ${medR?.estoque_atual}` });
+            checks.push({ nome: 'texto não convida a informar o estoque que acabou de chegar', ...naoContem(r, /Ainda não tenho o estoque do \*Regenesis/i, 'convite contraditório') });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A43',
+        marco: 'M4',
+        titulo: 'Fran 25–26/09 — "Não" depois do lembrete = "ainda não"',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Fran', onboarded: true, estado: 'idle' });
+            const { med, schedules } = await seeds.criarMedicamento({ userId: user.id, nome: 'Ferro quelato', estoque: null, horarios: ['12:18'] });
+            const dose = await seeds.criarDose({ medicationId: med.id, scheduleId: schedules[0].id, horario: '12:18', minutosAtras: 3 });
+
+            const r = await turno(ctx, user, 'Não');
+            checagensDeForma(checks, '"Não"', r);
+            const logs = await doseLogs(ctx.db, med.id);
+            checks.push({ nome: 'nenhuma dose marcada como não tomada', ok: !logs.some(d => d.status === 'nao_tomado'), detalhe: `status: ${logs.map(d => d.status).join(',')}` });
+            checks.push({ nome: 'a dose segue aguardando', ok: logs.find(d => d.id === dose.id)?.status === 'pendente', detalhe: `status: ${logs.find(d => d.id === dose.id)?.status}` });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A44',
+        marco: 'M4',
+        titulo: 'Fran 24/09 19:56 — "Quero cadastrar mais um!" durante o convite de estoque',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Fran', onboarded: true, estado: 'post_onboarding' });
+            await turno(ctx, user, 'Ferro quelato, 1 comprimido às 12:20 e às 20:20');
+            const { data: antes } = await ctx.db.from('conversation_state').select('state, context').eq('user_id', user.id).single();
+            if (!String(antes?.context?.etapa || '').startsWith('cad_estoque')) {
+                return [{ nome: 'setup: convite de estoque aberto', ok: false, detalhe: `estado: ${antes?.state}, etapa: ${antes?.context?.etapa}` }];
+            }
+
+            const r = await turno(ctx, user, 'Quero cadastrar mais um!');
+            checagensDeForma(checks, '"Quero cadastrar mais um!"', r);
+            const { data: depois } = await ctx.db.from('conversation_state').select('state, context').eq('user_id', user.id).single();
+            checks.push({
+                nome: 'cadastro NOVO aberto (pergunta o nome, sem o anterior no rascunho)',
+                ok: depois?.state === 'adding_med' && depois?.context?.etapa === 'cad_nome' && !depois?.context?.medication_id,
+                detalhe: `estado: ${depois?.state}, etapa: ${depois?.context?.etapa}, nome: ${depois?.context?.nome}`
+            });
+            checks.push({ nome: 'o convite anterior NÃO é repetido', ...naoContem(r, /quantos comprimidos|se voc[êe] souber quantos/i, 'convite de estoque repetido') });
+            const meds = await medicamentos(ctx.db, user.id, { nomeIlike: 'Ferro%' });
+            checks.push({ nome: 'o Ferro quelato continua cadastrado e ativo', ok: meds.length === 1 && meds[0].ativo === true, detalhe: `${meds.length} linha(s)` });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A45',
+        marco: 'M4',
+        titulo: 'Fran 22/09 07:58 — "Erro" logo após o cadastro',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Fran', onboarded: true, estado: 'post_onboarding' });
+            await turno(ctx, user, 'Puran T4 75mcg, 1 comprimido às 6:30');
+            const r = await turno(ctx, user, 'Erro');
+            checagensDeForma(checks, '"Erro"', r);
+            checks.push({ nome: 'pergunta o que ficou errado', ...contem(r, /\?/, 'uma pergunta') });
+            checks.push({ nome: 'não repete o convite de estoque', ...naoContem(r, /quantos comprimidos|se voc[êe] souber quantos|estoque/i, 'convite de estoque') });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A46',
+        marco: 'M4',
+        titulo: 'Fran 22/09 07:59 — "A vitamina b12 é uma vez por semana…" em cad_estoque_lote',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Fran', onboarded: true, estado: 'post_onboarding' });
+            await turno(ctx, user, 'Puran T4 75mcg às 6:30h\nVitamina b12 2 comprimidos 1000 mcg toda segunda, as 7h');
+            await turno(ctx, user, 'Pode');
+            const { data: antes } = await ctx.db.from('conversation_state').select('state, context').eq('user_id', user.id).single();
+            const b12 = (await medicamentos(ctx.db, user.id, { nomeIlike: 'Vitamina b12%' }))[0];
+            if (antes?.context?.etapa !== 'cad_estoque_lote' || !b12) {
+                return [{ nome: 'setup: lote gravado e convite agregado aberto', ok: false, detalhe: `etapa: ${antes?.context?.etapa}, b12: ${!!b12}` }];
+            }
+
+            const r = await turno(ctx, user, 'A vitamina b12 é uma vez por semana apenas, toda segunda-feira');
+            checagensDeForma(checks, 'b12 semanal', r);
+            const { data: b12Depois } = await ctx.db.from('medications').select('estoque_atual').eq('id', b12.id).single();
+            checks.push({ nome: 'estoque da B12 intocado (o 12 do nome NÃO vira estoque)', ok: b12Depois?.estoque_atual === null, detalhe: `estoque_atual: ${b12Depois?.estoque_atual}` });
+            const { data: movs } = await ctx.db.from('stock_movements').select('tipo').eq('medication_id', b12.id);
+            checks.push({ nome: 'nenhum movimento de estoque na B12', ok: (movs || []).length === 0, detalhe: JSON.stringify(movs) });
+            checks.push({ nome: 'nada de "estoque anotado"', ...naoContem(r, /estoque anotado|12 comprimidos/i, 'estoque inventado') });
+            const { data: depois } = await ctx.db.from('conversation_state').select('state, context').eq('user_id', user.id).single();
+            checks.push({ nome: 'a mensagem saiu do convite de estoque (vai à configuração)', ok: depois?.context?.etapa !== 'cad_estoque_lote', detalhe: `estado: ${depois?.state}, etapa: ${depois?.context?.etapa}` });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A47',
+        marco: 'M4',
+        titulo: '"sim" simples, um grupo pendente, estado idle — atalho exato sem LLM',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Fran', onboarded: true, estado: 'idle' });
+            const { med, schedules } = await seeds.criarMedicamento({ userId: user.id, nome: 'Puran T4', estoque: 30, horarios: ['06:28'] });
+            const dose = await seeds.criarDose({ medicationId: med.id, scheduleId: schedules[0].id, horario: '06:28', minutosAtras: 25 });
+
+            const r = await turnoCompleto(ctx, user, 'sim');
+            checagensDeForma(checks, '"sim"', r.texto);
+            const depois = (await doseLogs(ctx.db, med.id)).find(d => d.id === dose.id);
+            checks.push({ nome: 'dose confirmada', ok: depois?.status === 'confirmado', detalhe: `status: ${depois?.status}` });
+            checks.push({ nome: 'nenhuma chamada de LLM', ok: r.chamadasLLM === 0, detalhe: `chamadas: ${r.chamadasLLM}` });
+            checks.push({ nome: 'o texto diz qual dose e de qual dia', ...contem(r.texto, /Puran T4\* de hoje/i, 'medicamento + dia') });
             return checks;
         }
     }

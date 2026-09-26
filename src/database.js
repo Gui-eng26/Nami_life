@@ -1004,7 +1004,9 @@ export async function getDosesConfirmadasHoje(userId) {
     }));
 }
 
-export async function confirmarDoseRetroativa(doseLogId, motivo) {
+// v45 P1 §6.2: também é o caminho da CORREÇÃO "não tomada → tomou" — quem
+// chama declara os status aceitos; o revertido_de guarda de onde a dose veio.
+export async function confirmarDoseRetroativa(doseLogId, motivo, { statusPermitidos = ['nao_informado'] } = {}) {
     const { data: log, error: fetchError } = await supabase
         .from('dose_logs')
         .select('*, medications(id, nome, estoque_atual)')
@@ -1012,7 +1014,7 @@ export async function confirmarDoseRetroativa(doseLogId, motivo) {
         .single();
 
     if (fetchError || !log) throw new Error(`Dose log não encontrado: ${doseLogId}`);
-    if (log.status !== 'nao_informado') throw new Error(`Dose não está em nao_informado: ${log.status}`);
+    if (!statusPermitidos.includes(log.status)) throw new Error(`Dose fora dos status aceitos (${statusPermitidos.join('/')}): ${log.status}`);
 
     const agora = new Date().toISOString();
 
@@ -1024,7 +1026,7 @@ export async function confirmarDoseRetroativa(doseLogId, motivo) {
             taken_at: agora,
             revertido: true,
             revertido_at: agora,
-            revertido_de: 'nao_informado',
+            revertido_de: log.status,
             revertido_motivo: motivo || 'confirmação retroativa pelo usuário'
         })
         .eq('id', doseLogId);
@@ -1097,6 +1099,155 @@ export async function reverterConfirmacao(doseLogId, motivo) {
     });
 
     return { medicationId: log.medication_id, novoStatus };
+}
+
+// ============================================================
+// v45 P1 §3.2 / §6 — DOSES DO TURNO DO PRINCIPAL
+// ============================================================
+
+// Janela do bloco único de doses: hoje, ontem e anteontem (Brasília), só
+// doses cujo lembrete já saiu — inclusive sem_estoque. Pausadas ficam de fora.
+// Volta cada dose com o que o bloco e o template precisam, sem o LLM ver id.
+export async function getDosesJanelaPrincipal(userId) {
+    const inicio = new Date(new Date(janelaDiaBRT(hojeBRT()).inicio).getTime() - 2 * 24 * 60 * 60 * 1000).toISOString();
+
+    const { data: meds } = await supabase
+        .from('medications')
+        .select('id, nome, forma_farmaceutica, unidade_dose, estoque_atual, status')
+        .eq('user_id', userId)
+        .eq('ativo', true);
+    const ativos = (meds || []).filter(m => m.status !== 'pausado');
+    if (ativos.length === 0) return [];
+    const medPorId = Object.fromEntries(ativos.map(m => [m.id, m]));
+
+    const { data, error } = await supabase
+        .from('dose_logs')
+        .select('*, schedules!dose_logs_schedule_id_fkey(quantidade_por_dose)')
+        .in('medication_id', ativos.map(m => m.id))
+        .eq('reminder_sent', true)
+        .gte('scheduled_at', inicio)
+        .order('scheduled_at', { ascending: true });
+
+    if (error) {
+        console.error('Erro ao buscar doses da janela do principal:', error.message);
+        return [];
+    }
+
+    return (data || [])
+        .filter(d => d.status !== 'pausado')
+        .map(d => ({
+            ...d,
+            quantidade_por_dose: d.schedules?.quantidade_por_dose ?? null,
+            medications: medPorId[d.medication_id]
+        }));
+}
+
+// §6.1: toda função de dose chamada a partir de uma ref do turno confere
+// DONO e STATUS antes de escrever — o mapa do turno pode estar velho (outro
+// turno ou o scheduler escreveu no meio) e nunca se escreve na dose alheia.
+export async function conferirDonoEStatusDaDose(doseLogId, { userId, statusPermitidos }) {
+    const { data: log, error } = await supabase
+        .from('dose_logs')
+        .select('id, status, medication_id, medications(user_id, estoque_atual, nome)')
+        .eq('id', doseLogId)
+        .single();
+    if (error || !log) return { ok: false, motivo: 'dose_inexistente' };
+    if (userId && log.medications?.user_id !== userId) return { ok: false, motivo: 'dono_diferente' };
+    if (statusPermitidos && !statusPermitidos.includes(log.status)) {
+        return { ok: false, motivo: `status_${log.status}` };
+    }
+    return { ok: true, log };
+}
+
+// §6.4 (decisão de 26/09): a pessoa confirmou dose de um medicamento com
+// estoque <= 0 — a palavra dela prevalece. O estoque vira NULO (desconhecido)
+// e o comportamento de estoque nulo assume (o scheduler para de criar
+// sem_estoque). Movimento `estoque_contestado`, com estoque_novo nulo.
+export async function contestarEstoque(medicationId, doseLogId = null) {
+    const { data: med, error } = await supabase
+        .from('medications')
+        .select('estoque_atual')
+        .eq('id', medicationId)
+        .single();
+    if (error || !med) throw new Error(`Medicamento não encontrado: ${medicationId}`);
+    if (med.estoque_atual === null || med.estoque_atual > 0) return false;
+
+    const { error: eUpd } = await supabase
+        .from('medications')
+        .update({ estoque_atual: null, estoque_estimado: false })
+        .eq('id', medicationId);
+    if (eUpd) throw new Error(`Erro ao contestar estoque: ${eUpd.message}`);
+
+    const { error: eMov } = await supabase
+        .from('stock_movements')
+        .insert({
+            medication_id: medicationId,
+            tipo: 'estoque_contestado',
+            origem: 'automatico',
+            quantidade_delta: 0,
+            estoque_anterior: med.estoque_atual,
+            estoque_novo: null,
+            motivo: 'pessoa confirmou dose com estoque zerado',
+            dose_log_id: doseLogId,
+            estimado: false
+        });
+    if (eMov) throw new Error(`Erro ao registrar estoque contestado: ${eMov.message}`);
+
+    console.log(`📦 Estoque contestado — medication: ${medicationId}, ${med.estoque_atual} → nulo`);
+    return true;
+}
+
+// Dose `sem_estoque` confirmada: vira confirmado (o estoque já foi contestado
+// pelo chamador, então não há débito — estoque nulo nunca é decrementado).
+export async function confirmarDoseSemEstoque(doseLogId, motivo) {
+    const agora = new Date().toISOString();
+    const { data: log, error: eSel } = await supabase
+        .from('dose_logs').select('status, medication_id').eq('id', doseLogId).single();
+    if (eSel || !log) throw new Error(`Dose log não encontrado: ${doseLogId}`);
+    if (log.status !== 'sem_estoque') throw new Error(`Dose não está em sem_estoque: ${log.status}`);
+
+    const { error } = await supabase
+        .from('dose_logs')
+        .update({
+            status: 'confirmado',
+            confirmed: true,
+            taken_at: agora,
+            revertido: true,
+            revertido_at: agora,
+            revertido_de: 'sem_estoque',
+            revertido_motivo: motivo || 'pessoa confirmou dose registrada sem estoque'
+        })
+        .eq('id', doseLogId);
+    if (error) throw new Error(`Erro ao confirmar dose sem estoque: ${error.message}`);
+    console.log(`✅ Dose sem_estoque confirmada — log id: ${doseLogId}`);
+    return log.medication_id;
+}
+
+// Leitura PÓS-escrita para o template de confirmação (P56, §6.3).
+export async function getDosesPorIds(doseLogIds) {
+    if (!doseLogIds?.length) return [];
+    const { data, error } = await supabase
+        .from('dose_logs')
+        .select('id, status, confirmed, taken_at, scheduled_at, horario_agendado, medication_id, medications(nome, forma_farmaceutica)')
+        .in('id', doseLogIds);
+    if (error) {
+        console.error('Erro na leitura pós-escrita das doses:', error.message);
+        return [];
+    }
+    return data || [];
+}
+
+// Último turno do usuário (guarda 2 do atalho: o lembrete esgotado conta como
+// candidato só se saiu DEPOIS da última mensagem da pessoa).
+export async function getUltimoTurnoUsuario(userId) {
+    const { data } = await supabase
+        .from('agent_logs')
+        .select('created_at')
+        .eq('user_id', userId)
+        .not('user_message', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(1);
+    return data?.[0]?.created_at ?? null;
 }
 
 // ============================================================

@@ -21,7 +21,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import 'dotenv/config';
 import { CAPACIDADES, NAO_SUPORTADO, NUNCA } from './inventario.js';
-import { degradar } from './observabilidade.js';
+import { degradar, contarChamadaLLM } from './observabilidade.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -197,6 +197,7 @@ export async function interpretarTurno({ message, currentState, historicoConvers
 
     for (let tentativa = 1; tentativa <= 2; tentativa++) {
         try {
+            contarChamadaLLM();
             const resposta = await anthropic.messages.create({
                 model: 'claude-sonnet-4-6',
                 max_tokens: 600,
