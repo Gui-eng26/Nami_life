@@ -64,6 +64,17 @@ export function nomeCorrigidoParecido(nomeAtual, nomeNovo) {
     });
 }
 
+// v45 P1: o principal PROPÕE nomes "escritos nesta mensagem"; o código confere.
+// Um nome fica se alguma palavra dele (3+ letras, ou com dígito) aparece na
+// mensagem — com tolerância de grafia ("Fluoxetina" × "Fluxetina"). Descarta o
+// nome do fluxo em andamento repetido pelo modelo ("Meio dia" → "Ômega 3").
+export function nomeEscritoNaMensagem(nome, mensagem) {
+    const palavrasMsg = normalizar(String(mensagem || '')).split(/[^a-z0-9]+/).filter(Boolean);
+    const palavrasNome = normalizar(String(nome || '')).split(/[^a-z0-9]+/).filter(p => p.length >= 3 || /\d/.test(p));
+    if (palavrasNome.length === 0) return false;
+    return palavrasNome.some(pn => palavrasMsg.some(pm => pm === pn || (pn.length >= 5 && distanciaEdicao(pm, pn) <= 2)));
+}
+
 // P6.4 (M3, MH-82/39): TODOS os medicamentos citados na mensagem (fronteira de
 // palavra na forma normalizada) — para seleção múltipla em lote.
 export function encontrarTodosMedicamentos(texto, medications) {

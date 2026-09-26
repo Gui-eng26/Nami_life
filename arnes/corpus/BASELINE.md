@@ -244,7 +244,14 @@ Porta atual (P0) nas categorias de extração, para referência: 24/31. Com
 registrada é ignorado). A rodada com o código final ficou inválida: a chave da
 API ficou sem crédito no meio dela. Os dois ajustes só podem melhorar o placar
 dele (D-18 e boa parte dos erros de `nomes_citados` eram exatamente isso).
-Refazer antes da decisão de modelo.
+
+**Comparação de modelo adiada (decisão de Guilherme, 26/09):** a troca de modelo
+não está em discussão; o principal segue em `claude-sonnet-4-6`, que passa no
+critério do §11. A rodada do `claude-sonnet-5` com o código final só roda quando
+a troca virar uma pergunta de verdade — e com autorização explícita, pelo custo.
+Observação para esse dia: no Sonnet 5 o raciocínio fica ligado quando o código
+não o configura (tokens de saída a mais), então o preço por token menor não
+garante chamada mais barata — medir o custo por turno junto do acerto.
 
 ### Por campo — `claude-sonnet-4-6`
 

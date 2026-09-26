@@ -15,6 +15,8 @@
 import 'dotenv/config';
 import { NAMI_SYSTEM_PROMPT } from '../prompts.js';
 import { classificarComFerramenta } from '../validadores/llm.js';
+import { limparDosagemDoNome } from '../porta.js';
+import { nomeEscritoNaMensagem } from '../nlp_helpers.js';
 import {
     updateUserName,
     registrarMovimentoEstoque,
@@ -203,7 +205,7 @@ function decisaoValida(input) {
 export const DECISAO_DEGRADADA = { tipo: 'degradado', message: '', doses: [], actions: [], delegar: null, feedback: 'nenhum' };
 
 // Normaliza a proposta: o que o código vai de fato olhar, sem campo solto.
-export function normalizarDecisao(input) {
+export function normalizarDecisao(input, mensagem = null) {
     const d = input?.delegar && ESPECIALISTAS.includes(input.delegar.especialista) ? input.delegar : null;
     const campos = d?.campos || {};
     const texto = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
@@ -216,7 +218,12 @@ export function normalizarDecisao(input) {
             especialista: d.especialista,
             relacao_pendencia: RELACOES.includes(d.relacao_pendencia) ? d.relacao_pendencia : 'sem_pendencia',
             campos: {
-                medicamentos: Array.isArray(campos.medicamentos) ? campos.medicamentos.map(m => String(m).trim()).filter(Boolean) : [],
+                // O campo DECLARA "sem dosagem": o contrato é feito cumprir aqui, no
+                // mesmo ponto único da porta (replay 21/09, "Predsin 2mg 2mg").
+                medicamentos: Array.isArray(campos.medicamentos)
+                    ? campos.medicamentos.map(m => limparDosagemDoNome(String(m).trim()))
+                        .filter(m => m && (mensagem === null || nomeEscritoNaMensagem(m, mensagem)))
+                    : [],
                 horarios: Array.isArray(campos.horarios) ? campos.horarios.map(h => String(h).trim()).filter(Boolean) : [],
                 medicamento: texto(campos.medicamento),
                 expressaoData: texto(campos.expressaoData),
@@ -232,7 +239,7 @@ export function normalizarDecisao(input) {
 
 // UMA chamada de interpretação. Duas tentativas; na falha dupla, degradar()
 // e o roteador faz a pergunta segura.
-export async function interpretarComPrincipal({ contexto, image = null, model = MODELO_PRINCIPAL }) {
+export async function interpretarComPrincipal({ contexto, mensagem = null, image = null, model = MODELO_PRINCIPAL }) {
     const content = image
         ? [{ type: 'image', source: { type: 'url', url: image } }, { type: 'text', text: contexto }]
         : [{ type: 'text', text: contexto }];
@@ -252,7 +259,7 @@ export async function interpretarComPrincipal({ contexto, image = null, model = 
         fallback: DECISAO_DEGRADADA
     });
     if (degradado || parsed?.tipo === 'degradado') return null;
-    return normalizarDecisao(parsed);
+    return normalizarDecisao(parsed, mensagem);
 }
 
 // ------------------------------------------------------------

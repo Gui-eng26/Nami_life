@@ -116,6 +116,16 @@ function relativo(ts) {
 
 const JANELA_AMBIGUIDADE_DUPLA_PENDENCIA_MS = 90_000;
 
+// P6.1 (BUG-86): só nas etapas em que a pergunta aberta é de SIM/NÃO um
+// "sim" curto disputa com a dose pendente (pela pergunta mais recente).
+// Pergunta ABERTA de coleta (posologia, estoque, nome) não se responde com
+// "sim" — a dose vence sempre (regra 5, caso A4). Mesma lista do M3.
+const ETAPAS_COM_CONFIRMACAO_DE_FLUXO = new Set([
+    'confirm_acao', 'reativ_confirmar', 'cad_lote_confirmar',
+    'corrigir_mh79_confirmar', 'pos_alteracao', 'reativ_oferta', 'reativ_manter_ou_mudar',
+    'reativ_com_mudanca_confirmar', 'confirm_acao_lote'
+]);
+
 function montarPendencia({ state, historicoConversa, ultimoLembrete }) {
     const estado = state?.state || 'idle';
     if (estado === 'idle') return null;
@@ -134,9 +144,12 @@ function montarPendencia({ state, historicoConversa, ultimoLembrete }) {
         mensagemPreservada: estado === 'post_onboarding' ? (state?.context?.mensagem_rica || null) : null
     };
 
-    // P6.1: com pergunta aberta E lembrete de dose, o código diz qual é o mais
-    // recente — o principal nunca estima tempo.
-    if (ultimo?.created_at && ultimoLembrete?.momento) {
+    // P6.1: com pergunta de SIM/NÃO aberta E lembrete de dose, o código diz qual
+    // é o mais recente — o principal nunca estima tempo. Fora dessas etapas, a
+    // pergunta aberta não disputa um "sim" com a dose.
+    if (ultimoLembrete?.momento && !ETAPAS_COM_CONFIRMACAO_DE_FLUXO.has(etapa)) {
+        pendencia.maisRecente = 'a pergunta aberta NÃO é de sim/não — um "sim" curto agora é da DOSE (regra 1); a pergunta do fluxo continua aberta';
+    } else if (ultimo?.created_at && ultimoLembrete?.momento) {
         const tPergunta = new Date(ultimo.created_at).getTime();
         const tLembrete = new Date(ultimoLembrete.momento).getTime();
         if (Math.abs(tPergunta - tLembrete) <= JANELA_AMBIGUIDADE_DUPLA_PENDENCIA_MS) {
@@ -279,7 +292,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
     });
 
     if (process.env.NAMI_DEBUG_PRINCIPAL) console.log(`🔎 [PRINCIPAL] contexto:\n${contexto}`);
-    const decisao = await interpretarComPrincipal({ contexto, image });
+    const decisao = await interpretarComPrincipal({ contexto, mensagem: message, image });
     if (!decisao) {
         return { agentName: 'principal_degradado', response: juntar(textosAnteriores, reperguntaSegura(user)), feedback: null };
     }
@@ -302,9 +315,14 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
             // §6.1: ref inválida → o turno vira pergunta segura (degradar já registrado).
             return { agentName: 'principal_degradado', response: juntar(partes, reperguntaSegura(user)), feedback: decisao.feedback };
         }
-        partes.push(r.texto);
-        dosesExecutadas = true;
-        agentName = 'principal_dose';
+        if (r.soJaRegistradas) {
+            // Copy provisória (sessão de copy do §12).
+            if (!decisao.message) partes.push('Tudo certo — isso já estava registrado aqui ✅');
+        } else {
+            partes.push(r.texto);
+            dosesExecutadas = true;
+            agentName = 'principal_dose';
+        }
     }
 
     // Texto do próprio principal (responder/perguntar, ou complemento).

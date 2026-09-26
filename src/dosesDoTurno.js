@@ -318,9 +318,14 @@ const TABELA = {
     pendente: { tomou: 'confirmar_pendente', nao_tomou: 'nao_tomado' },
     nao_informado: { tomou: 'confirmar_retroativa', nao_tomou: 'nao_tomado' },
     sem_estoque: { tomou: 'confirmar_sem_estoque', nao_tomou: 'manter_sem_estoque' },
-    confirmado: { desfazer: 'reverter' },
-    nao_tomado: { tomou: 'corrigir_para_tomada' }
+    confirmado: { desfazer: 'reverter', tomou: 'ja_registrada' },
+    nao_tomado: { tomou: 'corrigir_para_tomada', nao_tomou: 'ja_registrada' }
 };
+
+// Fato que o banco JÁ registra ("tomei todos" cobrindo também doses já
+// confirmadas): nada a escrever, e o turno não cai por isso — só as outras
+// doses do mesmo relato são executadas.
+const JA_REGISTRADA = 'ja_registrada';
 
 export function acaoDaTabela(statusBanco, fato) {
     return TABELA[statusBanco]?.[fato] ?? null;
@@ -458,6 +463,12 @@ export async function executarFatosDeDose({ user, fatos, mapa, semAlertaPara = n
     if (!fatos?.length) return { ok: true, texto: '', executados: [] };
 
     const validacao = validarFatos(fatos, mapa);
+    if (validacao.ok) {
+        const jaRegistradas = validacao.planos.filter(p => p.acao === JA_REGISTRADA);
+        if (jaRegistradas.length) console.log(`💊 [DOSES] já registradas, ignoradas: ${jaRegistradas.map(p => `${p.ref}:${p.fato}`).join(', ')} — ${user.phone}`);
+        validacao.planos = validacao.planos.filter(p => p.acao !== JA_REGISTRADA);
+        if (validacao.planos.length === 0) return { ok: true, texto: '', executados: [], soJaRegistradas: true };
+    }
     if (!validacao.ok) {
         await degradar({
             origem: 'principal', motivo: 'ref_dose_invalida', agent: 'principal', userId: user.id,

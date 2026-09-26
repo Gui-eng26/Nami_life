@@ -36,11 +36,20 @@ export async function classificarComFerramenta({
                 model,
                 max_tokens: maxTokens,
                 ...(temperature !== null ? { temperature } : {}),
-                system: systemPrompt,
+                // v45 P1: prompt de sistema em cache. Ele é idêntico em toda
+                // chamada do mesmo classificador (e para todos os usuários) —
+                // depois da 1ª chamada na janela, o trecho custa ~10% do preço.
+                // Prompt abaixo do mínimo do modelo (1024 tokens no Sonnet 4.6)
+                // simplesmente não entra em cache, sem erro e sem custo extra.
+                system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
                 tools: [{ name: nomeFerramenta, description: descricaoFerramenta, input_schema: schema }],
                 tool_choice: { type: 'tool', name: nomeFerramenta },
                 messages: messages || [{ role: 'user', content: message || '' }]
             });
+            const u = response.usage || {};
+            if (u.cache_read_input_tokens || u.cache_creation_input_tokens) {
+                console.log(`💾 [CACHE] ${motivo}: lidos ${u.cache_read_input_tokens || 0} · gravados ${u.cache_creation_input_tokens || 0} · sem cache ${u.input_tokens || 0}`);
+            }
             const toolUse = response.content.find(b => b.type === 'tool_use' && b.name === nomeFerramenta);
             const input = toolUse?.input ?? null;
             if (input && (!validar || validar(input))) {
@@ -78,7 +87,7 @@ export async function classificarPalavra({ systemPrompt, message, maxTokens = 8,
         const resposta = await anthropic.messages.create({
             model: 'claude-sonnet-4-6',
             max_tokens: maxTokens,
-            system: systemPrompt,
+            system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
             messages: [{ role: 'user', content: message || '' }]
         });
         const texto = (resposta.content[0]?.text || '').toLowerCase().trim();
