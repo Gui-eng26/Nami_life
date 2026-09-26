@@ -295,6 +295,11 @@ async function carregarPrincipal() {
 
 // A decisão do principal no mesmo formato do `observado_producao`.
 function observadoDaDecisao(d) {
+    // P1-copy §3: `ainda_nao` não grava nada — para a régua, a decisão é
+    // "responder" (a dose segue aberta), como no gabarito.
+    const doses = (d.doses || []).filter(f => f.fato !== 'ainda_nao');
+    const tipo = d.tipo === 'dose' && doses.length === 0 ? 'responder' : d.tipo;
+    d = { ...d, tipo, doses };
     let outra = null;
     if ((d.actions || []).some(a => a?.type === 'UPDATE_STOCK')) outra = { tipo: 'acao' };
     else if (d.delegar && d.tipo !== 'delegar') outra = { tipo: 'delegar' };
