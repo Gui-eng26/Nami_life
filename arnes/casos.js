@@ -2018,5 +2018,62 @@ export const CASOS = [
             });
             return checks;
         }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A36',
+        marco: 'M4',
+        titulo: 'Retomada depois de semanas na etapa do nome (estados legados migrados — micro-entrega v45)',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+
+            // Formato EXATO das linhas migradas em produção (22/09): o M4
+            // eliminou os estados `recep_*` e o runner descartava qualquer
+            // etapa fora do vocabulário `onb_` — a pessoa que voltava semanas
+            // depois era tratada como primeira mensagem e a resposta que ela
+            // deu à pergunta pendente ia para o lixo (caso Fran, 22/09 07:38).
+            // A correção é DADO, não código: a migração reescreveu essas linhas
+            // para o vocabulário novo, e o grep-guard do A0 segue impedindo que
+            // o mapeamento volte para dentro de src/.
+            const user = await seeds.criarUsuario({
+                nome: null, onboarded: false, estado: 'onboarding',
+                contexto: {
+                    etapa: 'onb_nome',
+                    tentativas_nome: 0,
+                    intencao_inicial: 'cadastrar',
+                    mensagem_inicial: 'Oi Nami! Quero sua ajuda pra cuidar da minha saúde.'
+                }
+            });
+
+            const r1 = await turno(ctx, user, 'Fran');
+            checagensDeForma(checks, 'retomada', r1);
+
+            const { data: estado } = await ctx.db.from('conversation_state')
+                .select('state, context').eq('user_id', user.id).single();
+
+            // 1. a resposta à pergunta pendente é APROVEITADA (regras 3 e 4).
+            checks.push({
+                nome: 'retomada: o nome respondido é reconhecido e persiste no contexto',
+                ok: estado?.context?.nome_coletado === 'Fran',
+                detalhe: `nome_coletado: ${JSON.stringify(estado?.context?.nome_coletado)}`
+            });
+
+            // 2. a pergunta pendente NÃO é repetida.
+            checks.push({ nome: 'retomada: zero repergunta do nome', ...naoContem(r1, /como posso te chamar|como quer que eu te chame|qual (?:é )?o seu nome/i, 'repergunta de nome') });
+
+            // 3. a conversa avança para a pendência seguinte (consentimento).
+            checks.push({ nome: 'retomada: a resposta pede o consentimento LGPD', ...contem(r1, /concorda|autoriza[çc][ãa]o/i, 'pedido de consentimento') });
+            checks.push({
+                nome: 'retomada: estado salvo avança para onb_lgpd (state onboarding)',
+                ok: estado?.state === 'onboarding' && estado?.context?.etapa === 'onb_lgpd',
+                detalhe: `state: ${estado?.state}, etapa: ${estado?.context?.etapa}`
+            });
+
+            // 4. nada de boas-vindas de primeira mensagem.
+            checks.push({ nome: 'retomada: sem boas-vindas de primeira mensagem', ...naoContem(r1, /sou a Nami|vi que voc[êe] j[áa] chegou|vou te ajudar a organizar seus rem[ée]dios, sim/i, 'boas-vindas de primeira mensagem') });
+
+            return checks;
+        }
     }
 ];

@@ -1,0 +1,5769 @@
+[
+  {
+    "id": "D-01",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-09-24",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-24T08:43:46-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 08:00",
+        "tentativa": 3,
+        "grupo": "D1"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "24/09",
+          "hora": "06:28",
+          "medicamento": "Roacutan",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D2",
+          "dia": "ontem",
+          "data": "23/09",
+          "hora": "06:28",
+          "medicamento": "Roacutan",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D3",
+          "dia": "anteontem",
+          "data": "22/09",
+          "hora": "06:28",
+          "medicamento": "Roacutan",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        }
+      ],
+      "medicamentos": [
+        "Roacutan"
+      ]
+    },
+    "mensagem": "Yes",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "principal respondeu \"não há nenhuma dose pendente agora\" — a dose de hoje tinha esgotado as cobranças às ~08:30 e deixou de ser vista como pendente",
+      "tipo": "responder",
+      "doses": [],
+      "correto": false
+    },
+    "revisar": false,
+    "nota": "\"Yes\" 13 min depois do esgotamento das cobranças. A dose foi corrigida à mão em 26/09 13:07."
+  },
+  {
+    "id": "D-02",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-09-26",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-26T12:01:47-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 08:00",
+        "tentativa": 3,
+        "grupo": "D1"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "26/09",
+          "hora": "06:28",
+          "medicamento": "Roacutan",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D2",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "06:28",
+          "medicamento": "Roacutan",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D3",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "06:28",
+          "medicamento": "Roacutan",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        }
+      ],
+      "medicamentos": [
+        "Roacutan"
+      ]
+    },
+    "mensagem": "Ontem eu tomei",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D2",
+          "fato": "tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "fast_path_resposta_tardia confirmou D1 (hoje), não D2 (ontem)",
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ],
+      "correto": false
+    },
+    "revisar": false,
+    "nota": "Três doses esgotadas. A 24/09 aparece como sem_resposta porque a correção manual (que a confirmou) só aconteceu às 13:07."
+  },
+  {
+    "id": "D-03",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-09-22",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-22T06:29:18-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 06:28",
+        "tentativa": 1,
+        "grupo": "D1"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "22/09",
+          "hora": "06:28",
+          "medicamento": "Roacutan",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D2",
+          "dia": "ontem",
+          "data": "21/09",
+          "hora": "06:28",
+          "medicamento": "Roacutan",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D3",
+          "dia": "anteontem",
+          "data": "20/09",
+          "hora": "06:28",
+          "medicamento": "Roacutan",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        }
+      ],
+      "medicamentos": [
+        "Roacutan"
+      ]
+    },
+    "mensagem": "Ontem eu tomei também",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D2",
+          "fato": "tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "principal perguntou \"você tomou o Roacutan ontem (21/09) às 06:30, certo?\" e registrou D2 no turno seguinte (\"Ok\")",
+      "tipo": "perguntar",
+      "doses": [
+        {
+          "ref": "D2",
+          "fato": "tomou"
+        }
+      ],
+      "correto": false
+    },
+    "revisar": false,
+    "nota": "D1 foi confirmada 19 s antes, pelo \"Sim\" anterior. A dose certa foi encontrada, mas custou um turno de confirmação."
+  },
+  {
+    "id": "D-04",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-09-23",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-23T12:22:27-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 08:00",
+        "tentativa": 3,
+        "grupo": "D1"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "23/09",
+          "hora": "06:28",
+          "medicamento": "Roacutan",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D2",
+          "dia": "ontem",
+          "data": "22/09",
+          "hora": "06:28",
+          "medicamento": "Roacutan",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D3",
+          "dia": "anteontem",
+          "data": "21/09",
+          "hora": "06:28",
+          "medicamento": "Roacutan",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        }
+      ],
+      "medicamentos": [
+        "Roacutan"
+      ]
+    },
+    "mensagem": "Tomei sim",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "fast_path_resposta_tardia confirmou D1",
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ],
+      "correto": true
+    },
+    "revisar": false
+  },
+  {
+    "id": "D-05",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-09-26",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": "2026-09-26T13:21:34-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_estoque",
+        "pergunta": "quantas unidades de Aerolin spray você tem agora?",
+        "obrigatoria": false
+      },
+      "ultimo_lembrete": {
+        "quando": "hoje 12:58",
+        "tentativa": 1,
+        "grupo": "D1"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "26/09",
+          "hora": "12:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "aguardando_resposta"
+        },
+        {
+          "ref": "D2",
+          "dia": "hoje",
+          "data": "26/09",
+          "hora": "06:58",
+          "medicamento": "Aerolin spray",
+          "quantidade": "4 unidades",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D3",
+          "dia": "hoje",
+          "data": "26/09",
+          "hora": "06:58",
+          "medicamento": "Creatina",
+          "quantidade": "5 unidades",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D4",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "21:58",
+          "medicamento": "Cataflam",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D5",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "21:58",
+          "medicamento": "Rivotril",
+          "quantidade": "10 gotas",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D6",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "19:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D7",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "12:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D8",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "06:58",
+          "medicamento": "Aerolin spray",
+          "quantidade": "4 unidades",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D9",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "06:58",
+          "medicamento": "Creatina",
+          "quantidade": "5 unidades",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D10",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "21:58",
+          "medicamento": "Cataflam",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D11",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "21:58",
+          "medicamento": "Rivotril",
+          "quantidade": "10 gotas",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D12",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "19:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D13",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "12:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D14",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "06:58",
+          "medicamento": "Aerolin spray",
+          "quantidade": "4 unidades",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D15",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "06:58",
+          "medicamento": "Creatina",
+          "quantidade": "5 unidades",
+          "status": "sem_resposta"
+        }
+      ],
+      "medicamentos": [
+        "Ômega 3",
+        "Aerolin spray",
+        "Creatina",
+        "Cataflam",
+        "Rivotril"
+      ]
+    },
+    "mensagem": "Yes",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "cadastro tratou o \"Yes\" como resposta à pergunta de estoque e repetiu \"Quantas unidades de Aerolin spray você tem agora?\"; a dose do Ômega 3 ficou sem registro",
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "doses": [],
+      "correto": false
+    },
+    "revisar": false,
+    "nota": "\"Yes\" não responde a \"quantas unidades\"; a única dose aguardando resposta é D1. A pendência de estoque continua aberta."
+  },
+  {
+    "id": "D-06",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-09-26",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": "2026-09-26T13:25:34-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_estoque",
+        "pergunta": "quantas unidades de Aerolin spray você tem agora?",
+        "obrigatoria": false
+      },
+      "ultimo_lembrete": {
+        "quando": "hoje 12:58",
+        "tentativa": 1,
+        "grupo": "D1"
+      },
+      "mensagem_citada": {
+        "origem": "lembrete",
+        "quando": "hoje 12:58",
+        "texto": "⏰ Hora do seu *Ômega 3*.\nQuantidade: 1 comprimido\n\nJá tomou? Responda *SIM* ou *NÃO* 💊"
+      },
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "26/09",
+          "hora": "12:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "aguardando_resposta"
+        },
+        {
+          "ref": "D2",
+          "dia": "hoje",
+          "data": "26/09",
+          "hora": "06:58",
+          "medicamento": "Aerolin spray",
+          "quantidade": "4 unidades",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D3",
+          "dia": "hoje",
+          "data": "26/09",
+          "hora": "06:58",
+          "medicamento": "Creatina",
+          "quantidade": "5 unidades",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D4",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "21:58",
+          "medicamento": "Cataflam",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D5",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "21:58",
+          "medicamento": "Rivotril",
+          "quantidade": "10 gotas",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D6",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "19:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D7",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "12:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D8",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "06:58",
+          "medicamento": "Aerolin spray",
+          "quantidade": "4 unidades",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D9",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "06:58",
+          "medicamento": "Creatina",
+          "quantidade": "5 unidades",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D10",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "21:58",
+          "medicamento": "Cataflam",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D11",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "21:58",
+          "medicamento": "Rivotril",
+          "quantidade": "10 gotas",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D12",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "19:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D13",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "12:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D14",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "06:58",
+          "medicamento": "Aerolin spray",
+          "quantidade": "4 unidades",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D15",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "06:58",
+          "medicamento": "Creatina",
+          "quantidade": "5 unidades",
+          "status": "sem_resposta"
+        }
+      ],
+      "medicamentos": [
+        "Ômega 3",
+        "Aerolin spray",
+        "Creatina",
+        "Cataflam",
+        "Rivotril"
+      ]
+    },
+    "mensagem": "Yes",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "mesmo defeito do D-05, agora com o lembrete CITADO: cadastro repetiu a pergunta de estoque",
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "doses": [],
+      "correto": false
+    },
+    "revisar": false
+  },
+  {
+    "id": "D-07",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-09-22",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-22T12:49:26-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 11:58",
+        "tentativa": 1,
+        "grupo": "D1",
+        "tipo": "estoque_zerado"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "22/09",
+          "hora": "11:58",
+          "medicamento": "Desogestrel",
+          "quantidade": "1 comprimido",
+          "status": "sem_estoque"
+        },
+        {
+          "ref": "D2",
+          "dia": "ontem",
+          "data": "21/09",
+          "hora": "11:58",
+          "medicamento": "Desogestrel",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D3",
+          "dia": "anteontem",
+          "data": "20/09",
+          "hora": "11:58",
+          "medicamento": "Desogestrel",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        }
+      ],
+      "medicamentos": [
+        "Desogestrel"
+      ]
+    },
+    "mensagem": "Simmm",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "principal: \"assim que chegar o novo estoque, me avise\" — nenhuma dose registrada",
+      "tipo": "responder",
+      "doses": [],
+      "correto": false
+    },
+    "revisar": true,
+    "nota": "Leitura alternativa: \"Sim\" como ciência do aviso de estoque zerado (tipo responder). O gabarito adota \"tomou\" porque a mensagem responde a \"está na hora do seu Desogestrel\" e se repete todo dia, o que sugere que o estoque do sistema é que está errado."
+  },
+  {
+    "id": "D-08",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-09-23",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-23T13:04:32-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 11:58",
+        "tentativa": 1,
+        "grupo": "D1",
+        "tipo": "estoque_zerado"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "23/09",
+          "hora": "11:58",
+          "medicamento": "Desogestrel",
+          "quantidade": "1 comprimido",
+          "status": "sem_estoque"
+        },
+        {
+          "ref": "D2",
+          "dia": "ontem",
+          "data": "22/09",
+          "hora": "11:58",
+          "medicamento": "Desogestrel",
+          "quantidade": "1 comprimido",
+          "status": "sem_estoque"
+        },
+        {
+          "ref": "D3",
+          "dia": "anteontem",
+          "data": "21/09",
+          "hora": "11:58",
+          "medicamento": "Desogestrel",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        }
+      ],
+      "medicamentos": [
+        "Desogestrel"
+      ]
+    },
+    "mensagem": "Simm",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "principal: \"quando o Desogestrel chegar, me avise com a quantidade\" — nenhuma dose registrada",
+      "tipo": "responder",
+      "doses": [],
+      "correto": false
+    },
+    "revisar": true,
+    "nota": "Leitura alternativa: \"Sim\" como ciência do aviso de estoque zerado (tipo responder). O gabarito adota \"tomou\" porque a mensagem responde a \"está na hora do seu Desogestrel\" e se repete todo dia, o que sugere que o estoque do sistema é que está errado."
+  },
+  {
+    "id": "D-09",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-09-26",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-26T12:17:12-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 11:58",
+        "tentativa": 1,
+        "grupo": "D1",
+        "tipo": "estoque_zerado"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "26/09",
+          "hora": "11:58",
+          "medicamento": "Desogestrel",
+          "quantidade": "1 comprimido",
+          "status": "sem_estoque"
+        },
+        {
+          "ref": "D2",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "11:58",
+          "medicamento": "Desogestrel",
+          "quantidade": "1 comprimido",
+          "status": "sem_estoque"
+        },
+        {
+          "ref": "D3",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "11:58",
+          "medicamento": "Desogestrel",
+          "quantidade": "1 comprimido",
+          "status": "sem_estoque"
+        }
+      ],
+      "medicamentos": [
+        "Desogestrel"
+      ]
+    },
+    "mensagem": "Sim",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "principal: \"estarei aqui quando o Desogestrel chegar\" — quinto dia seguido sem registro",
+      "tipo": "responder",
+      "doses": [],
+      "correto": false
+    },
+    "revisar": true,
+    "nota": "Leitura alternativa: \"Sim\" como ciência do aviso de estoque zerado (tipo responder). O gabarito adota \"tomou\" porque a mensagem responde a \"está na hora do seu Desogestrel\" e se repete todo dia, o que sugere que o estoque do sistema é que está errado."
+  },
+  {
+    "id": "D-10",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-09-24",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-24T12:02:47-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 11:58",
+        "tentativa": 1,
+        "grupo": "D1,D2"
+      },
+      "mensagem_citada": {
+        "origem": "aviso de estoque zerado",
+        "quando": "hoje 11:58",
+        "texto": "⏰ Está na hora do seu *Regenesis e ofolato D*!\n\n⚠️ Seu estoque está zerado — não foi possível registrar a dose.\n\nQuando fizer a recompra, me avise a nova quantidade:\n*\"Comprei 30 comprimidos de Regenesis e ofolato D\"* 💊"
+      },
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "24/09",
+          "hora": "11:58",
+          "medicamento": "Ofolato D",
+          "quantidade": "1 comprimido",
+          "status": "aguardando_resposta"
+        },
+        {
+          "ref": "D2",
+          "dia": "hoje",
+          "data": "24/09",
+          "hora": "11:58",
+          "medicamento": "Regenesis e ofolato D",
+          "quantidade": "1 comprimido",
+          "status": "sem_estoque"
+        },
+        {
+          "ref": "D3",
+          "dia": "ontem",
+          "data": "23/09",
+          "hora": "11:58",
+          "medicamento": "Ofolato D",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D4",
+          "dia": "ontem",
+          "data": "23/09",
+          "hora": "11:58",
+          "medicamento": "Regenesis e ofolato D",
+          "quantidade": "1 comprimido",
+          "status": "sem_estoque"
+        },
+        {
+          "ref": "D5",
+          "dia": "anteontem",
+          "data": "22/09",
+          "hora": "11:58",
+          "medicamento": "Ofolato D",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D6",
+          "dia": "anteontem",
+          "data": "22/09",
+          "hora": "11:58",
+          "medicamento": "Regenesis e ofolato D",
+          "quantidade": "1 comprimido",
+          "status": "sem_estoque"
+        }
+      ],
+      "medicamentos": [
+        "Ofolato D",
+        "Regenesis e ofolato D"
+      ]
+    },
+    "mensagem": "Comprei 60 comprimidos\nSim",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D2",
+          "fato": "tomou"
+        }
+      ],
+      "outra": {
+        "tipo": "delegar",
+        "especialista": "configuracao",
+        "relacao_pendencia": "sem_pendencia",
+        "estoque": [
+          {
+            "medicamento": "Regenesis e ofolato D",
+            "quantidade": 60,
+            "unidade": "comprimido",
+            "motivo": "recompra"
+          }
+        ]
+      }
+    },
+    "observado_producao": {
+      "resumo": "fast_path_dose confirmou o Ofolato D (D1) pelo \"Sim\" final e ignorou a recompra de 60",
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ],
+      "correto": false
+    },
+    "revisar": true,
+    "nota": "A mensagem cita o aviso do Regenesis: a recompra e o \"Sim\" se referem a ele. Dúvida para revisão: o \"Sim\" também vale para o Ofolato D (D1), lembrado no mesmo minuto? E quem atualiza estoque no P1 — configuracao ou o próprio principal?"
+  },
+  {
+    "id": "D-11",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-07-11",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-07-11T10:01:05-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 08:28",
+        "tentativa": 3,
+        "grupo": "D1"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "11/07",
+          "hora": "06:58",
+          "medicamento": "Elani",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D2",
+          "dia": "ontem",
+          "data": "10/07",
+          "hora": "12:58",
+          "medicamento": "Escitalopram",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D3",
+          "dia": "ontem",
+          "data": "10/07",
+          "hora": "06:58",
+          "medicamento": "Elani",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D4",
+          "dia": "anteontem",
+          "data": "09/07",
+          "hora": "12:58",
+          "medicamento": "Escitalopram",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D5",
+          "dia": "anteontem",
+          "data": "09/07",
+          "hora": "06:58",
+          "medicamento": "Elani",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        }
+      ],
+      "medicamentos": [
+        "Elani",
+        "Escitalopram"
+      ]
+    },
+    "mensagem": "Bom dia Nami, já tomei o elani e já providenciei mais",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ],
+      "outra": {
+        "tipo": "perguntar",
+        "sobre": "quantidade da recompra de Elani"
+      }
+    },
+    "observado_producao": {
+      "resumo": "fast_path_resposta_tardia confirmou D1 e respondeu \"você tem 1 unidade do Elani\" — a recompra foi ignorada",
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ],
+      "correto": false
+    },
+    "revisar": true,
+    "nota": "\"Providenciei mais\" é recompra SEM quantidade: a segunda parte é perguntar quantos. Alternativa: apenas registrar a dose e não tratar a recompra."
+  },
+  {
+    "id": "D-12",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-07-11",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-07-11T13:04:59-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 12:58",
+        "tentativa": 1,
+        "grupo": "D1"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "11/07",
+          "hora": "12:58",
+          "medicamento": "Escitalopram",
+          "quantidade": "1 comprimido",
+          "status": "aguardando_resposta"
+        },
+        {
+          "ref": "D2",
+          "dia": "hoje",
+          "data": "11/07",
+          "hora": "06:58",
+          "medicamento": "Elani",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D3",
+          "dia": "ontem",
+          "data": "10/07",
+          "hora": "12:58",
+          "medicamento": "Escitalopram",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D4",
+          "dia": "ontem",
+          "data": "10/07",
+          "hora": "06:58",
+          "medicamento": "Elani",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D5",
+          "dia": "anteontem",
+          "data": "09/07",
+          "hora": "12:58",
+          "medicamento": "Escitalopram",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D6",
+          "dia": "anteontem",
+          "data": "09/07",
+          "hora": "06:58",
+          "medicamento": "Elani",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        }
+      ],
+      "medicamentos": [
+        "Escitalopram",
+        "Elani"
+      ]
+    },
+    "mensagem": "Sim",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "principal confirmou o Escitalopram (D1)",
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ],
+      "correto": true
+    },
+    "revisar": false,
+    "nota": "Caso do atalho: \"sim\" simples com um único grupo pendente."
+  },
+  {
+    "id": "D-13",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-09-23",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-23T06:55:28-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 06:28",
+        "tentativa": 1,
+        "grupo": "D1"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "23/09",
+          "hora": "06:28",
+          "medicamento": "Puran T4",
+          "quantidade": "1 unidade",
+          "status": "aguardando_resposta"
+        }
+      ],
+      "medicamentos": [
+        "Puran T4",
+        "Vitamina b12"
+      ]
+    },
+    "mensagem": "Sim",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "fast_path_dose confirmou D1",
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ],
+      "correto": true
+    },
+    "revisar": false,
+    "nota": "Caso do atalho: \"sim\" simples com um único grupo pendente."
+  },
+  {
+    "id": "D-14",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-09-24",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-24T14:30:32-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_estoque",
+        "pergunta": "se você souber quantos comprimidos de Ferro quelato tem em casa, é só me falar",
+        "obrigatoria": false
+      },
+      "ultimo_lembrete": {
+        "quando": "hoje 13:52",
+        "tentativa": 3,
+        "grupo": "D1"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "24/09",
+          "hora": "12:18",
+          "medicamento": "Ferro quelato",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D2",
+          "dia": "hoje",
+          "data": "24/09",
+          "hora": "06:28",
+          "medicamento": "Puran T4",
+          "quantidade": "1 unidade",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D3",
+          "dia": "ontem",
+          "data": "23/09",
+          "hora": "06:28",
+          "medicamento": "Puran T4",
+          "quantidade": "1 unidade",
+          "status": "confirmada"
+        }
+      ],
+      "medicamentos": [
+        "Ferro quelato",
+        "Puran T4",
+        "Vitamina b12"
+      ]
+    },
+    "mensagem": "Tomei",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "fast_path_resposta_tardia confirmou D1; a coleta de estoque ficou aberta",
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ],
+      "correto": true
+    },
+    "revisar": false,
+    "nota": "Dose com coleta de estoque aberta: a pendência não é respondida e continua de pé."
+  },
+  {
+    "id": "D-15",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-09-25",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-25T20:21:00-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 20:18",
+        "tentativa": 1,
+        "grupo": "D1"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "25/09",
+          "hora": "20:18",
+          "medicamento": "Ferro quelato",
+          "quantidade": "1 comprimido",
+          "status": "aguardando_resposta"
+        },
+        {
+          "ref": "D2",
+          "dia": "hoje",
+          "data": "25/09",
+          "hora": "12:18",
+          "medicamento": "Ferro quelato",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D3",
+          "dia": "hoje",
+          "data": "25/09",
+          "hora": "06:28",
+          "medicamento": "Puran T4",
+          "quantidade": "1 unidade",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D4",
+          "dia": "ontem",
+          "data": "24/09",
+          "hora": "20:18",
+          "medicamento": "Ferro quelato",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D5",
+          "dia": "ontem",
+          "data": "24/09",
+          "hora": "12:18",
+          "medicamento": "Ferro quelato",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D6",
+          "dia": "ontem",
+          "data": "24/09",
+          "hora": "06:28",
+          "medicamento": "Puran T4",
+          "quantidade": "1 unidade",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D7",
+          "dia": "anteontem",
+          "data": "23/09",
+          "hora": "06:28",
+          "medicamento": "Puran T4",
+          "quantidade": "1 unidade",
+          "status": "confirmada"
+        }
+      ],
+      "medicamentos": [
+        "Ferro quelato",
+        "Puran T4",
+        "Vitamina b12",
+        "Vitamina D"
+      ]
+    },
+    "mensagem": "Não",
+    "esperado": {
+      "tipo": "responder",
+      "doses": []
+    },
+    "observado_producao": {
+      "resumo": "principal: \"quando você tomar, é só me avisar\" — nada registrado; às 22:05 ela confirmou D1",
+      "tipo": "responder",
+      "doses": [],
+      "correto": true
+    },
+    "revisar": true,
+    "nota": "\"Não\" 3 min depois do lembrete = \"ainda não\". D1 segue aguardando_resposta; gravar nao_tomou seria erro (ela tomou às 22:05). Mesmo padrão do D-16, marcado para revisão por ser o menos evidente dos dois."
+  },
+  {
+    "id": "D-16",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-09-26",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-26T12:50:32-03:00",
+      "estado": "confirming",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 12:50",
+        "tentativa": 2,
+        "grupo": "D1"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "26/09",
+          "hora": "12:18",
+          "medicamento": "Ferro quelato",
+          "quantidade": "1 comprimido",
+          "status": "aguardando_resposta"
+        },
+        {
+          "ref": "D2",
+          "dia": "hoje",
+          "data": "26/09",
+          "hora": "06:28",
+          "medicamento": "Puran T4",
+          "quantidade": "1 unidade",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D3",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "20:18",
+          "medicamento": "Ferro quelato",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D4",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "12:18",
+          "medicamento": "Ferro quelato",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D5",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "06:28",
+          "medicamento": "Puran T4",
+          "quantidade": "1 unidade",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D6",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "20:18",
+          "medicamento": "Ferro quelato",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D7",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "12:18",
+          "medicamento": "Ferro quelato",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D8",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "06:28",
+          "medicamento": "Puran T4",
+          "quantidade": "1 unidade",
+          "status": "confirmada"
+        }
+      ],
+      "medicamentos": [
+        "Ferro quelato",
+        "Puran T4",
+        "Vitamina b12",
+        "Vitamina D"
+      ]
+    },
+    "mensagem": "Não",
+    "esperado": {
+      "tipo": "responder",
+      "doses": []
+    },
+    "observado_producao": {
+      "resumo": "principal: \"quando você tomar o Ferro quelato, é só me avisar\" — nada registrado; às 13:54 ela confirmou D1",
+      "tipo": "responder",
+      "doses": [],
+      "correto": true
+    },
+    "revisar": false,
+    "nota": "\"Não\" com o sentido de \"ainda não\": D1 segue aguardando_resposta. Gravar nao_tomou seria erro."
+  },
+  {
+    "id": "D-17",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-09-26",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-26T13:54:50-03:00",
+      "estado": "confirming",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 13:52",
+        "tentativa": 3,
+        "grupo": "D1"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "26/09",
+          "hora": "12:18",
+          "medicamento": "Ferro quelato",
+          "quantidade": "1 comprimido",
+          "status": "aguardando_resposta"
+        },
+        {
+          "ref": "D2",
+          "dia": "hoje",
+          "data": "26/09",
+          "hora": "06:28",
+          "medicamento": "Puran T4",
+          "quantidade": "1 unidade",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D3",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "20:18",
+          "medicamento": "Ferro quelato",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D4",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "12:18",
+          "medicamento": "Ferro quelato",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D5",
+          "dia": "ontem",
+          "data": "25/09",
+          "hora": "06:28",
+          "medicamento": "Puran T4",
+          "quantidade": "1 unidade",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D6",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "20:18",
+          "medicamento": "Ferro quelato",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D7",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "12:18",
+          "medicamento": "Ferro quelato",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D8",
+          "dia": "anteontem",
+          "data": "24/09",
+          "hora": "06:28",
+          "medicamento": "Puran T4",
+          "quantidade": "1 unidade",
+          "status": "confirmada"
+        }
+      ],
+      "medicamentos": [
+        "Ferro quelato",
+        "Puran T4",
+        "Vitamina b12",
+        "Vitamina D"
+      ]
+    },
+    "mensagem": "Tomei",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "fast_path_dose confirmou D1",
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ],
+      "correto": true
+    },
+    "revisar": false
+  },
+  {
+    "id": "D-18",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-07-11",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": "2026-07-11T11:59:13-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 11:58",
+        "tentativa": 1,
+        "grupo": "D1"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "11/07",
+          "hora": "11:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "aguardando_resposta"
+        },
+        {
+          "ref": "D2",
+          "dia": "hoje",
+          "data": "11/07",
+          "hora": "10:28",
+          "medicamento": "Cataflam",
+          "quantidade": "1 comprimido",
+          "status": "aguardando_resposta"
+        },
+        {
+          "ref": "D3",
+          "dia": "hoje",
+          "data": "11/07",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D4",
+          "dia": "hoje",
+          "data": "11/07",
+          "hora": "08:58",
+          "medicamento": "Losartana",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D5",
+          "dia": "ontem",
+          "data": "10/07",
+          "hora": "20:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D6",
+          "dia": "ontem",
+          "data": "10/07",
+          "hora": "20:58",
+          "medicamento": "Losartana",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D7",
+          "dia": "ontem",
+          "data": "10/07",
+          "hora": "19:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D8",
+          "dia": "ontem",
+          "data": "10/07",
+          "hora": "19:58",
+          "medicamento": "Vitamina C",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D9",
+          "dia": "ontem",
+          "data": "10/07",
+          "hora": "18:28",
+          "medicamento": "Cataflam",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D10",
+          "dia": "ontem",
+          "data": "10/07",
+          "hora": "14:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D11",
+          "dia": "ontem",
+          "data": "10/07",
+          "hora": "11:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D12",
+          "dia": "ontem",
+          "data": "10/07",
+          "hora": "10:38",
+          "medicamento": "Neosaldina",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D13",
+          "dia": "ontem",
+          "data": "10/07",
+          "hora": "10:28",
+          "medicamento": "Cataflam",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D14",
+          "dia": "ontem",
+          "data": "10/07",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D15",
+          "dia": "ontem",
+          "data": "10/07",
+          "hora": "08:58",
+          "medicamento": "Losartana",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D16",
+          "dia": "anteontem",
+          "data": "09/07",
+          "hora": "20:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D17",
+          "dia": "anteontem",
+          "data": "09/07",
+          "hora": "20:58",
+          "medicamento": "Losartana",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D18",
+          "dia": "anteontem",
+          "data": "09/07",
+          "hora": "19:58",
+          "medicamento": "Vitamina C",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D19",
+          "dia": "anteontem",
+          "data": "09/07",
+          "hora": "19:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D20",
+          "dia": "anteontem",
+          "data": "09/07",
+          "hora": "19:58",
+          "medicamento": "Neosaldina",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D21",
+          "dia": "anteontem",
+          "data": "09/07",
+          "hora": "18:28",
+          "medicamento": "Cataflam",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D22",
+          "dia": "anteontem",
+          "data": "09/07",
+          "hora": "14:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D23",
+          "dia": "anteontem",
+          "data": "09/07",
+          "hora": "11:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D24",
+          "dia": "anteontem",
+          "data": "09/07",
+          "hora": "10:38",
+          "medicamento": "Neosaldina",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D25",
+          "dia": "anteontem",
+          "data": "09/07",
+          "hora": "10:28",
+          "medicamento": "Cataflam",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D26",
+          "dia": "anteontem",
+          "data": "09/07",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D27",
+          "dia": "anteontem",
+          "data": "09/07",
+          "hora": "08:58",
+          "medicamento": "Losartana",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        }
+      ],
+      "medicamentos": [
+        "Dipirona",
+        "Cataflam",
+        "Ômega 3",
+        "Losartana",
+        "Vitamina C",
+        "Neosaldina"
+      ]
+    },
+    "mensagem": "Tomei todos de hoje e de ontem",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D2",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D3",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D4",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D5",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D6",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D7",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D8",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D12",
+          "fato": "tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "principal confirmou Dipirona 11:58 e Cataflam 10:28 e pediu confirmação de outras 6; a Neosaldina 10:38 de ontem ficou de fora e seguiu sem registro",
+      "tipo": "perguntar",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D2",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D3",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D4",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D5",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D6",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D7",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D8",
+          "fato": "tomou"
+        }
+      ],
+      "correto": false
+    },
+    "revisar": false
+  },
+  {
+    "id": "D-19",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-07-13",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": "2026-07-13T09:50:00-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 08:58",
+        "tentativa": 2,
+        "grupo": "D1,D2"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "13/07",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D2",
+          "dia": "hoje",
+          "data": "13/07",
+          "hora": "08:58",
+          "medicamento": "Losartana",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D3",
+          "dia": "ontem",
+          "data": "12/07",
+          "hora": "20:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D4",
+          "dia": "ontem",
+          "data": "12/07",
+          "hora": "20:58",
+          "medicamento": "Losartana",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D5",
+          "dia": "ontem",
+          "data": "12/07",
+          "hora": "19:58",
+          "medicamento": "Vitamina C",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D6",
+          "dia": "ontem",
+          "data": "12/07",
+          "hora": "19:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D7",
+          "dia": "ontem",
+          "data": "12/07",
+          "hora": "18:28",
+          "medicamento": "Cataflam",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D8",
+          "dia": "ontem",
+          "data": "12/07",
+          "hora": "14:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D9",
+          "dia": "ontem",
+          "data": "12/07",
+          "hora": "11:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D10",
+          "dia": "ontem",
+          "data": "12/07",
+          "hora": "10:28",
+          "medicamento": "Cataflam",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D11",
+          "dia": "ontem",
+          "data": "12/07",
+          "hora": "08:58",
+          "medicamento": "Losartana",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D12",
+          "dia": "ontem",
+          "data": "12/07",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D13",
+          "dia": "anteontem",
+          "data": "11/07",
+          "hora": "20:58",
+          "medicamento": "Losartana",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D14",
+          "dia": "anteontem",
+          "data": "11/07",
+          "hora": "20:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D15",
+          "dia": "anteontem",
+          "data": "11/07",
+          "hora": "19:58",
+          "medicamento": "Vitamina C",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D16",
+          "dia": "anteontem",
+          "data": "11/07",
+          "hora": "19:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D17",
+          "dia": "anteontem",
+          "data": "11/07",
+          "hora": "18:28",
+          "medicamento": "Cataflam",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D18",
+          "dia": "anteontem",
+          "data": "11/07",
+          "hora": "14:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D19",
+          "dia": "anteontem",
+          "data": "11/07",
+          "hora": "11:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D20",
+          "dia": "anteontem",
+          "data": "11/07",
+          "hora": "10:28",
+          "medicamento": "Cataflam",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D21",
+          "dia": "anteontem",
+          "data": "11/07",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D22",
+          "dia": "anteontem",
+          "data": "11/07",
+          "hora": "08:58",
+          "medicamento": "Losartana",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        }
+      ],
+      "medicamentos": [
+        "Ômega 3",
+        "Losartana",
+        "Vitamina C",
+        "Dipirona",
+        "Cataflam"
+      ]
+    },
+    "mensagem": "Tomei todos de ontem e de sábado tbm",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D3",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D4",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D5",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D6",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D7",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D8",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D9",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D10",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D13",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D14",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D15",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D16",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D17",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D18",
+          "fato": "tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "principal listou exatamente as 14 doses de ontem (12/07) e de sábado (11/07) e pediu confirmação; o \"Sim tomei todos\" seguinte caiu em \"Desculpe, não entendi\" e só no quarto turno as doses foram gravadas",
+      "tipo": "perguntar",
+      "doses": [
+        {
+          "ref": "D3",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D4",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D5",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D6",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D7",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D8",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D9",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D10",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D13",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D14",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D15",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D16",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D17",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D18",
+          "fato": "tomou"
+        }
+      ],
+      "correto": false
+    },
+    "revisar": false,
+    "nota": "Segunda-feira 13/07: \"sábado\" é anteontem (11/07). O rótulo `dia` diz \"anteontem\"; resolver o dia da semana é trabalho do intérprete."
+  },
+  {
+    "id": "D-20",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-07-29",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": "2026-07-29T10:10:16-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 09:28",
+        "tentativa": 2,
+        "grupo": "D1"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "29/07",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "aguardando_resposta"
+        },
+        {
+          "ref": "D2",
+          "dia": "ontem",
+          "data": "28/07",
+          "hora": "20:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D3",
+          "dia": "ontem",
+          "data": "28/07",
+          "hora": "19:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D4",
+          "dia": "ontem",
+          "data": "28/07",
+          "hora": "19:58",
+          "medicamento": "Vitamina C",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D5",
+          "dia": "ontem",
+          "data": "28/07",
+          "hora": "18:28",
+          "medicamento": "Cataflam",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D6",
+          "dia": "ontem",
+          "data": "28/07",
+          "hora": "15:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D7",
+          "dia": "ontem",
+          "data": "28/07",
+          "hora": "14:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D8",
+          "dia": "ontem",
+          "data": "28/07",
+          "hora": "10:28",
+          "medicamento": "Cataflam",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D9",
+          "dia": "ontem",
+          "data": "28/07",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D10",
+          "dia": "anteontem",
+          "data": "27/07",
+          "hora": "20:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D11",
+          "dia": "anteontem",
+          "data": "27/07",
+          "hora": "19:58",
+          "medicamento": "Vitamina C",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D12",
+          "dia": "anteontem",
+          "data": "27/07",
+          "hora": "19:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D13",
+          "dia": "anteontem",
+          "data": "27/07",
+          "hora": "18:28",
+          "medicamento": "Cataflam",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D14",
+          "dia": "anteontem",
+          "data": "27/07",
+          "hora": "15:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D15",
+          "dia": "anteontem",
+          "data": "27/07",
+          "hora": "14:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D16",
+          "dia": "anteontem",
+          "data": "27/07",
+          "hora": "10:28",
+          "medicamento": "Cataflam",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D17",
+          "dia": "anteontem",
+          "data": "27/07",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        }
+      ],
+      "medicamentos": [
+        "Ômega 3",
+        "Dipirona",
+        "Vitamina C",
+        "Cataflam"
+      ]
+    },
+    "mensagem": "Tomei a dipirona ontem",
+    "esperado": {
+      "tipo": "perguntar",
+      "candidatas": [
+        "D3",
+        "D6"
+      ]
+    },
+    "observado_producao": {
+      "resumo": "principal: \"ontem você tinha duas doses de Dipirona (15:58 e 19:58) — tomou as duas ou apenas uma?\"",
+      "tipo": "perguntar",
+      "candidatas": [
+        "D3",
+        "D6"
+      ],
+      "correto": true
+    },
+    "revisar": true,
+    "nota": "Duas doses de Dipirona ontem, \"a dipirona\" no singular. Alternativa: registrar as duas como tomadas."
+  },
+  {
+    "id": "D-21",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-07-01",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": "2026-07-01T09:27:07-03:00",
+      "estado": "confirming",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 08:58",
+        "tentativa": 1,
+        "grupo": "D1,D2"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "01/07",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "aguardando_resposta"
+        },
+        {
+          "ref": "D2",
+          "dia": "hoje",
+          "data": "01/07",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "aguardando_resposta"
+        },
+        {
+          "ref": "D3",
+          "dia": "ontem",
+          "data": "30/06",
+          "hora": "20:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D4",
+          "dia": "ontem",
+          "data": "30/06",
+          "hora": "19:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D5",
+          "dia": "ontem",
+          "data": "30/06",
+          "hora": "14:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D6",
+          "dia": "ontem",
+          "data": "30/06",
+          "hora": "14:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D7",
+          "dia": "ontem",
+          "data": "30/06",
+          "hora": "11:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D8",
+          "dia": "ontem",
+          "data": "30/06",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D9",
+          "dia": "ontem",
+          "data": "30/06",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "nao_tomada"
+        },
+        {
+          "ref": "D10",
+          "dia": "anteontem",
+          "data": "29/06",
+          "hora": "20:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D11",
+          "dia": "anteontem",
+          "data": "29/06",
+          "hora": "19:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D12",
+          "dia": "anteontem",
+          "data": "29/06",
+          "hora": "11:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D13",
+          "dia": "anteontem",
+          "data": "29/06",
+          "hora": "09:58",
+          "medicamento": "Voltaren",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D14",
+          "dia": "anteontem",
+          "data": "29/06",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        }
+      ],
+      "medicamentos": [
+        "Ômega 3",
+        "Dipirona",
+        "Voltaren"
+      ]
+    },
+    "mensagem": "Na vdd não tomei o dipirona não. Me enganei. Fiquei sem tomar o dipirona de ontem à noite mesmo",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D4",
+          "fato": "nao_tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "principal desfez a confirmação da Dipirona de ontem 19:58 e registrou como não tomada",
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D4",
+          "fato": "nao_tomou"
+        }
+      ],
+      "correto": true
+    },
+    "revisar": true,
+    "nota": "A dose estava confirmada e a pessoa afirma que NÃO tomou: o gabarito usa nao_tomou. `desfazer` (volta a sem resposta) é a leitura alternativa. As duas linhas de 01/07 08:58 e de 30/06 14:58 são duplicatas reais de dose_logs daquela época."
+  },
+  {
+    "id": "D-22",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-06-27",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": "2026-06-27T09:23:31-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 08:58",
+        "tentativa": 1,
+        "grupo": "D1"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "27/06",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "aguardando_resposta"
+        },
+        {
+          "ref": "D2",
+          "dia": "ontem",
+          "data": "26/06",
+          "hora": "21:58",
+          "medicamento": "Voltaren",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D3",
+          "dia": "ontem",
+          "data": "26/06",
+          "hora": "20:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D4",
+          "dia": "ontem",
+          "data": "26/06",
+          "hora": "19:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D5",
+          "dia": "ontem",
+          "data": "26/06",
+          "hora": "14:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D6",
+          "dia": "ontem",
+          "data": "26/06",
+          "hora": "11:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D7",
+          "dia": "ontem",
+          "data": "26/06",
+          "hora": "09:58",
+          "medicamento": "Voltaren",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D8",
+          "dia": "ontem",
+          "data": "26/06",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D9",
+          "dia": "anteontem",
+          "data": "25/06",
+          "hora": "21:58",
+          "medicamento": "Voltaren",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D10",
+          "dia": "anteontem",
+          "data": "25/06",
+          "hora": "20:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D11",
+          "dia": "anteontem",
+          "data": "25/06",
+          "hora": "19:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D12",
+          "dia": "anteontem",
+          "data": "25/06",
+          "hora": "14:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D13",
+          "dia": "anteontem",
+          "data": "25/06",
+          "hora": "11:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D14",
+          "dia": "anteontem",
+          "data": "25/06",
+          "hora": "09:58",
+          "medicamento": "Voltaren",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D15",
+          "dia": "anteontem",
+          "data": "25/06",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        }
+      ],
+      "medicamentos": [
+        "Ômega 3",
+        "Voltaren",
+        "Dipirona"
+      ]
+    },
+    "mensagem": "Tomei o ômega 3 de ontem",
+    "esperado": {
+      "tipo": "perguntar",
+      "candidatas": [
+        "D1"
+      ]
+    },
+    "observado_producao": {
+      "resumo": "principal confirmou o Ômega 3 de HOJE 08:58 (D1) sem dizer que trocou o dia",
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        }
+      ],
+      "correto": false
+    },
+    "revisar": true,
+    "nota": "Todas as doses de Ômega 3 de ontem já estão confirmadas; a única pendente é a de hoje. O gabarito pede que se pergunte se era a de hoje. Alternativa: registrar D1 direto, como a produção fez."
+  },
+  {
+    "id": "D-23",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-06-28",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": "2026-06-28T09:51:24-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 08:58",
+        "tentativa": 1,
+        "grupo": "D1",
+        "tipo": "estoque_zerado"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "28/06",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_estoque"
+        },
+        {
+          "ref": "D2",
+          "dia": "ontem",
+          "data": "27/06",
+          "hora": "21:58",
+          "medicamento": "Voltaren",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D3",
+          "dia": "ontem",
+          "data": "27/06",
+          "hora": "20:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_estoque"
+        },
+        {
+          "ref": "D4",
+          "dia": "ontem",
+          "data": "27/06",
+          "hora": "19:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D5",
+          "dia": "ontem",
+          "data": "27/06",
+          "hora": "14:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D6",
+          "dia": "ontem",
+          "data": "27/06",
+          "hora": "11:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D7",
+          "dia": "ontem",
+          "data": "27/06",
+          "hora": "09:58",
+          "medicamento": "Voltaren",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D8",
+          "dia": "ontem",
+          "data": "27/06",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D9",
+          "dia": "anteontem",
+          "data": "26/06",
+          "hora": "21:58",
+          "medicamento": "Voltaren",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D10",
+          "dia": "anteontem",
+          "data": "26/06",
+          "hora": "20:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D11",
+          "dia": "anteontem",
+          "data": "26/06",
+          "hora": "19:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D12",
+          "dia": "anteontem",
+          "data": "26/06",
+          "hora": "14:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D13",
+          "dia": "anteontem",
+          "data": "26/06",
+          "hora": "11:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D14",
+          "dia": "anteontem",
+          "data": "26/06",
+          "hora": "09:58",
+          "medicamento": "Voltaren",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D15",
+          "dia": "anteontem",
+          "data": "26/06",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        }
+      ],
+      "medicamentos": [
+        "Ômega 3",
+        "Voltaren",
+        "Dipirona"
+      ]
+    },
+    "mensagem": "Tomei o Voltaren de ontem à noite",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D2",
+          "fato": "tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "principal recusou: \"essa dose já passou do prazo de registro automático, não consigo confirmá-la\"",
+      "tipo": "responder",
+      "doses": [],
+      "correto": false
+    },
+    "revisar": false
+  },
+  {
+    "id": "D-24",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-06-30",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": "2026-06-30T08:51:22-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "ontem 22:28",
+        "tentativa": 3,
+        "grupo": "D1"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "ontem",
+          "data": "29/06",
+          "hora": "20:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D2",
+          "dia": "ontem",
+          "data": "29/06",
+          "hora": "19:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D3",
+          "dia": "ontem",
+          "data": "29/06",
+          "hora": "11:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D4",
+          "dia": "ontem",
+          "data": "29/06",
+          "hora": "09:58",
+          "medicamento": "Voltaren",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D5",
+          "dia": "ontem",
+          "data": "29/06",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D6",
+          "dia": "anteontem",
+          "data": "28/06",
+          "hora": "21:58",
+          "medicamento": "Voltaren",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D7",
+          "dia": "anteontem",
+          "data": "28/06",
+          "hora": "20:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D8",
+          "dia": "anteontem",
+          "data": "28/06",
+          "hora": "19:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D9",
+          "dia": "anteontem",
+          "data": "28/06",
+          "hora": "14:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D10",
+          "dia": "anteontem",
+          "data": "28/06",
+          "hora": "11:58",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D11",
+          "dia": "anteontem",
+          "data": "28/06",
+          "hora": "09:58",
+          "medicamento": "Voltaren",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D12",
+          "dia": "anteontem",
+          "data": "28/06",
+          "hora": "08:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_estoque"
+        }
+      ],
+      "medicamentos": [
+        "Ômega 3",
+        "Dipirona",
+        "Voltaren"
+      ]
+    },
+    "mensagem": "Tomei todos de ontem",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D2",
+          "fato": "tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "principal listou as duas doses de ontem sem confirmação e perguntou \"Confirmo as duas?\"",
+      "tipo": "perguntar",
+      "doses": [
+        {
+          "ref": "D1",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D2",
+          "fato": "tomou"
+        }
+      ],
+      "correto": false
+    },
+    "revisar": false,
+    "nota": "Nenhuma dose de hoje antes das 08:58. As de anteontem sem resposta não entram: a pessoa disse \"de ontem\"."
+  },
+  {
+    "id": "D-25",
+    "categoria": "dose",
+    "fonte": {
+      "data": "2026-08-11",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": "2026-08-11T11:02:32-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": {
+        "quando": "hoje 09:28",
+        "tentativa": 3,
+        "grupo": "D1"
+      },
+      "mensagem_citada": null,
+      "doses": [
+        {
+          "ref": "D1",
+          "dia": "hoje",
+          "data": "11/08",
+          "hora": "07:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D2",
+          "dia": "ontem",
+          "data": "10/08",
+          "hora": "20:28",
+          "medicamento": "Vitamina C",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D3",
+          "dia": "ontem",
+          "data": "10/08",
+          "hora": "19:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D4",
+          "dia": "ontem",
+          "data": "10/08",
+          "hora": "15:28",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D5",
+          "dia": "ontem",
+          "data": "10/08",
+          "hora": "15:24",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D6",
+          "dia": "ontem",
+          "data": "10/08",
+          "hora": "07:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "confirmada"
+        },
+        {
+          "ref": "D7",
+          "dia": "anteontem",
+          "data": "09/08",
+          "hora": "20:28",
+          "medicamento": "Vitamina C",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D8",
+          "dia": "anteontem",
+          "data": "09/08",
+          "hora": "19:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D9",
+          "dia": "anteontem",
+          "data": "09/08",
+          "hora": "15:28",
+          "medicamento": "Dipirona",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D10",
+          "dia": "anteontem",
+          "data": "09/08",
+          "hora": "15:24",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        },
+        {
+          "ref": "D11",
+          "dia": "anteontem",
+          "data": "09/08",
+          "hora": "07:58",
+          "medicamento": "Ômega 3",
+          "quantidade": "1 comprimido",
+          "status": "sem_resposta"
+        }
+      ],
+      "medicamentos": [
+        "Ômega 3",
+        "Vitamina C",
+        "Dipirona"
+      ]
+    },
+    "mensagem": "Eu tbm tudo anteontem",
+    "esperado": {
+      "tipo": "dose",
+      "doses": [
+        {
+          "ref": "D7",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D8",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D9",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D10",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D11",
+          "fato": "tomou"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "principal listou 4 doses de anteontem (09/08) e pediu confirmação — o Ômega 3 das 07:58 ficou de fora",
+      "tipo": "perguntar",
+      "doses": [
+        {
+          "ref": "D7",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D8",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D9",
+          "fato": "tomou"
+        },
+        {
+          "ref": "D10",
+          "fato": "tomou"
+        }
+      ],
+      "correto": false
+    },
+    "revisar": false
+  },
+  {
+    "id": "G-01",
+    "categoria": "delegacao",
+    "fonte": {
+      "data": "2026-09-24",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-24T19:56:36-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_estoque",
+        "pergunta": "se você souber quantos comprimidos de Ferro quelato tem em casa, é só me falar",
+        "obrigatoria": false
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Puran T4",
+        "Vitamina b12",
+        "Ferro quelato"
+      ]
+    },
+    "mensagem": "Quero cadastrar mais um!",
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "novo"
+    },
+    "observado_producao": {
+      "resumo": "cadastro repetiu o convite de estoque do Ferro quelato — o pedido de cadastro novo se perdeu",
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "correto": false
+    },
+    "revisar": false
+  },
+  {
+    "id": "G-02",
+    "categoria": "delegacao",
+    "fonte": {
+      "data": "2026-09-24",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-24T07:03:36-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_estoque",
+        "pergunta": "se você souber quantos comprimidos de Ferro quelato tem em casa, é só me falar",
+        "obrigatoria": false
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Puran T4",
+        "Vitamina b12",
+        "Ferro quelato"
+      ]
+    },
+    "mensagem": "Cadastrar medicamento semanal",
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "novo"
+    },
+    "observado_producao": {
+      "resumo": "cadastro repetiu o convite de estoque do Ferro quelato",
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "correto": false
+    },
+    "revisar": false
+  },
+  {
+    "id": "G-03",
+    "categoria": "delegacao",
+    "fonte": {
+      "data": "2026-09-22",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-22T07:58:48-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_estoque_lote",
+        "pergunta": "se você souber quantos tem em casa de cada um (Puran T4, Vitamina b12), é só me falar",
+        "obrigatoria": false
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Puran T4",
+        "Vitamina b12"
+      ]
+    },
+    "mensagem": "Erro",
+    "esperado": {
+      "tipo": "perguntar",
+      "sobre": "o que saiu errado no cadastro que acabou de ser confirmado"
+    },
+    "observado_producao": {
+      "resumo": "cadastro repetiu o convite de estoque como se nada tivesse sido dito",
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "correto": false
+    },
+    "revisar": false,
+    "nota": "Logo após \"Prontinho! Os dois estão cadastrados: Puran T4 às 06:00…\" — o horário real era 06:30. É um sinal de correção sem campo nem valor."
+  },
+  {
+    "id": "G-04",
+    "categoria": "delegacao",
+    "fonte": {
+      "data": "2026-09-22",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-22T07:59:02-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_estoque_lote",
+        "pergunta": "se você souber quantos tem em casa de cada um (Puran T4, Vitamina b12), é só me falar",
+        "obrigatoria": false
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Puran T4",
+        "Vitamina b12"
+      ]
+    },
+    "mensagem": "A vitamina b12 é uma vez por semana apenas, toda segunda-feira",
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "configuracao",
+      "relacao_pendencia": "novo",
+      "correcoes": [
+        {
+          "medicamento": "Vitamina b12",
+          "campo": "dias_semana",
+          "valor": [
+            "seg"
+          ]
+        }
+      ],
+      "estoque": []
+    },
+    "observado_producao": {
+      "resumo": "cadastro gravou \"12 comprimidos\" de estoque da Vitamina b12 (o 12 do nome) e a recorrência se perdeu",
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "correto": false
+    },
+    "revisar": false
+  },
+  {
+    "id": "G-05",
+    "categoria": "delegacao",
+    "fonte": {
+      "data": "2026-09-20",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-20T12:53:08-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_estoque",
+        "pergunta": "quantas unidades de Kepra você tem agora?",
+        "obrigatoria": false
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Marevan",
+        "Kepra"
+      ]
+    },
+    "mensagem": "29",
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "estoque": [
+        {
+          "medicamento": "Kepra",
+          "quantidade": 29,
+          "unidade": "comprimido"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "cadastro anotou 29 comprimidos de Kepra",
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "correto": true
+    },
+    "revisar": false,
+    "nota": "Número seco em convite de estoque de um único medicamento."
+  },
+  {
+    "id": "G-06",
+    "categoria": "delegacao",
+    "fonte": {
+      "data": "2026-09-21",
+      "origem": "arnes"
+    },
+    "contexto": {
+      "agora": "2026-09-21T10:00:00-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_estoque_lote",
+        "pergunta": "se você souber quantos tem em casa de cada um (Marevan, Kepra), é só me falar",
+        "obrigatoria": false
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Marevan",
+        "Kepra"
+      ]
+    },
+    "mensagem": "Marevan 30, Kepra 29",
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "estoque": [
+        {
+          "medicamento": "Marevan",
+          "quantidade": 30,
+          "unidade": "comprimido"
+        },
+        {
+          "medicamento": "Kepra",
+          "quantidade": 29,
+          "unidade": "comprimido"
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "caso A32 do arnês (verde desde o M3): atribui cada número pelo nome",
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "correto": true
+    },
+    "revisar": false,
+    "nota": "Forma nomeada exigida pelo §3. Não há ocorrência em agent_logs: a frase é a do caso A32 do arnês (com a grafia de produção \"Kepra\"), e o observado vem do arnês, não da produção. `agora` é ilustrativo."
+  },
+  {
+    "id": "G-07",
+    "categoria": "delegacao",
+    "fonte": {
+      "data": "2026-09-24",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-24T19:54:55-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_estoque",
+        "pergunta": "se você souber quantos comprimidos de Ferro quelato tem em casa, é só me falar",
+        "obrigatoria": false
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Puran T4",
+        "Vitamina b12",
+        "Ferro quelato"
+      ]
+    },
+    "mensagem": "Oi nami \n\nVocê pode mostrar meus remédios?",
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "relatorios",
+      "relacao_pendencia": "novo",
+      "subtipo": "meus_remedios"
+    },
+    "observado_producao": {
+      "resumo": "relatorios listou os remédios; a coleta de estoque seguiu aberta",
+      "tipo": "delegar",
+      "especialista": "relatorios",
+      "relacao_pendencia": "novo",
+      "subtipo": "meus_remedios",
+      "correto": true
+    },
+    "revisar": false
+  },
+  {
+    "id": "G-08",
+    "categoria": "delegacao",
+    "fonte": {
+      "data": "2026-09-18",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-18T15:52:33-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_confirmacao",
+        "pergunta": "Roacutan 20mg, 1 comprimido às 06:30, contínuo, estoque 10 unidades — está tudo certinho?",
+        "obrigatoria": true
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Roacutan"
+      ]
+    },
+    "mensagem": "Na verdade 9 no estoque",
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "correcoes": [
+        {
+          "medicamento": "Roacutan",
+          "campo": "estoque",
+          "valor": 9
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "cadastro voltou à etapa de estoque e perguntou de novo \"quantos comprimidos você tem?\" — o 9 dito na mensagem foi descartado",
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "correto": false
+    },
+    "revisar": false
+  },
+  {
+    "id": "G-09",
+    "categoria": "delegacao",
+    "fonte": {
+      "data": "2026-09-24",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-24T20:27:49-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Puran T4",
+        "Vitamina b12",
+        "Ferro quelato"
+      ]
+    },
+    "mensagem": "Como posso cadastrar mais um medicamento?",
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "sem_pendencia"
+    },
+    "observado_producao": {
+      "resumo": "cadastro abriu o fluxo (\"Qual o nome dele?\")",
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "sem_pendencia",
+      "correto": true
+    },
+    "revisar": false
+  },
+  {
+    "id": "G-10",
+    "categoria": "delegacao",
+    "fonte": {
+      "data": "2026-09-24",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-24T06:57:53-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Puran T4",
+        "Vitamina b12"
+      ]
+    },
+    "mensagem": "Cadastrar novo medicamento",
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "sem_pendencia"
+    },
+    "observado_producao": {
+      "resumo": "cadastro abriu o fluxo (\"Qual o nome dele?\")",
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "sem_pendencia",
+      "correto": true
+    },
+    "revisar": false
+  },
+  {
+    "id": "G-11",
+    "categoria": "delegacao",
+    "fonte": {
+      "data": "2026-09-20",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": "2026-09-20T21:36:49-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Nimesulida",
+        "Tantin",
+        "Tramal"
+      ]
+    },
+    "mensagem": "Quero encerrar Nimesulida e Tantin",
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "configuracao",
+      "relacao_pendencia": "sem_pendencia",
+      "alvos": [
+        "Nimesulida",
+        "Tantin"
+      ]
+    },
+    "observado_producao": {
+      "resumo": "configuracao pediu confirmação para encerrar Tantin e Nimesulida",
+      "tipo": "delegar",
+      "especialista": "configuracao",
+      "relacao_pendencia": "sem_pendencia",
+      "correto": true
+    },
+    "revisar": false,
+    "nota": "Dois alvos ligados por \"e\" numa intenção que não é cadastro — e que nunca pode virar excluir_conta."
+  },
+  {
+    "id": "G-12",
+    "categoria": "delegacao",
+    "fonte": {
+      "data": "2026-07-10",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": "2026-07-10T09:13:14-03:00",
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Ômega 3",
+        "Losartana",
+        "Dipirona",
+        "Vitamina C",
+        "Cataflam",
+        "Neosaldina"
+      ]
+    },
+    "mensagem": "Ficou alguma dose pendente de ontem?",
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "relatorios",
+      "relacao_pendencia": "sem_pendencia",
+      "subtipo": "balanco_do_dia"
+    },
+    "observado_producao": {
+      "resumo": "relatorios ofereceu relatório de adesão e perguntou o período (7/15/30 dias) — especialista certo, subtipo errado",
+      "tipo": "delegar",
+      "especialista": "relatorios",
+      "relacao_pendencia": "sem_pendencia",
+      "subtipo": "adesao",
+      "correto": false
+    },
+    "revisar": false
+  },
+  {
+    "id": "G-13",
+    "categoria": "delegacao",
+    "fonte": {
+      "data": "2026-09-19",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": "2026-09-19T16:28:41-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_estoque",
+        "pergunta": "se você souber quantos comprimidos de Dormid tem em casa, é só me falar",
+        "obrigatoria": false
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Dormid"
+      ]
+    },
+    "mensagem": "Não sei quanto eu tenho",
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "estoque": [
+        {
+          "medicamento": "Dormid",
+          "quantidade": null,
+          "nao_sabe": true
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "cadastro: \"o estoque fica pra depois\"",
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "correto": true
+    },
+    "revisar": false,
+    "nota": "\"Não sei\" é um terceiro estado (P49): null, nunca zero."
+  },
+  {
+    "id": "G-14",
+    "categoria": "delegacao",
+    "fonte": {
+      "data": "2026-07-10",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": "2026-07-10T15:55:27-03:00",
+      "estado": "configurando",
+      "pendencia": {
+        "fluxo": "configuracao",
+        "etapa": "identif_schedule",
+        "pergunta": "o Losartana tem lembretes às 09:00 e às 21:00 — qual você quer alterar?",
+        "obrigatoria": true
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Ômega 3",
+        "Losartana",
+        "Dipirona",
+        "Vitamina C",
+        "Cataflam",
+        "Neosaldina"
+      ]
+    },
+    "mensagem": "Na vdd quero alterar o dipirona",
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "configuracao",
+      "relacao_pendencia": "novo",
+      "alvos": [
+        "Dipirona"
+      ]
+    },
+    "observado_producao": {
+      "resumo": "configuracao repetiu a pergunta sobre os horários do Losartana — a troca de alvo foi ignorada",
+      "tipo": "delegar",
+      "especialista": "configuracao",
+      "relacao_pendencia": "responde",
+      "correto": false
+    },
+    "revisar": true,
+    "nota": "Troca de alvo dentro do mesmo fluxo. O gabarito chama de \"novo\" (a pergunta aberta deixa de valer); a leitura alternativa é \"responde\" com correção do alvo."
+  },
+  {
+    "id": "G-15",
+    "categoria": "delegacao",
+    "fonte": {
+      "data": "2026-06-19",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-06-19T16:56:24-03:00",
+      "estado": "configurando",
+      "pendencia": {
+        "fluxo": "configuracao",
+        "etapa": "confirm_acao",
+        "pergunta": "vou mudar o lembrete das 05:30 do Losartana para 05:30 — confirmar?",
+        "obrigatoria": true
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Losartana"
+      ]
+    },
+    "mensagem": "Não 05:30 para as 08",
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "configuracao",
+      "relacao_pendencia": "responde",
+      "correcoes": [
+        {
+          "medicamento": "Losartana",
+          "campo": "horarios",
+          "valor": {
+            "de": "05:30",
+            "para": "08:00"
+          }
+        }
+      ]
+    },
+    "observado_producao": {
+      "resumo": "configuracao leu o \"Não\" como cancelamento: \"Nada foi alterado\"",
+      "tipo": "delegar",
+      "especialista": "configuracao",
+      "relacao_pendencia": "responde",
+      "correto": false
+    },
+    "revisar": false,
+    "nota": "BUG-083/085: dois números na mesma mensagem, um é origem e o outro destino."
+  },
+  {
+    "id": "H-01",
+    "categoria": "horario",
+    "fonte": {
+      "data": "2026-08-31",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-08-31T09:43:00-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_horarios",
+        "pergunta": "em quais horários você toma ou usa o Puran?",
+        "obrigatoria": true
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "6h",
+    "citados": {
+      "nomes": [],
+      "horarios": [
+        "06:00"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "medicamentos": [
+        {
+          "nome": null,
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [
+            "06:00"
+          ],
+          "dias_semana": null
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "Forma `Nh` (a do `7h` do §3)."
+  },
+  {
+    "id": "H-02",
+    "categoria": "horario",
+    "fonte": {
+      "data": "2026-09-22",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "Creatina, 5gr às 7hrs",
+    "citados": {
+      "nomes": [
+        "Creatina"
+      ],
+      "horarios": [
+        "07:00"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "sem_pendencia",
+      "medicamentos": [
+        {
+          "nome": "Creatina",
+          "dosagem": null,
+          "quantidade": 1,
+          "horarios": [
+            "07:00"
+          ],
+          "dias_semana": null,
+          "convencao_po_gramas": "5g"
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "Forma `7hrs`. Gramas são posologia, nunca dosagem (convenção pré-MH-93: cada dose em gramas = 1 unidade)."
+  },
+  {
+    "id": "H-03",
+    "categoria": "horario",
+    "fonte": {
+      "data": "2026-09-20",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-20T12:52:00-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_horarios",
+        "pergunta": "quanto de Kepra você toma por vez, e em quais horários?",
+        "obrigatoria": true
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Marevan"
+      ]
+    },
+    "mensagem": "1 comprimido às 19hs",
+    "citados": {
+      "nomes": [],
+      "horarios": [
+        "19:00"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "medicamentos": [
+        {
+          "nome": null,
+          "dosagem": null,
+          "quantidade": 1,
+          "horarios": [
+            "19:00"
+          ],
+          "dias_semana": null,
+          "forma": "comprimido"
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "Forma `Nhs` (a do `7hs` do §3)."
+  },
+  {
+    "id": "H-04",
+    "categoria": "horario",
+    "fonte": {
+      "data": "2026-08-31",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-08-31T21:10:00-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_horarios",
+        "pergunta": "em quais horários você toma ou usa a Losartana?",
+        "obrigatoria": true
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "8 hrs da manhã e 8 horas da noite",
+    "citados": {
+      "nomes": [],
+      "horarios": [
+        "08:00",
+        "20:00"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "medicamentos": [
+        {
+          "nome": null,
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [
+            "08:00",
+            "20:00"
+          ],
+          "dias_semana": null
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "Formas `N hrs` e `N horas` (a do `7 horas` do §3), com o período decidindo AM/PM."
+  },
+  {
+    "id": "H-05",
+    "categoria": "horario",
+    "fonte": {
+      "data": "2026-09-26",
+      "origem": "sintetico"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "Losartana 50mg, 1 comprimido às 07h",
+    "citados": {
+      "nomes": [
+        "Losartana"
+      ],
+      "horarios": [
+        "07:00"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "sem_pendencia",
+      "medicamentos": [
+        {
+          "nome": "Losartana",
+          "dosagem": "50mg",
+          "quantidade": 1,
+          "horarios": [
+            "07:00"
+          ],
+          "dias_semana": null,
+          "forma": "comprimido"
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "SINTÉTICO: a forma `07h` não aparece em agent_logs (busca de 26/09)."
+  },
+  {
+    "id": "H-06",
+    "categoria": "horario",
+    "fonte": {
+      "data": "2026-06-15",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_horarios",
+        "pergunta": "quanto você toma por vez, e em quais horários?",
+        "obrigatoria": true
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "07:00",
+    "citados": {
+      "nomes": [],
+      "horarios": [
+        "07:00"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "medicamentos": [
+        {
+          "nome": null,
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [
+            "07:00"
+          ],
+          "dias_semana": null
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "Forma `07:00`."
+  },
+  {
+    "id": "H-07",
+    "categoria": "horario",
+    "fonte": {
+      "data": "2026-09-22",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-22T07:57:48-03:00",
+      "estado": "post_onboarding",
+      "pendencia": null,
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "Puran T4 75mcg às 6:30h\nVitamina b12 2 comprimidos 1000 mcg toda segunda, as 7h",
+    "citados": {
+      "nomes": [
+        "Puran T4",
+        "Vitamina b12"
+      ],
+      "horarios": [
+        "06:30",
+        "07:00"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "sem_pendencia",
+      "medicamentos": [
+        {
+          "nome": "Puran T4",
+          "dosagem": "75mcg",
+          "quantidade": null,
+          "horarios": [
+            "06:30"
+          ],
+          "dias_semana": null
+        },
+        {
+          "nome": "Vitamina b12",
+          "dosagem": "1000 mcg",
+          "quantidade": 2,
+          "horarios": [
+            "07:00"
+          ],
+          "dias_semana": [
+            "seg"
+          ]
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "Forma `6:30h`. Em produção virou 06:00 — o defeito está no consumidor, não na porta (baseline E0)."
+  },
+  {
+    "id": "H-08",
+    "categoria": "horario",
+    "fonte": {
+      "data": "2026-09-26",
+      "origem": "sintetico"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "Puran T4 25mcg, 1 comprimido às 6h30",
+    "citados": {
+      "nomes": [
+        "Puran T4"
+      ],
+      "horarios": [
+        "06:30"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "sem_pendencia",
+      "medicamentos": [
+        {
+          "nome": "Puran T4",
+          "dosagem": "25mcg",
+          "quantidade": 1,
+          "horarios": [
+            "06:30"
+          ],
+          "dias_semana": null,
+          "forma": "comprimido"
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "SINTÉTICO: `6h30` isolado não aparece em agent_logs (só `19h30` dentro de uma mensagem multi-medicamento, MM-04)."
+  },
+  {
+    "id": "H-09",
+    "categoria": "horario",
+    "fonte": {
+      "data": "2026-09-20",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-20T12:51:03-03:00",
+      "estado": "post_onboarding",
+      "pendencia": null,
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "Marevan 1 comprimido às 17hs\nKepra 1 comprimido às 19hs",
+    "citados": {
+      "nomes": [
+        "Marevan",
+        "Kepra"
+      ],
+      "horarios": [
+        "17:00",
+        "19:00"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "sem_pendencia",
+      "medicamentos": [
+        {
+          "nome": "Marevan",
+          "dosagem": null,
+          "quantidade": 1,
+          "horarios": [
+            "17:00"
+          ],
+          "dias_semana": null,
+          "forma": "comprimido"
+        },
+        {
+          "nome": "Kepra",
+          "dosagem": null,
+          "quantidade": 1,
+          "horarios": [
+            "19:00"
+          ],
+          "dias_semana": null,
+          "forma": "comprimido"
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "Forma `17hs`."
+  },
+  {
+    "id": "H-10",
+    "categoria": "horario",
+    "fonte": {
+      "data": "2026-06-19",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "Nimesulida 12/12 hrs",
+    "citados": {
+      "nomes": [
+        "Nimesulida"
+      ],
+      "horarios": []
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "sem_pendencia",
+      "medicamentos": [
+        {
+          "nome": "Nimesulida",
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [],
+          "dias_semana": null,
+          "intervalo_horas": 12
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "`12/12 hrs` é cadência, não horário de relógio: nenhum horário decidido."
+  },
+  {
+    "id": "H-11",
+    "categoria": "horario",
+    "fonte": {
+      "data": "2026-08-01",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "configurando",
+      "pendencia": {
+        "fluxo": "configuracao",
+        "etapa": "obter_horario",
+        "pergunta": "vou alterar o lembrete das 13:00 do Ômega 3 — para qual horário?",
+        "obrigatoria": true
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Ômega 3"
+      ]
+    },
+    "mensagem": "Meio dia",
+    "citados": {
+      "nomes": [],
+      "horarios": [
+        "12:00"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "configuracao",
+      "relacao_pendencia": "responde",
+      "medicamentos": [],
+      "correcoes": [],
+      "estoque": [],
+      "horarios_livres": [
+        "12:00"
+      ]
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "`meio-dia` precisa virar 12:00, nunca null e nunca 00:00."
+  },
+  {
+    "id": "H-12",
+    "categoria": "horario",
+    "fonte": {
+      "data": "2026-08-20",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_horarios",
+        "pergunta": "em quais horários você usa o Voltaren colírio?",
+        "obrigatoria": true
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "De manhã e à noite",
+    "citados": {
+      "nomes": [],
+      "horarios": []
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "medicamentos": [
+        {
+          "nome": null,
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": null,
+          "dias_semana": null,
+          "periodos": [
+            "manha",
+            "noite"
+          ]
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "`de manhã` deve dar horário null — nunca um horário inventado."
+  },
+  {
+    "id": "R-01",
+    "categoria": "recorrencia",
+    "fonte": {
+      "data": "2026-09-22",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-22T07:59:02-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_estoque_lote",
+        "pergunta": "se você souber quantos tem em casa de cada um (Puran T4, Vitamina b12), é só me falar",
+        "obrigatoria": false
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Puran T4",
+        "Vitamina b12"
+      ]
+    },
+    "mensagem": "A vitamina b12 é uma vez por semana apenas, toda segunda-feira",
+    "citados": {
+      "nomes": [
+        "Vitamina b12"
+      ],
+      "horarios": []
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "configuracao",
+      "relacao_pendencia": "novo",
+      "medicamentos": [],
+      "correcoes": [
+        {
+          "medicamento": "Vitamina b12",
+          "campo": "dias_semana",
+          "valor": [
+            "seg"
+          ]
+        }
+      ],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "\"toda segunda\". A mesma mensagem é o G-04 (delegação) e o E-01 (dígito no nome): o texto mede três coisas diferentes."
+  },
+  {
+    "id": "R-02",
+    "categoria": "recorrencia",
+    "fonte": {
+      "data": "2026-09-24",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-24T20:29:45-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_horarios",
+        "pergunta": "quanto de Vitamina D você toma por vez, e em quais horários?",
+        "obrigatoria": true
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Puran T4",
+        "Vitamina b12",
+        "Ferro quelato"
+      ]
+    },
+    "mensagem": "1 comprimido, as 7:00, as segundas-feiras.",
+    "citados": {
+      "nomes": [],
+      "horarios": [
+        "07:00"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "medicamentos": [
+        {
+          "nome": null,
+          "dosagem": null,
+          "quantidade": 1,
+          "horarios": [
+            "07:00"
+          ],
+          "dias_semana": [
+            "seg"
+          ],
+          "forma": "comprimido"
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "Plural \"as segundas-feiras\". Em produção a Vitamina D foi cadastrada às 07:00 sem dia da semana."
+  },
+  {
+    "id": "R-03",
+    "categoria": "recorrencia",
+    "fonte": {
+      "data": "2026-09-18",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "post_onboarding",
+      "pendencia": null,
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "Desvenlafaxina 50mg, 3 comprimidos, segunda à sexta às 6h, sábado e domingo ás 10h",
+    "citados": {
+      "nomes": [
+        "Desvenlafaxina"
+      ],
+      "horarios": [
+        "06:00",
+        "10:00"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "sem_pendencia",
+      "medicamentos": [
+        {
+          "nome": "Desvenlafaxina",
+          "dosagem": "50mg",
+          "quantidade": 3,
+          "horarios": [
+            "06:00"
+          ],
+          "dias_semana": [
+            "seg",
+            "ter",
+            "qua",
+            "qui",
+            "sex"
+          ],
+          "forma": "comprimido"
+        },
+        {
+          "nome": "Desvenlafaxina",
+          "dosagem": "50mg",
+          "quantidade": 3,
+          "horarios": [
+            "10:00"
+          ],
+          "dias_semana": [
+            "sab",
+            "dom"
+          ],
+          "forma": "comprimido"
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": true,
+    "nota": "seg a sex + fim de semana, com horário diferente em cada recorte: um medicamento, dois blocos de agenda (representados como duas entradas do mesmo nome)."
+  },
+  {
+    "id": "R-04",
+    "categoria": "recorrencia",
+    "fonte": {
+      "data": "2026-09-21",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-21T06:25:00-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_horarios",
+        "pergunta": "quanto de Doss 50.000 você toma por vez, e em quais horários?",
+        "obrigatoria": true
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "1 x por semana",
+    "citados": {
+      "nomes": [],
+      "horarios": []
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "medicamentos": [
+        {
+          "nome": null,
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [],
+          "dias_semana": null,
+          "frequencia_semanal": 1
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "1x por semana SEM o dia: o dia é pendência, não default."
+  },
+  {
+    "id": "R-05",
+    "categoria": "recorrencia",
+    "fonte": {
+      "data": "2026-09-21",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-21T06:27:00-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_horarios",
+        "pergunta": "uma vez por semana — em qual dia da semana você toma?",
+        "obrigatoria": true
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "Sabado",
+    "citados": {
+      "nomes": [],
+      "horarios": []
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "medicamentos": [
+        {
+          "nome": null,
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [],
+          "dias_semana": [
+            "sab"
+          ],
+          "frequencia_semanal": 1
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "O dia que faltava no R-04 (1x por semana com dia). Em produção o cadastro voltou a perguntar posologia e horários."
+  },
+  {
+    "id": "R-06",
+    "categoria": "recorrencia",
+    "fonte": {
+      "data": "2026-09-22",
+      "origem": "sintetico"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_horarios",
+        "pergunta": "quanto você toma por vez, e em quais horários?",
+        "obrigatoria": true
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "Tomo dia sim, dia não, sempre às 9h",
+    "citados": {
+      "nomes": [],
+      "horarios": [
+        "09:00"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "medicamentos": [
+        {
+          "nome": null,
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [
+            "09:00"
+          ],
+          "dias_semana": null,
+          "cadencia": "dia_sim_dia_nao"
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "SINTÉTICO: `dia sim, dia não` não aparece em agent_logs."
+  },
+  {
+    "id": "R-07",
+    "categoria": "recorrencia",
+    "fonte": {
+      "data": "2026-09-22",
+      "origem": "sintetico"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "post_onboarding",
+      "pendencia": null,
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "Tomo a injeção a cada 3 semanas, sempre de manhã",
+    "citados": {
+      "nomes": [],
+      "horarios": []
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "sem_pendencia",
+      "medicamentos": [
+        {
+          "nome": null,
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": null,
+          "dias_semana": null,
+          "cadencia": "a_cada_3_semanas"
+        }
+      ],
+      "correcoes": [],
+      "estoque": [],
+      "nao_representavel": true
+    },
+    "observado_producao": null,
+    "revisar": true,
+    "nota": "SINTÉTICO e NÃO REPRESENTÁVEL: o cadastro é quem responde com honestidade, sem descartar o que a pessoa disse (não `nao_suportado`). `de manhã` dá horário null."
+  },
+  {
+    "id": "R-08",
+    "categoria": "recorrencia",
+    "fonte": {
+      "data": "2026-08-31",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "post_onboarding",
+      "pendencia": null,
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "Cadastrar meu medicamento e montar um lembrete de rotina entre 06:00 da manhã e até 08:00 da manhã de segunda a segunda",
+    "citados": {
+      "nomes": [],
+      "horarios": [
+        "06:00",
+        "08:00"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "sem_pendencia",
+      "medicamentos": [
+        {
+          "nome": null,
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [],
+          "dias_semana": null
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": true,
+    "nota": "\"de segunda a segunda\" = todos os dias = recorrência null (nunca a lista dos sete). A faixa 06:00–08:00 não é horário decidido."
+  },
+  {
+    "id": "MM-01",
+    "categoria": "multi_med",
+    "fonte": {
+      "data": "2026-09-22",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-22T07:57:48-03:00",
+      "estado": "post_onboarding",
+      "pendencia": null,
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "Puran T4 75mcg às 6:30h\nVitamina b12 2 comprimidos 1000 mcg toda segunda, as 7h",
+    "citados": {
+      "nomes": [
+        "Puran T4",
+        "Vitamina b12"
+      ],
+      "horarios": [
+        "06:30",
+        "07:00"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "sem_pendencia",
+      "medicamentos": [
+        {
+          "nome": "Puran T4",
+          "dosagem": "75mcg",
+          "quantidade": null,
+          "horarios": [
+            "06:30"
+          ],
+          "dias_semana": null
+        },
+        {
+          "nome": "Vitamina b12",
+          "dosagem": "1000 mcg",
+          "quantidade": 2,
+          "horarios": [
+            "07:00"
+          ],
+          "dias_semana": [
+            "seg"
+          ]
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "Fran 22/09: cada linha com seus horários e a recorrência só na segunda."
+  },
+  {
+    "id": "MM-02",
+    "categoria": "multi_med",
+    "fonte": {
+      "data": "2026-09-18",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "post_onboarding",
+      "pendencia": null,
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "Lamotrigina 100mg\nRosovastatina \nDesvelafaxina \nVitamina D \n\n8h",
+    "citados": {
+      "nomes": [
+        "Lamotrigina",
+        "Rosovastatina",
+        "Desvelafaxina",
+        "Vitamina D"
+      ],
+      "horarios": [
+        "08:00"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "sem_pendencia",
+      "medicamentos": [
+        {
+          "nome": "Lamotrigina",
+          "dosagem": "100mg",
+          "quantidade": null,
+          "horarios": [
+            "08:00"
+          ],
+          "dias_semana": null
+        },
+        {
+          "nome": "Rosovastatina",
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [
+            "08:00"
+          ],
+          "dias_semana": null
+        },
+        {
+          "nome": "Desvelafaxina",
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [
+            "08:00"
+          ],
+          "dias_semana": null
+        },
+        {
+          "nome": "Vitamina D",
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [
+            "08:00"
+          ],
+          "dias_semana": null
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "Horário em LINHA SOLTA valendo para todos."
+  },
+  {
+    "id": "MM-03",
+    "categoria": "multi_med",
+    "fonte": {
+      "data": "2026-08-31",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "post_onboarding",
+      "pendencia": null,
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "Suplemento Bariatron 12:00\nImecap Hair : 08:00\nFluxetina 08:00\nTopiramato 21:00",
+    "citados": {
+      "nomes": [
+        "Suplemento Bariatron",
+        "Imecap Hair",
+        "Fluxetina",
+        "Topiramato"
+      ],
+      "horarios": [
+        "08:00",
+        "12:00",
+        "21:00"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "sem_pendencia",
+      "medicamentos": [
+        {
+          "nome": "Suplemento Bariatron",
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [
+            "12:00"
+          ],
+          "dias_semana": null
+        },
+        {
+          "nome": "Imecap Hair",
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [
+            "08:00"
+          ],
+          "dias_semana": null
+        },
+        {
+          "nome": "Fluxetina",
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [
+            "08:00"
+          ],
+          "dias_semana": null
+        },
+        {
+          "nome": "Topiramato",
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [
+            "21:00"
+          ],
+          "dias_semana": null
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": true,
+    "nota": "\"Suplemento\" pode ser categoria e não parte do nome."
+  },
+  {
+    "id": "MM-04",
+    "categoria": "multi_med",
+    "fonte": {
+      "data": "2026-09-18",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_estoque",
+        "pergunta": "quantos comprimidos você tem em casa?",
+        "obrigatoria": false
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "Insit 50mg, 4 comprimidos, e\nQuetiapina 25mg, 5 comprimidos segunda à sexta às 19h30",
+    "citados": {
+      "nomes": [
+        "Insit",
+        "Quetiapina"
+      ],
+      "horarios": [
+        "19:30"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "novo",
+      "medicamentos": [
+        {
+          "nome": "Insit",
+          "dosagem": "50mg",
+          "quantidade": 4,
+          "horarios": [],
+          "dias_semana": null,
+          "forma": "comprimido"
+        },
+        {
+          "nome": "Quetiapina",
+          "dosagem": "25mg",
+          "quantidade": 5,
+          "horarios": [
+            "19:30"
+          ],
+          "dias_semana": [
+            "seg",
+            "ter",
+            "qua",
+            "qui",
+            "sex"
+          ],
+          "forma": "comprimido"
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": true,
+    "nota": "Ambíguo: \"segunda à sexta às 19h30\" vale para os dois? O gabarito adota a leitura por linha."
+  },
+  {
+    "id": "MM-05",
+    "categoria": "multi_med",
+    "fonte": {
+      "data": "2026-09-21",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "idle",
+      "pendencia": null,
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "Oi! Quero cadastrar meus remédios:\nPredsin 2mg - 1cp as 10h\nGlifage 850mg - 1cp às 7h",
+    "citados": {
+      "nomes": [
+        "Predsin",
+        "Glifage"
+      ],
+      "horarios": [
+        "07:00",
+        "10:00"
+      ]
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "sem_pendencia",
+      "medicamentos": [
+        {
+          "nome": "Predsin",
+          "dosagem": "2mg",
+          "quantidade": 1,
+          "horarios": [
+            "10:00"
+          ],
+          "dias_semana": null,
+          "forma": "comprimido"
+        },
+        {
+          "nome": "Glifage",
+          "dosagem": "850mg",
+          "quantidade": 1,
+          "horarios": [
+            "07:00"
+          ],
+          "dias_semana": null,
+          "forma": "comprimido"
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "O \"Predsin 2mg 2mg\": o nome sai sem a concentração."
+  },
+  {
+    "id": "MM-06",
+    "categoria": "multi_med",
+    "fonte": {
+      "data": "2026-08-31",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "post_onboarding",
+      "pendencia": null,
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": []
+    },
+    "mensagem": "Curcuma C \nVitamina de A a Z \nVitamina b12\nVitamina D",
+    "citados": {
+      "nomes": [
+        "Curcuma C",
+        "Vitamina de A a Z",
+        "Vitamina b12",
+        "Vitamina D"
+      ],
+      "horarios": []
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "sem_pendencia",
+      "medicamentos": [
+        {
+          "nome": "Curcuma C",
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [],
+          "dias_semana": null
+        },
+        {
+          "nome": "Vitamina de A a Z",
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [],
+          "dias_semana": null
+        },
+        {
+          "nome": "Vitamina b12",
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [],
+          "dias_semana": null
+        },
+        {
+          "nome": "Vitamina D",
+          "dosagem": null,
+          "quantidade": null,
+          "horarios": [],
+          "dias_semana": null
+        }
+      ],
+      "correcoes": [],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "Nomes compostos; `Vitamina D` nunca pode ser absorvida por `Vitamina de A a Z`; dígito no nome (`b12`)."
+  },
+  {
+    "id": "E-01",
+    "categoria": "estoque",
+    "fonte": {
+      "data": "2026-09-22",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-22T07:59:02-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_estoque_lote",
+        "pergunta": "se você souber quantos tem em casa de cada um (Puran T4, Vitamina b12), é só me falar",
+        "obrigatoria": false
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Puran T4",
+        "Vitamina b12"
+      ]
+    },
+    "mensagem": "A vitamina b12 é uma vez por semana apenas, toda segunda-feira",
+    "citados": {
+      "nomes": [
+        "Vitamina b12"
+      ],
+      "horarios": []
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "configuracao",
+      "relacao_pendencia": "novo",
+      "medicamentos": [],
+      "correcoes": [
+        {
+          "medicamento": "Vitamina b12",
+          "campo": "dias_semana",
+          "valor": [
+            "seg"
+          ]
+        }
+      ],
+      "estoque": []
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "Dígito no nome: o `12` de `b12` virou estoque de 12 comprimidos em produção. Estoque esperado: NENHUM."
+  },
+  {
+    "id": "E-02",
+    "categoria": "estoque",
+    "fonte": {
+      "data": "2026-09-22",
+      "origem": "sintetico"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_estoque_lote",
+        "pergunta": "se você souber quantos tem em casa de cada um (Puran T4, Vitamina b12), é só me falar",
+        "obrigatoria": false
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Puran T4",
+        "Vitamina b12"
+      ]
+    },
+    "mensagem": "Puran T4 30",
+    "citados": {
+      "nomes": [
+        "Puran T4"
+      ],
+      "horarios": []
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "medicamentos": [],
+      "correcoes": [],
+      "estoque": [
+        {
+          "medicamento": "Puran T4",
+          "quantidade": 30,
+          "unidade": "unidade"
+        }
+      ]
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "SINTÉTICO: o par do E-01 — o `4` é do nome, o `30` é o estoque."
+  },
+  {
+    "id": "E-03",
+    "categoria": "estoque",
+    "fonte": {
+      "data": "2026-09-18",
+      "origem": "producao"
+    },
+    "contexto": {
+      "agora": "2026-09-18T15:52:06-03:00",
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_estoque",
+        "pergunta": "quantos comprimidos de Roacutan você tem em casa hoje?",
+        "obrigatoria": false
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Roacutan"
+      ]
+    },
+    "mensagem": "10",
+    "citados": {
+      "nomes": [],
+      "horarios": []
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "medicamentos": [],
+      "correcoes": [],
+      "estoque": [
+        {
+          "medicamento": "Roacutan",
+          "quantidade": 10,
+          "unidade": "comprimido"
+        }
+      ]
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "Número seco."
+  },
+  {
+    "id": "E-04",
+    "categoria": "estoque",
+    "fonte": {
+      "data": "2026-08-27",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_estoque",
+        "pergunta": "o frasco de Respiratux já está aberto ou ainda está fechado?",
+        "obrigatoria": false
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Respiratux"
+      ]
+    },
+    "mensagem": "1 frasco fechado de 100ml",
+    "citados": {
+      "nomes": [],
+      "horarios": []
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "medicamentos": [],
+      "correcoes": [],
+      "estoque": [
+        {
+          "medicamento": "Respiratux",
+          "quantidade": 100,
+          "unidade": "ml",
+          "frascos": 1,
+          "lacrado": true
+        }
+      ]
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "Frasco lacrado: o estoque é o VOLUME (100ml). Em produção a Nami perguntou de novo o volume que já estava na mensagem."
+  },
+  {
+    "id": "E-05",
+    "categoria": "estoque",
+    "fonte": {
+      "data": "2026-08-26",
+      "origem": "teste_interno"
+    },
+    "contexto": {
+      "agora": null,
+      "estado": "adding_med",
+      "pendencia": {
+        "fluxo": "cadastro",
+        "etapa": "cad_estoque_fracao",
+        "pergunta": "quanto mais ou menos ainda sobra no frasco de Toss xarope? (recém-aberto, 3/4, metade, 1/4, quase acabando — ou em ml)",
+        "obrigatoria": false
+      },
+      "ultimo_lembrete": null,
+      "mensagem_citada": null,
+      "doses": [],
+      "medicamentos": [
+        "Toss xarope"
+      ]
+    },
+    "mensagem": "Ah ta na metade",
+    "citados": {
+      "nomes": [],
+      "horarios": []
+    },
+    "esperado": {
+      "tipo": "delegar",
+      "especialista": "cadastro",
+      "relacao_pendencia": "responde",
+      "medicamentos": [],
+      "correcoes": [],
+      "estoque": [
+        {
+          "medicamento": "Toss xarope",
+          "fracao": 0.5,
+          "quantidade": null,
+          "unidade": "ml"
+        }
+      ]
+    },
+    "observado_producao": null,
+    "revisar": false,
+    "nota": "Fração: metade de um volume ainda desconhecido."
+  }
+]

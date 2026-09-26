@@ -50,9 +50,40 @@ Checagem de marco **acima** do alvo da execução que falha aparece como
 exige: todos os M1 verdes + nenhum caso já-verde regredido.
 
 Desde o v44 M4 (onboarding no runner) **não há mais expected-fail**: a suíte
-inteira (A0–A35) roda verde com `--alvo M4` — primeiro estado 100% pleno da
+inteira (A0–A36) roda verde com `--alvo M4` — primeiro estado 100% pleno da
 arquitetura-alvo. Diretriz de custo (21/09): durante o desenvolvimento rodam
 só os casos afetados pelo commit; a suíte completa roda UMA vez, no portão de
 merge; caso flaky → rerun individual, nunca a suíte.
 
 Baseline pré-M1 documentado em `arnes/BASELINE.md`.
+
+## Corpus (`arnes/corpus/`) — v45 P0
+
+Suíte **separada**, que convive com esta e não a substitui. É a régua do
+principal como porta única (P1): cada item é UM turno real, com o contexto
+estruturado em que chegou, o que o sistema fez em produção e o que deveria
+ter feito.
+
+```bash
+npm run corpus -- --adaptador=producao_observada   # dose + delegacao, sem API
+npm run corpus -- --adaptador=porta_atual          # extração, 1 chamada por item
+npm run corpus -- --adaptador=principal_p1         # vazio até o P1
+npm run corpus -- --adaptador=porta_atual --categoria=horario
+npm run corpus -- --item=D-02 --json=saida.json
+```
+
+|  | `arnes/casos.js` | `arnes/corpus/` |
+|---|---|---|
+| O que testa | **comportamento**, conversa inteira, turno a turno | **interpretação** de UM turno |
+| Dependências | Supabase de staging, seeds, mock do funil | nenhuma além da `ANTHROPIC_API_KEY` (e só no `porta_atual`/P1) |
+| Veredito | binário: é o portão de merge | taxa de acerto por categoria e por campo |
+| Cadência | uma vez, no portão de merge | **sob demanda** |
+
+O corpus **nunca entra no portão de merge** e sai sempre com código 0: ele
+mede, não reprova. Campos que a porta atual não representa aparecem como
+`nao_suportado_pela_porta_atual`, nunca como erro.
+
+Quando um item do corpus revelar defeito de **comportamento**, ele vira também
+um caso do arnês. O caminho é sempre esse, nunca o contrário.
+
+Resultado e leitura: `arnes/corpus/BASELINE.md`.

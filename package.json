@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "arnes": "node arnes/run.js"
+    "arnes": "node arnes/run.js",
+    "corpus": "node arnes/corpus/run.js"
   },
   "keywords": [],
   "author": "",
