@@ -1154,3 +1154,65 @@ como dado (cadastro, perfil, configuração/correção, reativação e agora onb
 porta única de interpretação, um funil único de saída, um arnês de regressão sem
 expected-fail. Os agentes artesanais de coleta morreram: `cadastro.js` (3.709 linhas, M2),
 `recepcionista.js` (895) e `agentes/data_nascimento.js` (656) no M4.
+
+---
+
+## 13. v45 — Definições de métrica de base (26/09/2026)
+
+Fechadas por Guilherme durante a preparação dos entregáveis Traction. Valem para
+dashboard, consultas ad hoc e qualquer material externo. Antes disso cada análise
+inventava o próprio critério, e dois números da mesma semana se contradiziam.
+
+### 13.1 As quatro definições
+
+| Métrica | Definição | Fonte |
+|---|---|---|
+| **Usuário ativo** | Tem ao menos um medicamento com lembrete ativo | `medications.ativo = true` |
+| **Usuário engajado** | Ativo que enviou ao menos UMA mensagem de qualquer tipo à Nami nos últimos 7 dias | `agent_logs` |
+| **Abandono** | Ativo com ZERO mensagens em 7 dias | `agent_logs` |
+| **Adesão** | Doses confirmadas ÷ doses agendadas e vencidas, apurada SÓ sobre os engajados | `dose_logs` |
+
+### 13.2 Regras que decorrem delas
+
+- **[REGRA] Engajamento e adesão saem de tabelas diferentes.** Engajamento vive em
+  `agent_logs`; adesão vive em `dose_logs`. Medir engajamento por status de dose
+  subestima a base, porque ignora quem conversa com a Nami sobre outro assunto —
+  responder sobre estoque, corrigir um horário, perguntar algo. Tudo isso é
+  engajamento pleno.
+- **[REGRA] Não existe "adesão bruta".** Quem está em abandono não tem adesão
+  mensurável; incluí-lo no denominador mistura duas populações e produz uma média
+  entre quem usa e quem foi embora. Abandono é acompanhado como métrica própria.
+- **[REGRA] `sem_estoque` conta como falha de adesão.** A dose não foi tomada — isso
+  é não adesão. O rótulo não desculpa a falha: ele registra a CAUSA. É métrica de
+  diagnóstico, não de exclusão, e é argumento comercial direto com rede de farmácia.
+
+### 13.3 `sem_estoque` é marcado pelo sistema
+
+Verificado em 26/09: `dose_logs.status = 'sem_estoque'` é gravado pelo scheduler
+quando `medications.estoque_atual = 0`. Não tem `taken_at`, não tem resposta do
+usuário, e ocorre sem que ele mande qualquer mensagem — confirmado em um usuário com
+14 doses `sem_estoque` na janela e última mensagem 7 dias antes.
+
+**Consequência:** o status de dose nunca serve como proxy de interação do usuário.
+Para engajamento, consultar `agent_logs` com `agent NOT IN ('lembrete','scheduler')`.
+
+### 13.4 Ciclo 1 entra nas contagens
+
+Supersede a regra anterior de tratar o Ciclo 1 (junho, 6 usuários) apenas como fato
+histórico. São usuários reais em uso e entram em TODAS as contagens de base e de
+métrica. A separação por ciclo permanece só nas comparações de coorte — por exemplo
+turnos até o primeiro medicamento — onde a versão do produto era diferente e misturar
+coortes invalidaria a comparação.
+
+### 13.5 Estado medido em 25/09/2026 (janela 19 a 25/09)
+
+| Indicador | Valor |
+|---|---|
+| Base total | 37 pessoas iniciaram conversa |
+| Ativos | 18 |
+| Engajados | 15 (83% dos ativos) |
+| Abandono | 3 (17%) |
+| Adesão dos engajados | 70,8% — 85 de 120 doses |
+| Doses perdidas por falta de estoque | 24 (20,0% do agendado) |
+
+Das 35 doses não confirmadas, 24 foram por falta de medicamento e 11 por não resposta.

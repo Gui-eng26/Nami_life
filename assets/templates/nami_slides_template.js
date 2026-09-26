@@ -9,7 +9,8 @@ const T = {
   laranja:         "FC4C02",
   laranjaEscuro:   "C43C00",
   laranjaTint:     "FFEDE4",
-  offWhite:        "F6FFFF",
+  creme:           "FDE7DA",
+  offWhite:        "F6FFFF",  // legado — não usar em material novo
   marinho:         "0F2B46",
   marinhoTint:     "E9F0F6",
   verdeWhats:      "128C7E",
@@ -69,7 +70,7 @@ function marcaDeRodape(slide, clara) {
 // ============================================================ 1. ABERTURA
 {
   const s = pres.addSlide();
-  s.background = { color: T.offWhite };
+  s.background = { color: T.creme };
   s.addImage({ path: MARCA, x: (W - 1.9) / 2, y: 1.45, w: 1.9, h: 1.9 });
   s.addText("TÍTULO DA APRESENTAÇÃO", {
     x: 1, y: 3.65, w: W - 2, h: 0.8, align: "center",
@@ -113,7 +114,7 @@ function marcaDeRodape(slide, clara) {
 // ============================================================== 3. DADO
 {
   const s = pres.addSlide();
-  s.background = { color: T.branco };
+  s.background = { color: T.creme };
   titulo(s, "A não adesão é uma epidemia invisível");
   s.addText("50%", {
     x: M, y: 2.1, w: 5, h: 2,
@@ -141,7 +142,7 @@ function marcaDeRodape(slide, clara) {
 // ========================================================== 4. CONTEÚDO
 {
   const s = pres.addSlide();
-  s.background = { color: T.branco };
+  s.background = { color: T.creme };
   titulo(s, "O que a Nami faz hoje");
   const cards = [
     ["Recebe receitas", "Por texto, áudio ou foto. Monta o esquema de horários automaticamente."],
@@ -154,7 +155,7 @@ function marcaDeRodape(slide, clara) {
     const x = M + i * (cw + 0.32);
     s.addShape(pres.ShapeType.roundRect, {
       x, y: 2.05, w: cw, h: 3.05, rectRadius: 0.06,
-      fill: { color: T.fundoSuave }, line: { color: T.linha, width: 0.75 },
+      fill: { color: T.branco }, line: { color: T.linha, width: 1 },
     });
     s.addText(c[0], {
       x: x + 0.28, y: 2.38, w: cw - 0.56, h: 0.78,
@@ -177,7 +178,7 @@ function marcaDeRodape(slide, clara) {
 // ============================================ 5. ESTADOS EPISTÊMICOS
 {
   const s = pres.addSlide();
-  s.background = { color: T.branco };
+  s.background = { color: T.creme };
   titulo(s, "Como ler os números desta apresentação");
   const estados = [
     ["DADO VERIFICADO", "Número com fonte primária citada no pé do slide.", T.marinho, T.marinhoTint],
@@ -188,7 +189,8 @@ function marcaDeRodape(slide, clara) {
   estados.forEach((e, i) => {
     const y = 2.05 + i * 0.98;
     s.addShape(pres.ShapeType.roundRect, {
-      x: M, y, w: W - 2 * M, h: 0.82, rectRadius: 0.05, fill: { color: e[3] },
+      x: M, y, w: W - 2 * M, h: 0.82, rectRadius: 0.05,
+      fill: { color: T.branco }, line: { color: e[2], width: 1.25 },
     });
     s.addText(e[0], {
       x: M + 0.3, y: y + 0.06, w: 3.1, h: 0.7,

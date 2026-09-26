@@ -1,6 +1,6 @@
 # GUIDANCE DE IDENTIDADE VISUAL — NAMI LIFE
 
-**Versão:** 1.1 · **Data:** 08/08/2026 · **Responsável:** Guilherme (fundador)
+**Versão:** 1.2 · **Data:** 26/09/2026 · **Responsável:** Guilherme (fundador)
 **Escopo:** relatórios, entregáveis, apresentações e documentos formais da Nami Life.
 **Status:** contrato ativo. Vale para tudo que for produzido a partir desta data.
 
@@ -78,7 +78,8 @@ lados. Tamanho mínimo: **10 mm** impresso / **32 px** em tela.
 | Cor | HEX | RGB | CMYK |
 |---|---|---|---|
 | Laranja Nami (primária) | `#FC4C02` | 252, 76, 2 | 0, 69, 99, 1 |
-| Off-white Nami (secundária) | `#F6FFFF` | 246, 255, 255 | 3, 0, 0, 0 |
+| Creme Nami (fundo) | `#FDE7DA` | 253, 231, 218 | — |
+| Off-white Nami (legado) | `#F6FFFF` | 246, 255, 255 | 3, 0, 0, 0 |
 
 ---
 
@@ -97,7 +98,12 @@ continua sendo a cor da marca; o restante é infraestrutura de leitura.
 | `laranja` | `#FC4C02` | marca, filetes, barras de destaque, elementos gráficos grandes |
 | `laranja_escuro` | `#C43C00` | **texto** em laranja (títulos H2, links, ênfase) |
 | `laranja_tint` | `#FFEDE4` | fundo de bloco de destaque |
-| `off_white` | `#F6FFFF` | fundo de peça gráfica e de slide |
+| `creme` | `#FDE7DA` | fundo de peça gráfica e de slide |
+| `off_white` | `#F6FFFF` | **legado** — não usar em material novo |
+
+Hex do `creme` extraído da peça impressa `Nami_Bula_A6_frente-verso_v2.pdf`: ocupa
+90,84% da página e é idêntico nos quatro cantos. Oficializado por Guilherme em 26/09/2026
+— o creme das peças do CIW foi escolha, não desvio.
 
 **[REGRA]** `#FC4C02` **não é usado como cor de texto corrido nem em textos abaixo de 18 pt**.
 Sobre branco ele atinge ~3,3:1 de contraste — abaixo do mínimo WCAG AA (4,5:1) para texto
@@ -147,6 +153,20 @@ Um dado verificado ruim continua marinho. Uma hipótese entusiasmante continua �
 
 **[REGRA]** O laranja em corpo de texto fica reservado à proposta de valor. Isso preserva
 seu peso: quem folheia o documento encontra a promessa da Nami sempre no mesmo tom.
+
+### 2.5 Composição sobre fundo `creme`
+
+**[REGRA] Sobre fundo `creme`, cartão é branco.** `fundo_suave` (`#F3F6F8`) é um cinza
+de base azulada; sobre fundo quente ele embaça e suja os dois. Cartão e bloco de
+conteúdo sobre creme usam `#FFFFFF` com contorno fino em `linha`.
+
+**[REGRA] Sobre fundo `creme`, bloco semântico usa CONTORNO, não preenchimento.**
+Os tints quentes (`laranja_tint #FFEDE4`, `hipotese_tint #FDF3E0`,
+`alerta_tint #FBECEC`) são próximos demais do creme e desaparecem no fundo. O bloco
+fica branco e recebe contorno de 1,25 pt na cor do estado; o título do bloco mantém a
+cor do estado. A cor continua comunicando o status — muda só onde ela mora.
+Tints frios (`marinho_tint`, `decisao_tint`) sobrevivem ao creme, mas por uniformidade
+seguem a mesma regra.
 
 ---
 
@@ -276,8 +296,8 @@ Relatórios de sessão mantêm a convenção já em uso: `Nami_Relatorio_vN.docx
 ### 5.1 Formato e grade
 
 - **[REGRA]** 16:9 (1920×1080). **[PADRÃO]** margens de 80 px; grade de 12 colunas.
-- **[PADRÃO]** Fundo `off_white` (`#F6FFFF`) ou branco. Fundo `marinho` reservado a
-  slides de virada de seção e ao slide de encerramento.
+- **[PADRÃO]** Fundo `creme` (`#FDE7DA`) ou branco. Fundo `marinho` reservado a slides
+  de virada de seção e ao slide de encerramento.
 
 ### 5.2 Tipos de slide
 
@@ -429,3 +449,4 @@ Registradas como lacuna, não preenchidas por suposição:
 |---|---|---|
 | 1.0 | 08/08/2026 | Criação. Paleta, tipografia, padrão de relatório e de apresentação, estados epistêmicos, módulo `nami_identidade.py`. Aplicado retroativamente ao entregável da Trilha 3 (v2). |
 | 1.1 | 08/08/2026 | Variantes da marca (sólida, monocromáticas, wordmark horizontal) derivadas do mestre. Template `.pptx` com 8 masters. Regra contra faixas decorativas em slide. Achado das letras vazadas documentado. |
+| 1.2 | 26/09/2026 | Token `creme` (`#FDE7DA`) oficializado como fundo de slide e peça gráfica; `off_white` passa a legado. Regras de composição sobre creme (cartão branco, bloco semântico por contorno). Documento longo segue em fundo branco. |
