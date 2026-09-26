@@ -8,7 +8,8 @@
 ```bash
 npm run corpus -- --adaptador=producao_observada   # dose + delegacao, custo zero
 npm run corpus -- --adaptador=porta_atual          # extração, 31 chamadas (~30 s)
-npm run corpus -- --adaptador=principal_p1         # vazio — liga no P1
+npm run corpus -- --adaptador=principal_p1         # o principal (P1) — ver §5
+npm run corpus -- --adaptador=principal_p1 --modelo=claude-sonnet-5
 ```
 
 Filtros: `--categoria=dose`, `--item=D-02`, `--json=saida.json`. O corpus sai sempre com código 0 e
@@ -208,4 +209,77 @@ G-04 (b12 semanal é `configuracao`, `novo`).
   estruturada do item é o que o principal receberá no P1, e a porta de hoje não tem onde recebê-la.
 - O banco fica neutralizado no `porta_atual` (credenciais inertes antes de importar `src/`); o
   `producao_observada` não importa `src/` nem lê `.env`.
-- `principal_p1` existe e não faz nada: é ligado no P1, recebendo `item.contexto` como está.
+- `principal_p1` recebe `item.contexto` como está, pelo mesmo renderizador do turno real (§5).
+
+---
+
+## 5. P1 — `principal_p1` (26/09/2026)
+
+O principal como porta única, medido sobre o mesmo corpus. O adaptador monta o
+contexto do item pelo **mesmo** renderizador do turno real (bloco único de doses
+com refs, pendência, citação) e faz uma chamada por item. Gabarito com as três
+decisões de 26/09 aplicadas: D-07/08/09 saíram da revisão ("Sim" depois de
+lembrete é confirmação); a segunda parte do D-10 é `UPDATE_STOCK` do principal.
+
+Fato relatado sobre dose que o banco já registra ("tomou" numa confirmada) não
+conta no campo `doses`: o executor o ignora (ver "já registrada" no P1).
+
+### Comparação com o baseline de produção (critério do §11: ≥ em dose e delegação)
+
+| Categoria | Produção (P0) | `claude-sonnet-4-6` | `claude-sonnet-5` ¹ |
+|---|---|---|---|
+| `dose` | 9/25 | **21/25** | 23/25 |
+| `delegacao` | 7/15 | **15/15** | 14/15 |
+| `horario` | — | 11/12 | 9/12 |
+| `recorrencia` | — | 6/8 | 4/8 |
+| `multi_med` | — | 5/6 | 4/6 |
+| `estoque` | — | 4/5 | 3/5 |
+| **total** | 16/40 | **62/71** | 57/71 |
+
+Porta atual (P0) nas categorias de extração, para referência: 24/31. Com
+`claude-sonnet-4-6`, o principal fica em 26/31 nelas.
+
+¹ **Rodada anterior** do `claude-sonnet-5`, feita antes de dois ajustes de código
+(nome proposto que não aparece na mensagem é descartado; fato sobre dose já
+registrada é ignorado). A rodada com o código final ficou inválida: a chave da
+API ficou sem crédito no meio dela. Os dois ajustes só podem melhorar o placar
+dele (D-18 e boa parte dos erros de `nomes_citados` eram exatamente isso).
+Refazer antes da decisão de modelo.
+
+### Por campo — `claude-sonnet-4-6`
+
+| Campo | Acerto |
+|---|---|
+| `tipo` | 68/71 |
+| `doses` | 20/22 |
+| `candidatas` | 0/2 |
+| `especialista` | 45/45 |
+| `relacao_pendencia` | 44/45 |
+| `subtipo` | 2/2 |
+| `outra` | 1/2 |
+| `nomes_citados` | 29/31 |
+| `horarios_citados` | 31/31 |
+| `medicamentos_a_cadastrar` | 29/31 |
+| `horarios_resolvidos` | 30/31 |
+
+Quantidade, dias da semana, dosagem, cadência, forma, correção, estoque e "não
+representável" aparecem como `extracao_estruturada_no_P2`: são o escopo do P2.
+
+### Os 9 erros do `claude-sonnet-4-6`
+
+7 dos 9 estão em itens marcados para revisão — o gabarito é que está em dúvida:
+
+- **D-10** 🔎 — o "Sim" confirmou o Ofolato D **e** o Regenesis (lembrados no mesmo minuto).
+- **D-11** 🔎 — perguntou a quantidade da recompra sem registrar a dose junto.
+- **D-20** 🔎 — "tomei a dipirona ontem": registrou as duas doses de Dipirona em vez de perguntar.
+- **D-22** 🔎 — "tomei o ômega 3 de ontem" com as de ontem já confirmadas: não perguntou se era a de hoje.
+- **R-07** 🔎 / **R-08** 🔎 / **MM-04** 🔎 — nome "injeção" como medicamento; faixa 06:00–08:00 como horários; relação `responde` em vez de `novo`.
+- **H-11** — "Meio dia" na configuração do Ômega 3: o principal preencheu o campo `medicamento` (alvo da configuração) com "Ômega 3", que a régua de `nomes_citados` conta como citado. É o alvo certo; o gabarito de leitura literal é que não o espera.
+- **E-02** — "Puran T4 30" no convite agregado: o nome foi para `medicamentos` (campo de cadastro) em vez de só estoque.
+
+### O que muda de natureza em relação à produção
+
+- **Dose:** dos 16 erros de produção, o principal acerta 12. Continuam errados só itens em revisão.
+- **Delegação:** os 8 erros de produção — pedido novo engolido pela coleta, "Erro", B12
+  semanal virando estoque, valor descartado — viram 15/15. O que faltava era a
+  relação com a pendência, e ela chegou a 44/45.

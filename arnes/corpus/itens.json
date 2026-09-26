@@ -735,8 +735,8 @@
       "doses": [],
       "correto": false
     },
-    "revisar": true,
-    "nota": "Leitura alternativa: \"Sim\" como ciência do aviso de estoque zerado (tipo responder). O gabarito adota \"tomou\" porque a mensagem responde a \"está na hora do seu Desogestrel\" e se repete todo dia, o que sugere que o estoque do sistema é que está errado."
+    "revisar": false,
+    "nota": "\"Sim\" depois de lembrete — com ou sem aviso de estoque — é confirmação de dose (decisão de Guilherme, 26/09). A palavra da pessoa prevalece sobre o estoque registrado."
   },
   {
     "id": "D-08",
@@ -805,8 +805,8 @@
       "doses": [],
       "correto": false
     },
-    "revisar": true,
-    "nota": "Leitura alternativa: \"Sim\" como ciência do aviso de estoque zerado (tipo responder). O gabarito adota \"tomou\" porque a mensagem responde a \"está na hora do seu Desogestrel\" e se repete todo dia, o que sugere que o estoque do sistema é que está errado."
+    "revisar": false,
+    "nota": "\"Sim\" depois de lembrete — com ou sem aviso de estoque — é confirmação de dose (decisão de Guilherme, 26/09). A palavra da pessoa prevalece sobre o estoque registrado."
   },
   {
     "id": "D-09",
@@ -875,8 +875,8 @@
       "doses": [],
       "correto": false
     },
-    "revisar": true,
-    "nota": "Leitura alternativa: \"Sim\" como ciência do aviso de estoque zerado (tipo responder). O gabarito adota \"tomou\" porque a mensagem responde a \"está na hora do seu Desogestrel\" e se repete todo dia, o que sugere que o estoque do sistema é que está errado."
+    "revisar": false,
+    "nota": "\"Sim\" depois de lembrete — com ou sem aviso de estoque — é confirmação de dose (decisão de Guilherme, 26/09). A palavra da pessoa prevalece sobre o estoque registrado."
   },
   {
     "id": "D-10",
@@ -970,17 +970,12 @@
         }
       ],
       "outra": {
-        "tipo": "delegar",
-        "especialista": "configuracao",
-        "relacao_pendencia": "sem_pendencia",
-        "estoque": [
-          {
-            "medicamento": "Regenesis e ofolato D",
-            "quantidade": 60,
-            "unidade": "comprimido",
-            "motivo": "recompra"
-          }
-        ]
+        "tipo": "acao",
+        "acao": "UPDATE_STOCK",
+        "medicamento": "Regenesis e ofolato D",
+        "modo": "soma",
+        "quantidade": 60,
+        "motivo": "recompra"
       }
     },
     "observado_producao": {
@@ -995,7 +990,7 @@
       "correto": false
     },
     "revisar": true,
-    "nota": "A mensagem cita o aviso do Regenesis: a recompra e o \"Sim\" se referem a ele. Dúvida para revisão: o \"Sim\" também vale para o Ofolato D (D1), lembrado no mesmo minuto? E quem atualiza estoque no P1 — configuracao ou o próprio principal?"
+    "nota": "A mensagem cita o aviso do Regenesis: a recompra e o \"Sim\" se referem a ele. Recompra é UPDATE_STOCK do próprio principal (decisão de 26/09). Dúvida que segue em revisão: o \"Sim\" também vale para o Ofolato D (D1), lembrado no mesmo minuto?"
   },
   {
     "id": "D-11",

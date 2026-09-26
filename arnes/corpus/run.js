@@ -3,7 +3,8 @@
 //
 //   npm run corpus -- --adaptador=producao_observada   → custo zero (dose, delegacao)
 //   npm run corpus -- --adaptador=porta_atual          → 1 chamada por item de extração
-//   npm run corpus -- --adaptador=principal_p1         → vazio até o P1
+//   npm run corpus -- --adaptador=principal_p1         → o principal (P1), 1 chamada por item
+//   npm run corpus -- --adaptador=principal_p1 --modelo=claude-sonnet-5
 //
 //   filtros: --categoria=horario · --item=D-02 · --json=saida.json · --concorrencia=4
 //
@@ -64,10 +65,10 @@ const CAMPOS_OBSERVADA = ['tipo', 'doses', 'candidatas', 'especialista', 'relaca
 
 const chavesDose = (lista) => conjunto((lista || []).map(d => `${d.ref}:${d.fato}`));
 
-function compararObservada(item) {
-    const e = item.esperado;
-    const o = item.observado_producao;
-    const campos = {
+// Compara uma decisão (a observada em produção ou a do principal P1) com o
+// gabarito, campo a campo. Mesma régua para os dois adaptadores.
+function compararDecisao(e, o) {
+    return {
         tipo: campoValor(e.tipo, o.tipo),
         doses: (e.tipo === 'dose' || (o.doses || []).length > 0)
             ? campoConjunto(chavesDose(e.doses), chavesDose(o.doses))
@@ -82,6 +83,11 @@ function compararObservada(item) {
         // nunca trata as duas: quando o observado não traz `outra`, é erro.
         outra: e.outra ? campoValor(e.outra.tipo, o.outra?.tipo) : naoExigido
     };
+}
+
+function compararObservada(item) {
+    const o = item.observado_producao;
+    const campos = compararDecisao(item.esperado, o);
     const camposOk = CAMPOS_OBSERVADA.every(c => !campos[c].exigido || campos[c].ok);
     return {
         campos,
@@ -217,17 +223,17 @@ function compararPorta(item, proposta) {
 
 let interpretarTurno = null;
 
-async function carregarPorta() {
+// Banco NEUTRALIZADO antes de importar src/: nem a porta nem o principal leem
+// banco no corpus, mas `degradar()` (falha dupla de schema) escreve em
+// system_events — e o .env do projeto aponta para PRODUÇÃO. Credenciais
+// inertes tornam essa escrita impossível por construção.
+async function prepararAmbienteApp() {
     const dotenv = (await import('dotenv')).default;
     dotenv.config({ path: path.join(RAIZ, '.env') });
     if (!process.env.ANTHROPIC_API_KEY) {
-        console.error('ANTHROPIC_API_KEY ausente — o adaptador porta_atual chama a porta de verdade.');
+        console.error('ANTHROPIC_API_KEY ausente — este adaptador chama o modelo de verdade.');
         process.exit(2);
     }
-    // Banco NEUTRALIZADO antes de importar src/: a porta não lê banco, mas
-    // `degradar()` (falha dupla de schema) escreve em system_events — e o
-    // .env do projeto aponta para PRODUÇÃO. Credenciais inertes tornam essa
-    // escrita impossível por construção.
     process.env.SUPABASE_URL = 'https://corpus-inerte.supabase.co';
     process.env.SUPABASE_SERVICE_KEY = 'corpus-inerte';
     process.env.ZAPI_INSTANCE_ID = 'corpus-inerte';
@@ -237,6 +243,10 @@ async function carregarPorta() {
         console.error('Corpus apontando para PRODUÇÃO — execução recusada.');
         process.exit(2);
     }
+}
+
+async function carregarPorta() {
+    await prepararAmbienteApp();
     ({ interpretarTurno } = await import('../../src/porta.js'));
 }
 
@@ -268,20 +278,115 @@ const portaAtual = {
 
 // ============================================================
 // ADAPTADOR 3 — principal_p1
-// Criado vazio no P0. No P1 ele recebe `item.contexto` exatamente como
-// está (pendência, doses com refs, último lembrete, mensagem citada) e
-// devolve { tipo, doses | especialista + relacao_pendencia + campos }.
+// O principal como porta única (P1). Recebe `item.contexto` exatamente
+// como está (pendência, doses com refs, último lembrete, mensagem citada)
+// pelo MESMO renderizador do turno real, e devolve a decisão
+// { tipo, doses | delegar + campos | candidatas }. Uma chamada por item.
 // ============================================================
+
+let principal = null;
+let dosesDoTurno = null;
+
+async function carregarPrincipal() {
+    await prepararAmbienteApp();
+    principal = await import('../../src/agentes/principal.js');
+    dosesDoTurno = await import('../../src/dosesDoTurno.js');
+}
+
+// A decisão do principal no mesmo formato do `observado_producao`.
+function observadoDaDecisao(d) {
+    let outra = null;
+    if ((d.actions || []).some(a => a?.type === 'UPDATE_STOCK')) outra = { tipo: 'acao' };
+    else if (d.delegar && d.tipo !== 'delegar') outra = { tipo: 'delegar' };
+    else if (d.tipo !== 'perguntar' && /\?/.test(d.message || '')) outra = { tipo: 'perguntar' };
+    return {
+        tipo: d.tipo,
+        doses: d.doses,
+        candidatas: d.candidatas,
+        especialista: d.delegar?.especialista ?? null,
+        relacao_pendencia: d.delegar?.relacao_pendencia ?? null,
+        subtipo: d.delegar?.campos?.subtipo ?? null,
+        outra
+    };
+}
+
+// Nas categorias de extração, os campos do principal são os campos da porta
+// (P1 §4): compara pela mesma régua do porta_atual.
+function propostaNoFormatoDaPorta(d) {
+    return {
+        intencao: d.tipo === 'delegar' ? d.delegar?.especialista : 'principal',
+        campos: {
+            medicamentos: d.delegar?.campos?.medicamentos || [],
+            horarios: d.delegar?.campos?.horarios || [],
+            medicamento: d.delegar?.campos?.medicamento || null
+        }
+    };
+}
+
+const CAMPOS_P1_EXTRACAO = ['tipo', 'especialista', 'relacao_pendencia', 'nomes_citados', 'horarios_citados', 'medicamentos_a_cadastrar', 'horarios_resolvidos'];
+const CAMPOS_P1 = [...new Set([...CAMPOS_OBSERVADA, ...CAMPOS_P1_EXTRACAO])];
+const CAMPOS_AINDA_FORA_DO_P1 = CAMPOS_NAO_SUPORTADOS.filter(c => c !== 'relacao_pendencia');
+
+function montarContextoDoItem(item) {
+    const c = item.contexto;
+    const { estrutura } = dosesDoTurno.estruturaDoItemDoCorpus(c);
+    return principal.montarContextoPrincipal({
+        user: null,
+        agora: c.agora ? new Date(c.agora) : new Date(),
+        estado: c.estado || 'idle',
+        blocoDoses: dosesDoTurno.renderizarBlocoDoses(estrutura),
+        pendencia: c.pendencia || null,
+        eventosProativos: [],
+        medicamentos: c.medicamentos || [],
+        historicoConversa: [],
+        mensagem: item.mensagem
+    });
+}
 
 const principalP1 = {
     nome: 'principal_p1',
-    descricao: 'o principal como porta única (P1) — ainda não ligado',
+    descricao: 'o principal como porta única (P1)',
     categoriasPadrao: [...CATEGORIAS_DECISAO, ...CATEGORIAS_EXTRACAO],
-    campos: [],
-    vazio: true,
+    campos: [...CAMPOS_P1, ...CAMPOS_AINDA_FORA_DO_P1],
     aplicavel: () => true,
-    async avaliar() {
-        throw new Error('principal_p1 ainda não foi ligado — isso acontece no P1');
+    preparar: carregarPrincipal,
+    async avaliar(item) {
+        let decisao = null;
+        let erro = null;
+        try {
+            decisao = await principal.interpretarComPrincipal({
+                contexto: montarContextoDoItem(item),
+                mensagem: item.mensagem,
+                model: args.modelo || principal.MODELO_PRINCIPAL
+            });
+            if (!decisao) erro = 'principal degradado (duas falhas de schema)';
+        } catch (e) {
+            erro = e.message;
+        }
+        const obs = decisao ? observadoDaDecisao(decisao) : { tipo: null, doses: [] };
+        // O que o executor faria: fato sobre dose que o banco já registra é
+        // ignorado (tabela do §6 + "já registrada"), então não conta no campo.
+        const statusDaRef = new Map((item.contexto.doses || []).map(d => [d.ref, d.status]));
+        obs.doses = (obs.doses || []).filter(f => !(
+            (f.fato === 'tomou' && statusDaRef.get(f.ref) === 'confirmada') ||
+            (f.fato === 'nao_tomou' && statusDaRef.get(f.ref) === 'nao_tomada')));
+        const campos = compararDecisao(item.esperado, obs);
+
+        if (CATEGORIAS_EXTRACAO.includes(item.categoria)) {
+            const daPorta = compararPorta(item, decisao ? propostaNoFormatoDaPorta(decisao) : null);
+            for (const c of ['nomes_citados', 'horarios_citados', 'medicamentos_a_cadastrar', 'horarios_resolvidos']) {
+                campos[c] = daPorta.campos[c];
+            }
+            // Extração estruturada (quantidade, dias, correção…) é do P2 —
+            // o que falta aqui é medida, não erro.
+            for (const c of CAMPOS_AINDA_FORA_DO_P1) {
+                campos[c] = daPorta.campos[c].exigido
+                    ? { exigido: true, ok: null, status: 'extracao_estruturada_no_P2' }
+                    : naoExigido;
+            }
+        }
+        const correto = CAMPOS_P1.every(c => !campos[c]?.exigido || campos[c].ok);
+        return { campos, correto, diverge: false, proposta: decisao, erro };
     }
 };
 
@@ -292,7 +397,7 @@ const ADAPTADORES = { producao_observada: producaoObservada, porta_atual: portaA
 // ============================================================
 
 function parseArgs(argv) {
-    const a = { adaptador: 'producao_observada', categoria: null, item: null, json: null, concorrencia: 4 };
+    const a = { adaptador: 'producao_observada', categoria: null, item: null, json: null, concorrencia: 4, modelo: null };
     for (let i = 0; i < argv.length; i++) {
         let [chave, valor] = argv[i].split('=');
         if (valor === undefined && argv[i + 1] && !argv[i + 1].startsWith('--')) valor = argv[++i];
@@ -319,12 +424,8 @@ else aRodar = aRodar.filter(i => adaptador.categoriasPadrao.includes(i.categoria
 const foraDoAlcance = aRodar.filter(i => !adaptador.aplicavel(i));
 aRodar = aRodar.filter(i => adaptador.aplicavel(i));
 
-console.log(`\n📏 CORPUS — adaptador ${adaptador.nome}: ${adaptador.descricao}`);
+console.log(`\n📏 CORPUS — adaptador ${adaptador.nome}: ${adaptador.descricao}${adaptador.nome === 'principal_p1' ? ` — modelo ${args.modelo || 'claude-sonnet-4-6 (padrão)'}` : ''}`);
 
-if (adaptador.vazio) {
-    console.log('   ⏸  adaptador vazio: será ligado no P1. Nada foi executado.\n');
-    process.exit(0);
-}
 if (foraDoAlcance.length) {
     console.log(`   ${foraDoAlcance.length} item(ns) fora do alcance deste adaptador: ${foraDoAlcance.map(i => i.id).join(', ')}`);
 }
@@ -365,7 +466,7 @@ for (const cat of categorias) {
     for (const campo of adaptador.campos) {
         const exigidos = grupo.filter(r => r.campos[campo]?.exigido);
         if (!exigidos.length) continue;
-        if (exigidos[0].campos[campo].status === 'nao_suportado_pela_porta_atual') {
+        if (exigidos[0].campos[campo].status) {
             ausentes.push(`${campo} ${exigidos.length}`);
         } else {
             const ok = exigidos.filter(r => r.campos[campo].ok).length;
@@ -373,15 +474,18 @@ for (const cat of categorias) {
         }
     }
     console.log(`   campos : ${medidos.join(' · ')}`);
-    if (ausentes.length) console.log(`   nao_suportado_pela_porta_atual: ${ausentes.join(', ')}`);
+    if (ausentes.length) {
+        const rotulo = grupo.flatMap(r => adaptador.campos.map(c => r.campos[c]?.status)).find(Boolean);
+        console.log(`   ${rotulo}: ${ausentes.join(', ')}`);
+    }
 }
 
 console.log('\n━━━ POR CAMPO ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 for (const campo of adaptador.campos) {
     const exigidos = resultados.filter(r => r.campos[campo]?.exigido);
     if (!exigidos.length) continue;
-    if (exigidos[0].campos[campo].status === 'nao_suportado_pela_porta_atual') {
-        console.log(`${campo.padEnd(24)} ${String(exigidos.length).padStart(3)} item(ns) exigem — nao_suportado_pela_porta_atual`);
+    if (exigidos[0].campos[campo].status) {
+        console.log(`${campo.padEnd(24)} ${String(exigidos.length).padStart(3)} item(ns) exigem — ${exigidos[0].campos[campo].status}`);
     } else {
         const ok = exigidos.filter(r => r.campos[campo].ok).length;
         console.log(`${campo.padEnd(24)} ${String(ok).padStart(3)}/${String(exigidos.length).padEnd(3)} ${pct(ok, exigidos.length)}`);

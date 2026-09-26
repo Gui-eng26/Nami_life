@@ -57,6 +57,11 @@ merge; caso flaky → rerun individual, nunca a suíte.
 
 Baseline pré-M1 documentado em `arnes/BASELINE.md`.
 
+v45 P1: casos A37–A47 (o principal como porta única) e guardas P1 no A0. Os
+casos de atalho exato (A41, A47) afirmam **zero chamadas de LLM** pelo campo
+`chamadasLLM` que `routeMessage` devolve. `NAMI_DEBUG_PRINCIPAL=1` imprime o
+contexto que o principal recebe em cada turno.
+
 ## Corpus (`arnes/corpus/`) — v45 P0
 
 Suíte **separada**, que convive com esta e não a substitui. É a régua do
@@ -67,7 +72,8 @@ ter feito.
 ```bash
 npm run corpus -- --adaptador=producao_observada   # dose + delegacao, sem API
 npm run corpus -- --adaptador=porta_atual          # extração, 1 chamada por item
-npm run corpus -- --adaptador=principal_p1         # vazio até o P1
+npm run corpus -- --adaptador=principal_p1         # o principal (P1), 1 chamada por item
+npm run corpus -- --adaptador=principal_p1 --modelo=claude-sonnet-5
 npm run corpus -- --adaptador=porta_atual --categoria=horario
 npm run corpus -- --item=D-02 --json=saida.json
 ```
@@ -75,7 +81,7 @@ npm run corpus -- --item=D-02 --json=saida.json
 |  | `arnes/casos.js` | `arnes/corpus/` |
 |---|---|---|
 | O que testa | **comportamento**, conversa inteira, turno a turno | **interpretação** de UM turno |
-| Dependências | Supabase de staging, seeds, mock do funil | nenhuma além da `ANTHROPIC_API_KEY` (e só no `porta_atual`/P1) |
+| Dependências | Supabase de staging, seeds, mock do funil | nenhuma além da `ANTHROPIC_API_KEY` (só no `porta_atual` e no `principal_p1`) |
 | Veredito | binário: é o portão de merge | taxa de acerto por categoria e por campo |
 | Cadência | uma vez, no portão de merge | **sob demanda** |
 
