@@ -735,13 +735,15 @@ export async function getRecentDoses(userId, days = 3) {
 // ============================================================
 
 export async function getPendingFollowUps() {
-    // Retorna dose_logs pendentes com dados de medicamento, schedule e usuário
+    // Retorna dose_logs pendentes com dados de medicamento, schedule e usuário.
+    // Hotfix v45 (Isaque, 26/09): só remédios com status 'ativo' — dose órfã de
+    // tratamento pausado/encerrado nunca é cobrada nem esgotada (defesa de 2ª linha).
     const { data, error } = await supabase
         .from('dose_logs')
         .select(`
             *,
-            medications (
-                id, nome, dosagem, forma_farmaceutica, unidade_dose, user_id,
+            medications!inner (
+                id, nome, dosagem, forma_farmaceutica, unidade_dose, user_id, status,
                 users (id, phone, name)
             ),
             schedules!dose_logs_schedule_id_fkey (
@@ -749,6 +751,7 @@ export async function getPendingFollowUps() {
             )
         `)
         .eq('status', 'pendente')
+        .eq('medications.status', 'ativo')
         .eq('reminder_sent', true)
         .eq('confirmed', false)
         .not('ultima_tentativa_at', 'is', null);
@@ -1343,7 +1346,15 @@ export async function encerrarTratamento(medicationId) {
         .eq('medication_id', medicationId);
     if (errSched) throw new Error(`Erro ao desativar schedules: ${errSched.message}`);
 
-    console.log(`🔴 Tratamento encerrado — medication: ${medicationId}`);
+    // Hotfix v45 (Isaque, 26/09): fecha as doses pendentes — evita follow-ups após encerramento
+    const { error: errLogs } = await supabase
+        .from('dose_logs')
+        .update({ status: 'pausado' })
+        .eq('medication_id', medicationId)
+        .eq('status', 'pendente');
+    if (errLogs) throw new Error(`Erro ao cancelar dose_logs pendentes: ${errLogs.message}`);
+
+    console.log(`🔴 Tratamento encerrado — schedules desativados + dose_logs pendentes marcados como pausado — medication: ${medicationId}`);
 }
 
 // ============================================================

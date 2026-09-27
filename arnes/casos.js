@@ -2510,5 +2510,47 @@ export const CASOS = [
             checks.push({ nome: 'a linha do fato mantém o formato', ...contem(r2.texto, /^[^✅]+! ✅ \*Puran T4\* de hoje \(\d{2}:\d{2}\) confirmada 💊/, 'formato do §2.1') });
             return checks;
         }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A48',
+        marco: 'M4',
+        titulo: 'Hotfix v45 — encerrar tratamento fecha a dose pendente do dia (Isaque, 26/09): sem follow-up depois do encerramento',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const { getPendingFollowUps } = await import('../src/database.js');
+            const user = await seeds.criarUsuario({ nome: 'Encerra Pendente', onboarded: true, estado: 'idle' });
+            const { med, schedules } = await seeds.criarMedicamento({
+                userId: user.id, nome: 'Runner', horarios: ['20:58']
+            });
+            // Lembrete enviado há 22 min, sem resposta: 1 tentativa registrada.
+            const dose = await seeds.criarDosePendente({
+                medicationId: med.id, scheduleId: schedules[0].id, horario: '20:58', minutosAtras: 22
+            });
+            const antes = await getPendingFollowUps();
+            if (!antes.some(d => d.id === dose.id)) {
+                return [{ nome: 'setup: dose pendente na fila de follow-ups antes do encerramento', ok: false, detalhe: `${antes.length} item(ns) na fila` }];
+            }
+
+            // Encerramento pelo fluxo real da configuração: pedido + "Isso".
+            await turno(ctx, user, 'Encerrar o Runner');
+            const r = await turno(ctx, user, 'Isso');
+            const { data: medDepois } = await ctx.db.from('medications').select('status').eq('id', med.id).single();
+            checks.push({ nome: 'setup: Runner encerrado pelo fluxo real', ok: medDepois?.status === 'encerrado', detalhe: `status: ${medDepois?.status}` });
+
+            const logs = await doseLogs(ctx.db, med.id);
+            const doseDepois = logs.find(l => l.id === dose.id);
+            checks.push({ nome: 'a dose pendente ficou "pausado"', ok: doseDepois?.status === 'pausado', detalhe: `status: ${doseDepois?.status}` });
+
+            const depois = await getPendingFollowUps();
+            checks.push({ nome: 'getPendingFollowUps() não devolve a dose', ok: !depois.some(d => d.id === dose.id), detalhe: `${depois.filter(d => d.medication_id === med.id).length} dose(s) do Runner na fila` });
+
+            checks.push({
+                nome: 'texto de encerramento é o de hoje (sem mudança de copy)',
+                ...contem(r, /Tratamento com \*?Runner\*? encerrado\. Os lembretes foram desativados/, 'texto de encerramento')
+            });
+            return checks;
+        }
     }
 ];
