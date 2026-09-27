@@ -12,9 +12,16 @@
 //
 // Posturas (Constituição regra 6):
 //   FAZ       → executa.
-//   AINDA_NAO → honestidade + expectativa ("está chegando").
+//   AINDA_NAO → honestidade + expectativa, sem prometer prazo.
 //   NUNCA     → fronteira de segurança, SEM "ainda" — redireciona a
 //               médico/farmacêutico; emergência → SAMU 192.
+//
+// Postura de fronteira (v45 P1-ajustes §5, decisão de 26/09): FAZ e NUNCA
+// são listas FECHADAS. Todo pedido de capacidade que não mapeia para o FAZ
+// (dentro do limite) nem para o NUNCA é "ainda não" POR PADRÃO. AINDA_NAO
+// não é a fronteira: é o registro dos casos já conhecidos (rótulo para o
+// texto e para o dashboard). Todo "ainda não" grava `intencao_nao_suportada`
+// em system_events com o pedido (lista de demanda do roadmap).
 // ============================================================
 
 export const CAPACIDADES = [
@@ -74,7 +81,9 @@ export const CAPACIDADES = [
       'de um medicamento já cadastrado (M3 P2); corrigir dados pessoais do usuário — nome e data ' +
       'de nascimento (MH-75)',
     limites: 'ajustar o horário de UMA dose pontual (só hoje/só desta vez) ainda não — o que dá ' +
-      'é mudar o horário fixo ou confirmar a dose depois'
+      'é mudar o horário fixo ou confirmar a dose depois; mudar a FREQUÊNCIA de um remédio já ' +
+      'cadastrado (dias da semana, dia sim/dia não) ainda não — o cadastro de um remédio NOVO ' +
+      'com essa recorrência funciona'
   },
   {
     agente: 'principal',
@@ -107,6 +116,8 @@ export const AINDA_NAO = [
   // M3 P2: alterar dosagem/nome/duração saíram daqui — viraram capacidade
   // (modo correção do runner). MH-27 entra com honestidade (P6.7).
   { chave: 'reagendar_dose_pontual', rotulo: 'ajustar o horário de uma dose pontual (só hoje / só desta vez)', escopo: 'configuracao' },
+  // P1-ajustes §6: a capacidade vai para o P4.
+  { chave: 'alterar_frequencia', rotulo: 'mudar a frequência (dias da semana ou dia sim, dia não) de um remédio já cadastrado', escopo: 'configuracao' },
   { chave: 'sintomas_medidas', rotulo: 'registrar sintomas, pressão, glicemia ou outros dados de saúde' },
   { chave: 'exportar_historico', rotulo: 'exportar histórico em arquivo' },
   { chave: 'falar_com_medico', rotulo: 'falar com médico, agendar consulta' }
@@ -129,6 +140,20 @@ export function respostaHonestaAindaNao(chave) {
   const item = AINDA_NAO.find(i => i.chave === chave);
   const rotulo = item ? item.rotulo : 'isso';
   return `Ainda não consigo ${rotulo} — é uma das coisas que estou aprendendo a fazer. 😊`;
+}
+
+// P1-ajustes §5.1/§5.2 — reserva do "ainda não" por padrão (fora da lista ou
+// sem chave): nomeia o pedido com as palavras da pessoa; sem prazo (regra 6).
+// Pedido misto com o NUNCA: a parte médica vai sem "ainda" (§5.4).
+export function respostaAindaNaoPadrao({ nome = null, pedido = null, mistoComNunca = false } = {}) {
+  const abertura = pedido
+    ? `Entendi${nome ? `, ${nome}` : ''} — você quer ${pedido}.`
+    : `Entendi${nome ? `, ${nome}` : ''}.`;
+  if (mistoComNunca) {
+    return `${abertura} A decisão sobre a dose é do seu médico — isso eu não faço. ` +
+      `Já ajustar os lembretes pra isso eu ainda não consigo: ainda estou em desenvolvimento e aprendendo coisas novas. 🌿`;
+  }
+  return `${abertura} Isso eu ainda não consigo fazer: ainda estou em desenvolvimento e aprendendo coisas novas. 🌿`;
 }
 
 // Compatibilidade: consumidores que enxergam o "ainda não" como lista plana de

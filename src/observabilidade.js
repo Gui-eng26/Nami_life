@@ -28,7 +28,7 @@ export function tituloEstavel(error, prefixo) {
 
 export async function registrarEvento({
     tipo, severidade, userId = null, agent = null, origem,
-    agentLogId = null, titulo = null, payload = null
+    agentLogId = null, titulo = null, payload = null, statusTriagem = null
 }) {
     try {
         const fingerprint = crypto.createHash('sha1')
@@ -37,7 +37,8 @@ export async function registrarEvento({
 
         const { error } = await supabase.from('system_events').insert({
             tipo, severidade, user_id: userId, agent, origem,
-            agent_log_id: agentLogId, titulo, payload, fingerprint
+            agent_log_id: agentLogId, titulo, payload, fingerprint,
+            ...(statusTriagem ? { status_triagem: statusTriagem } : {})
         });
         if (error) console.error(`[observabilidade] Falha ao registrar evento: ${error.message}`);
     } catch (e) {

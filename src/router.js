@@ -10,7 +10,7 @@ import { SCHEMA_CADASTRO, renderizarFechamentoAnterior } from './schemas/cadastr
 import { handleRelatorios } from './agentes/relatorios.js';
 import { handleConfiguracao } from './agentes/configuracao.js';
 import { handleExclusaoConta, confirmarIntencaoExclusaoConta } from './agentes/exclusaoConta.js';
-import { respostaHonestaAindaNao } from './inventario.js';
+import { respostaHonestaAindaNao, respostaAindaNaoPadrao } from './inventario.js';
 
 // ============================================================
 // ROTEADOR — v45 P1: o principal é a PORTA ÚNICA.
@@ -60,13 +60,33 @@ function reperguntaSegura(user) {
     return `${nome ? `${nome}, d` : 'D'}esculpa, não consegui te entender direito. 🌿\n\nPode me dizer de outro jeito o que você precisa?`;
 }
 
+// Convite de estoque aberto (P1-ajustes §1/§4): a etapa da coleta e os
+// medicamentos a que o convite se refere.
+function conviteDeEstoqueAberto(state) {
+    const etapa = state?.context?.etapa || '';
+    if (etapa.startsWith('cad_estoque')) {
+        const ids = etapa === 'cad_estoque_lote'
+            ? (state.context.estoque_lote || []).map(p => p.medicationId)
+            : [state.context.medication_id];
+        return { medicationIds: ids.filter(Boolean) };
+    }
+    if (etapa === 'reativ_estoque_convite') return { medicationIds: [state.context.medicationId].filter(Boolean) };
+    return null;
+}
+
 // Regra 5: a dose é registrada primeiro; a coleta aberta é retomada depois,
 // na mesma mensagem — o estado da coleta NÃO é tocado.
-function montarRetomadaColeta(state) {
+// P1-ajustes §4: se o alerta pós-confirmação já trouxe o convite de estoque de
+// todos os medicamentos do convite aberto, a retomada é omitida.
+function montarRetomadaColeta(state, convitesEstoque = new Set()) {
     const s = state?.state;
     if (s === 'adding_med' || s === 'cadastrando_medicamento') {
         const etapa = state?.context?.etapa || '';
-        if (etapa.startsWith('cad_estoque')) return 'E quando quiser me falar do estoque, tô aqui 🌿';
+        if (etapa.startsWith('cad_estoque')) {
+            const ids = conviteDeEstoqueAberto(state)?.medicationIds || [];
+            if (ids.length && ids.every(id => convitesEstoque.has(id))) return null;
+            return 'E quando quiser me falar do estoque, tô aqui 🌿';
+        }
         return 'E quando quiser, seguimos com o cadastro de onde paramos 🌿';
     }
     if (s === 'configurando') return 'E quando quiser, seguimos com o ajuste de onde paramos 🌿';
@@ -221,6 +241,7 @@ async function delegarCadastro({ user, message, image, state, historicoConversa,
             state: { state: 'configurando', context: { etapa: 'identif_intencao' } },
             context: { etapa: 'identif_intencao', medicationId, medicationNome, schedulesAtivos }
         });
+        if (r?.naoSuportado) return { naoSuportado: true, especialista: 'configuracao' };
         if (r?.escalarParaRoteador) return { devolveu: true };
         return { agentName: 'configuracao', response: juntar(prefixos, r) };
     }
@@ -235,6 +256,7 @@ async function delegarConfiguracao({ user, message, state, historicoConversa, de
         state: continua ? state : { state: 'configurando', context: contexto },
         context: contexto
     });
+    if (r?.naoSuportado) return { naoSuportado: true, especialista: 'configuracao' };
     if (r?.escalarParaRoteador) return { devolveu: true };
     return { agentName: 'configuracao', response: r };
 }
@@ -277,8 +299,36 @@ async function carregarMedicamentos(userId, doses) {
     return meds.map(m => ({ ...m, temDoseEmAberto: emAberto.has(m.id) }));
 }
 
+// P1-ajustes §1 — "um fato, um autor": quando o principal grava o estoque, o
+// número e a gravação são do template. Frases da `message` que repetem o
+// número ou narram a gravação ("vou registrar…") saem, com log.
+const RE_NARRA_GRAVACAO = /\b(vou|vamos|irei) (registrar|anotar|atualizar|salvar|gravar)\b|\b(registrei|anotei|atualizei|salvei|gravei)\b|\b(anotad[oa]|registrad[oa]|atualizad[oa])\b/i;
+
+export function limparTextoDoFatoDeEstoque(texto, actions) {
+    const numeros = (actions || [])
+        .filter(a => a?.type === 'UPDATE_STOCK' && a.quantidade != null)
+        .map(a => String(a.quantidade).replace('.', ','));
+    if (!texto || !numeros.length) return texto;
+    const frases = texto.split(/(?<=[.!?…])\s+|\n+/);
+    const mantidas = frases.filter(f => {
+        const repeteNumero = numeros.some(n => new RegExp(`(^|[^\\d,])${n}([^\\d,]|$)`).test(f.replace(/(\d)\.(\d)/g, '$1,$2')));
+        return !repeteNumero && !RE_NARRA_GRAVACAO.test(f);
+    });
+    return mantidas.join(' ').trim();
+}
+
+// P1-ajustes §5 — o "ainda não" do turno: quem entendeu, o que foi pedido.
+function textoAindaNao({ user, decisao, pedidoAnterior }) {
+    const d = decisao?.delegar;
+    const pedido = d?.pedido || pedidoAnterior || null;
+    if (decisao?.message) return decisao.message;
+    if (d?.chaveAindaNao && !d?.mistoComNunca) return `${respostaHonestaAindaNao(d.chaveAindaNao)}\n\nPosso te ajudar com outra coisa? 🌿`;
+    return respostaAindaNaoPadrao({ nome: primeiroNome(user), pedido, mistoComNunca: !!d?.mistoComNunca });
+}
+
 async function turnoDoPrincipal({ user, message, image, state, historicoConversa, contextoProativo,
                                   envioCitado, dosesCitadas, doses, especialistaDevolveu = null,
+                                  especialistaNaoExecuta = null, pedidoAnterior = null,
                                   textosAnteriores = [] }) {
     const estado = state?.state || 'idle';
     const { estrutura, mapa } = await montarDosesDoTurno({ userId: user.id, envioCitado, dosesCitadas, doses });
@@ -288,28 +338,62 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
     const contexto = montarContextoPrincipal({
         user, estado, blocoDoses: renderizarBlocoDoses(estrutura), pendencia,
         eventosProativos: contextoProativo, medicamentos, historicoConversa,
-        especialistaDevolveu, mensagem: message, temImagem: !!image
+        especialistaDevolveu, especialistaNaoExecuta, mensagem: message, temImagem: !!image
     });
 
     if (process.env.NAMI_DEBUG_PRINCIPAL) console.log(`🔎 [PRINCIPAL] contexto:\n${contexto}`);
     const decisao = await interpretarComPrincipal({ contexto, mensagem: message, image });
+
+    // §5.2: o especialista entendeu e não executa — a volta ao principal é
+    // ÚNICA e termina no "ainda não", nunca em outra delegação nem em "não
+    // entendi". Principal falhou → reserva do inventário.
+    if (especialistaNaoExecuta) {
+        const escreveu = decisao && (decisao.delegar?.especialista === 'nao_suportado'
+            || (!decisao.delegar && ['responder', 'perguntar'].includes(decisao.tipo) && decisao.message));
+        if (!escreveu) console.warn(`⚠️ [PRINCIPAL] "ainda não" de ${especialistaNaoExecuta} sem texto do principal — reserva — ${user.phone}`);
+        const d = escreveu ? decisao : null;
+        return {
+            agentName: 'principal',
+            response: juntar(textosAnteriores, textoAindaNao({ user, decisao: d, pedidoAnterior })),
+            feedback: decisao?.feedback ?? null,
+            naoSuportado: {
+                pedido: d?.delegar?.pedido || pedidoAnterior || null,
+                especialista: especialistaNaoExecuta,
+                chave: d?.delegar?.chaveAindaNao || null,
+                mistoComNunca: !!d?.delegar?.mistoComNunca
+            },
+            escalouPara: 'principal'
+        };
+    }
+
     if (!decisao) {
         return { agentName: 'principal_degradado', response: juntar(textosAnteriores, reperguntaSegura(user)), feedback: null };
     }
     console.log(`🚪 [PRINCIPAL] tipo: ${decisao.tipo}${decisao.doses.length ? ` · doses: ${decisao.doses.map(d => `${d.ref}:${d.fato}`).join(',')}` : ''}${decisao.delegar ? ` · delegar: ${decisao.delegar.especialista}/${decisao.delegar.relacao_pendencia}` : ''}${decisao.actions.length ? ` · ações: ${decisao.actions.map(a => a.type).join(',')}` : ''} — ${user.phone}`);
 
+    // §1: delegou a RESPOSTA ao convite de estoque ao especialista → quem grava
+    // e escreve o estoque é ele; UPDATE_STOCK do mesmo turno é descartado.
+    let actions = decisao.actions;
+    if (['cadastro', 'configuracao'].includes(decisao.delegar?.especialista)
+        && decisao.delegar.relacao_pendencia === 'responde' && conviteDeEstoqueAberto(state)
+        && actions.some(a => a?.type === 'UPDATE_STOCK')) {
+        console.log(`📦 [PRINCIPAL] UPDATE_STOCK descartado: a resposta ao convite de estoque é do ${decisao.delegar.especialista} — ${user.phone}`);
+        actions = actions.filter(a => a?.type !== 'UPDATE_STOCK');
+    }
+
     const partes = [...textosAnteriores];
     let agentName = 'principal';
     let dosesExecutadas = false;
+    let convitesEstoque = new Set();
     let textoDepoisDaMensagem = '';
-    let intencaoNaoSuportada = false;
+    let naoSuportado = null;
 
     // Na volta de uma devolução, doses e ações já foram executadas na 1ª rodada.
     const primeiraRodada = !especialistaDevolveu;
 
     // 7a. Doses primeiro.
     if (primeiraRodada && decisao.doses.length) {
-        const medsComAcaoDeEstoque = new Set(decisao.actions
+        const medsComAcaoDeEstoque = new Set(actions
             .filter(a => a?.type === 'UPDATE_STOCK' && a.medicationId).map(a => a.medicationId));
         const r = await executarFatosDeDose({ user, fatos: decisao.doses, mapa, semAlertaPara: medsComAcaoDeEstoque });
         if (!r.ok) {
@@ -322,6 +406,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
             partes.push(r.texto);
             textoDepoisDaMensagem = r.textoDepois;
             dosesExecutadas = true;
+            convitesEstoque = r.convitesEstoque || new Set();
             agentName = 'principal_dose';
         }
     }
@@ -329,28 +414,48 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
     // Texto do próprio principal (responder/perguntar, ou o acolhimento de uma
     // resposta negativa). P1-copy §2.2: a linha fixa do fato ("ficou registrado
     // como não tomado") vem DEPOIS do acolhimento.
-    if (decisao.message && decisao.tipo !== 'delegar') partes.push(decisao.message);
+    const executaEstoque = primeiraRodada && actions.some(a => a?.type === 'UPDATE_STOCK');
+    if (decisao.message && decisao.tipo !== 'delegar') {
+        const texto = executaEstoque ? limparTextoDoFatoDeEstoque(decisao.message, actions) : decisao.message;
+        if (texto !== decisao.message) console.log(`📦 [PRINCIPAL] texto do principal sem o fato do estoque (autor é o template) — ${user.phone}`);
+        partes.push(texto);
+    }
     if (textoDepoisDaMensagem) partes.push(textoDepoisDaMensagem);
 
     // 7b. Ações do domínio do principal.
-    if (primeiraRodada && decisao.actions.length) {
-        partes.push(await executarAcoesDoPrincipal(decisao.actions, user));
+    if (primeiraRodada && actions.length) {
+        partes.push(await executarAcoesDoPrincipal(actions, user));
     }
 
     // 7c. Delegação.
     let delegou = false;
     if (decisao.delegar) {
         if (decisao.delegar.especialista === 'nao_suportado') {
-            intencaoNaoSuportada = true;
-            partes.push(decisao.tipo === 'delegar' && decisao.message ? decisao.message : '');
-            // P1-copy §8: a reserva nomeia o item do inventário (nunca "isso").
-            // Sem chave de AINDA_NAO, a mensagem do principal é obrigatória
-            // (validada na decisão).
-            if (!decisao.message && decisao.delegar.chaveAindaNao) {
-                partes.push(`${respostaHonestaAindaNao(decisao.delegar.chaveAindaNao)}\n\nPosso te ajudar com outra coisa? 🌿`);
-            }
+            // §5: "ainda não" por padrão — texto do principal ou reserva que
+            // nomeia o pedido (nunca "isso"). Vale também na volta de uma
+            // devolução (§5.3: nunca "não entendi" para um pedido claro).
+            // (Com tipo ≠ delegar, a `message` já entrou acima.)
+            if (!(decisao.message && decisao.tipo !== 'delegar')) partes.push(textoAindaNao({ user, decisao, pedidoAnterior }));
+            naoSuportado = {
+                pedido: decisao.delegar.pedido || pedidoAnterior || null,
+                especialista: especialistaDevolveu || 'principal',
+                chave: decisao.delegar.chaveAindaNao,
+                mistoComNunca: decisao.delegar.mistoComNunca
+            };
         } else {
-            const r = await despacharDelegacao({ user, message, image, state, historicoConversa, delegar: decisao.delegar });
+            const r = await despacharDelegacao({ user, message, image, state, historicoConversa, delegar: { ...decisao.delegar } });
+            if (r.naoSuportado) {
+                // §5.2: o especialista entendeu e não executa → uma volta ao
+                // principal, marcada, que escreve o "ainda não".
+                console.log(`🌱 [PRINCIPAL] ${r.especialista} entendeu e não executa — "ainda não" pelo principal — ${user.phone}`);
+                const estadoAtual = await getConversationState(user.id);
+                return turnoDoPrincipal({
+                    user, message, image, state: estadoAtual, historicoConversa, contextoProativo,
+                    envioCitado, dosesCitadas, doses: await getDosesJanelaPrincipal(user.id),
+                    especialistaNaoExecuta: r.especialista, pedidoAnterior: decisao.delegar.pedido,
+                    textosAnteriores: partes
+                }).then(volta => ({ ...volta, feedback: volta.feedback ?? decisao.feedback }));
+            }
             if (r.devolveu) {
                 if (especialistaDevolveu) {
                     // Segunda devolução → pergunta segura. Sem pingue-pongue.
@@ -365,7 +470,8 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
                 const volta = await turnoDoPrincipal({
                     user, message, image, state: estadoAtual, historicoConversa, contextoProativo,
                     envioCitado, dosesCitadas, doses: await getDosesJanelaPrincipal(user.id),
-                    especialistaDevolveu: decisao.delegar.especialista, textosAnteriores: partes
+                    especialistaDevolveu: decisao.delegar.especialista, pedidoAnterior: decisao.delegar.pedido,
+                    textosAnteriores: partes
                 });
                 return { ...volta, feedback: volta.feedback ?? decisao.feedback, escalouPara: volta.agentName };
             }
@@ -393,7 +499,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
                 });
             }
         } else if (dosesExecutadas) {
-            const retomada = montarRetomadaColeta(state);
+            const retomada = montarRetomadaColeta(state, convitesEstoque);
             if (retomada) partes.push(retomada);
         }
     } else if (estado === 'aguardando_escolha_tratamento' && decisao.delegar?.especialista !== 'relatorios') {
@@ -408,7 +514,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
         agentName,
         response: response || reperguntaSegura(user),
         feedback: decisao.feedback,
-        intencaoNaoSuportada,
+        naoSuportado,
         escalouPara: especialistaDevolveu ? agentName : null
     };
 }
@@ -458,7 +564,7 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
     let response;
     let agentName;
     let feedbackDetectado = null;
-    let intencaoNaoSuportadaDetectada = false;
+    let naoSuportadoDetectado = null; // P1-ajustes §5.5
     let escalouParaDetectado = null; // MH-48: sinal de escalada consultável em agent_logs
 
     const irAoPrincipal = async (extras = {}) => {
@@ -470,7 +576,7 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
         response = r.response;
         feedbackDetectado = r.feedback ?? feedbackDetectado;
         escalouParaDetectado = r.escalouPara ?? escalouParaDetectado;
-        if (r.intencaoNaoSuportada) intencaoNaoSuportadaDetectada = true;
+        if (r.naoSuportado) naoSuportadoDetectado = r.naoSuportado;
     };
 
     // ---- 3. Onboarding no RUNNER (v44 M4) — sem mudança (P5).
@@ -491,7 +597,7 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
             response = r.response;
             feedbackDetectado = r.feedback ?? feedbackDetectado;
             escalouParaDetectado = r.agentName;
-            if (r.intencaoNaoSuportada) intencaoNaoSuportadaDetectada = true;
+            if (r.naoSuportado) naoSuportadoDetectado = r.naoSuportado;
         } else {
             response = resultadoOnboarding;
         }
@@ -543,15 +649,19 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
         referenceMessageId: referenceMessageId || null
     });
 
-    if (intencaoNaoSuportadaDetectada) {
+    // §5.5: todo "ainda não" vira item da lista de demanda do roadmap.
+    if (naoSuportadoDetectado) {
+        const { pedido, especialista, chave, mistoComNunca } = naoSuportadoDetectado;
         await registrarEvento({
             tipo: 'intencao_nao_suportada',
             severidade: 'baixa',
+            statusTriagem: 'novo',
             userId: user.id,
             agent: agentName,
             origem: 'porta',
             agentLogId,
-            titulo: 'Intenção não suportada (principal)'
+            titulo: `Ainda não: ${pedido || chave || 'pedido sem paráfrase'}`.slice(0, 120),
+            payload: { pedido: pedido || null, especialista, chave_ainda_nao: chave || null, misto_com_nunca: !!mistoComNunca }
         });
     }
 

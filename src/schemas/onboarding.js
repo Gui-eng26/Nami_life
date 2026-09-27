@@ -557,8 +557,9 @@ export function renderizarConviteAoPrimeiroCadastro({ nomeColetado = null, semDa
     const abertura = semData
         ? `Tudo bem${first ? `, ${first}` : ''}! 🌿`
         : `Prontinho${first ? `, ${first}` : ''}, tudo guardado! 📝`;
-    // v45 P1-copy §9: o mesmo convite de todo cadastro novo (ponto único).
-    return renderizarConviteCadastro({ abertura });
+    // v45 P1-copy §9: o mesmo convite de todo cadastro novo (ponto único);
+    // P1-ajustes §2: aqui, com a ponte para o cadastro.
+    return renderizarConviteCadastro({ abertura, ponte: 'Agora, pra seguirmos com o cadastro dos seus remédios' });
 }
 
 // Fechamento curto — usado quando o cadastro semeado continua no MESMO turno.

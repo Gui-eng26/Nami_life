@@ -62,6 +62,12 @@ casos de atalho exato (A41, A47) afirmam **zero chamadas de LLM** pelo campo
 `chamadasLLM` que `routeMessage` devolve. `NAMI_DEBUG_PRINCIPAL=1` imprime o
 contexto que o principal recebe em cada turno.
 
+v45 P1-ajustes: casos A49–A55 (um fato, um autor no estoque; ponte do fim do
+onboarding; concordância "quantos/quantas"; convite de estoque sem repetição;
+"ainda não" por padrão com evento `intencao_nao_suportada`). A51 e A52 são de
+template (sem LLM); os demais semeiam a última fala da Nami em `agent_logs`
+(`falaDaNami`) para a pendência aberta existir sem gastar um turno de LLM.
+
 ## Corpus (`arnes/corpus/`) — v45 P0
 
 Suíte **separada**, que convive com esta e não a substitui. É a régua do

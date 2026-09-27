@@ -352,14 +352,18 @@ export function validarFatos(fatos, mapa) {
     return { ok: true, planos };
 }
 
+// Devolve { texto, convite } — `convite` diz se o texto é o CONVITE de estoque
+// (P1-ajustes §4: a retomada da coleta de estoque não repete o convite).
 async function alertaEstoquePosConfirmacao(medicationId) {
     try {
         const estoqueInfo = await getEstoqueInfoParaAlerta(medicationId);
-        if (!estoqueInfo) return '';
+        if (!estoqueInfo) return { texto: '', convite: false };
         const confirmacoesDoDia = await contarConfirmacoesHoje(medicationId);
         if (estoqueInfo.estoqueDesconhecido) {
             // Estoque nunca informado (ou contestado): CONVITE, só na 1ª do dia.
-            return confirmacoesDoDia <= 1 ? buildConviteEstoqueNaoCadastrado(estoqueInfo) : '';
+            return confirmacoesDoDia <= 1
+                ? { texto: buildConviteEstoqueNaoCadastrado(estoqueInfo), convite: true }
+                : { texto: '', convite: false };
         }
         const deveAlertar = calcularAlertaEstoque({
             diasRestantes: estoqueInfo.diasRestantes,
@@ -368,10 +372,10 @@ async function alertaEstoquePosConfirmacao(medicationId) {
             diasRestantesTratamento: estoqueInfo.diasRestantesTratamento,
             confirmacoesDoDia
         });
-        return deveAlertar ? buildAlertaEstoquePosConfirmacao(estoqueInfo) : '';
+        return { texto: deveAlertar ? buildAlertaEstoquePosConfirmacao(estoqueInfo) : '', convite: false };
     } catch (e) {
         console.error('⚠️ Erro ao verificar alerta de estoque pós-confirmação:', e.message);
-        return '';
+        return { texto: '', convite: false };
     }
 }
 
@@ -525,16 +529,20 @@ async function montarTextoPosEscrita({ executados, jaRegistradas = [], user, sem
     // número depois; o convite de "não tenho o estoque" a contradiria).
     // §7: estoque contestado neste turno → convite próprio.
     let alertas = '';
+    const convitesEstoque = new Set();
     const contestados = new Set(confirmadas.filter(p => p.contestado).map(p => p.medicationId));
     for (const medId of [...new Set(confirmadas.map(p => p.medicationId))].filter(id => !semAlertaPara.has(id))) {
         if (contestados.has(medId)) {
             const dose = porId.get(confirmadas.find(p => p.medicationId === medId).id);
             alertas += buildConviteEstoqueContestado({ medNome: dose?.medications?.nome || 'seu remédio' });
+            convitesEstoque.add(medId);
         } else {
-            alertas += await alertaEstoquePosConfirmacao(medId);
+            const alerta = await alertaEstoquePosConfirmacao(medId);
+            alertas += alerta.texto;
+            if (alerta.convite) convitesEstoque.add(medId);
         }
     }
-    return { antes: antes.join('\n\n') + alertas, depois: depois.join('\n') };
+    return { antes: antes.join('\n\n') + alertas, depois: depois.join('\n'), convitesEstoque };
 }
 
 // Executa os fatos relatados (pelo principal ou pelo atalho). Tudo ou nada
@@ -575,8 +583,8 @@ export async function executarFatosDeDose({ user, fatos, mapa, semAlertaPara = n
     if (executados.length === 0) return { ok: false, motivo: 'nenhuma_dose_executada', texto: '', textoDepois: '', executados };
 
     console.log(`💊 [DOSES] ${executados.map(p => `${p.ref}:${p.fato}`).join(', ')} — ${user.phone}`);
-    const { antes, depois } = await montarTextoPosEscrita({ executados, jaRegistradas, user, semAlertaPara });
-    return { ok: true, texto: antes, textoDepois: depois, executados };
+    const { antes, depois, convitesEstoque } = await montarTextoPosEscrita({ executados, jaRegistradas, user, semAlertaPara });
+    return { ok: true, texto: antes, textoDepois: depois, executados, convitesEstoque };
 }
 
 // O atalho executa a mesma tabela: monta um mapa mínimo só com as candidatas.

@@ -131,3 +131,15 @@ export function rotuloEstoquePlural({ unidade_estoque, forma_farmaceutica }) {
     const rotulo = formatarQuantidadeDose({ quantidade: 2, unidade_dose: unidadeDoseEquivalente, forma_farmaceutica });
     return rotulo ? rotulo.replace(/^2 /, '') : 'unidades';
 }
+
+// P1-ajustes §3: o pronome interrogativo concorda com o rótulo plural ("quantos
+// comprimidos", "quantas unidades"). Mapa único, ao lado do rótulo; rótulo fora
+// do mapa cai em "quantos".
+const PRONOME_QUANTOS = {
+    comprimidos: 'quantos', frascos: 'quantos', 'sachês': 'quantos', ml: 'quantos',
+    unidades: 'quantas', 'cápsulas': 'quantas', gotas: 'quantas'
+};
+
+export function quantosDoRotulo(rotuloPlural) {
+    return `${PRONOME_QUANTOS[rotuloPlural] || 'quantos'} ${rotuloPlural}`;
+}

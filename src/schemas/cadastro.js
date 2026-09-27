@@ -21,6 +21,7 @@ import {
     derivarFormaFarmaceutica, rotuloDaDose, pluralizarRotulo, derivarUnidades
 } from '../validadores/derivacoes.js';
 import { rotuloDias } from '../validadores/recorrencia.js';
+import { quantosDoRotulo } from '../templates/dose.js';
 import { subEtapaEstoque, validarEstoque } from '../validadores/estoque.js';
 import { extrairCampoSimples, ehDosagemPura } from '../validadores/camposSimples.js';
 import {
@@ -237,9 +238,11 @@ export function rotularNomeComDosagem(nome, dosagem, separador = ' ') {
 // convite — mandar tudo de uma vez, com os obrigatórios do schema (nome e
 // posologia) em linhas separadas. Nunca coleta campo a campo começando pelo
 // nome. Ponto único do texto; a abertura varia por ponto de uso.
-export function renderizarConviteCadastro({ abertura }) {
+// `ponte` (P1-ajustes §2): frase de ligação antes do convite — só no fim do
+// onboarding; os outros pontos de uso seguem sem ela.
+export function renderizarConviteCadastro({ abertura, ponte = null }) {
     return `${abertura}\n\n`
-        + `Pode me mandar tudo de uma vez, se quiser:\n`
+        + (ponte ? `${ponte}, pode me mandar tudo de uma vez, se quiser:\n` : `Pode me mandar tudo de uma vez, se quiser:\n`)
         + `• o nome do remédio\n`
         + `• quanto você toma por vez\n`
         + `• os horários\n\n`
@@ -350,7 +353,7 @@ export function renderizarPerguntaEstoque(etapa, campos, acao = null) {
         {
             const forma = derivarFormaFarmaceutica(campos?.forma_explicita, campos?.forma_confirmada, campos?.unidade_dose);
             const rotulo = pluralizarRotulo(rotuloDaDose(campos?.unidade_dose, forma), 2);
-            return `📦 *Estoque:* se você souber quantos ${rotulo} tem em casa, é só me falar — eu te aviso quando estiver acabando.\nSe não souber agora, tudo bem também. 🌿`;
+            return `📦 *Estoque:* se você souber ${quantosDoRotulo(rotulo)} tem em casa, é só me falar — eu te aviso quando estiver acabando.\nSe não souber agora, tudo bem também. 🌿`;
         }
     }
 

@@ -292,7 +292,9 @@ Definições:
   horário fixo. Ex: "hoje vou tomar mais tarde", "só hoje pode ser às 15h?", "adia a dose de hoje"
 
 - nao_suportado: pedidos que a configuração não faz — ${NAO_SUPORTADO_CONFIGURACAO.join(', ') || 'fora das ações acima'}.
-  Ex: "exportar meu histórico", "conectar minha filha"
+  Ex: "exportar meu histórico", "conectar minha filha", "posso passar o Marevan para dias alternados?",
+  "quero tomar o remédio só de segunda a sexta" (mudar dias da semana ou dia sim/dia não de um
+  remédio já cadastrado é nao_suportado — mudar a QUANTIDADE de doses por dia é redefinir_horarios)
 
 REGRAS DE DECISÃO:
 1. Se o verbo é claro (encerrar, pausar, alterar, remover, adicionar, redefinir, reativar, corrigir) → retorne a ação diretamente. NUNCA use esclarecer nesses casos.
@@ -306,7 +308,10 @@ REGRAS DE DECISÃO:
    HOJE = reagendar_dose_pontual.
 7. Se a última pergunta da Nami ofereceu uma lista de opções (medicamentos, horários, ou
    pausar/encerrar/contínuo/temporário) e a resposta rejeita todas sem introduzir assunto novo
-   → recusa_opcoes_oferecidas. NUNCA confunda com reafirmar a ação anterior.`;
+   → recusa_opcoes_oferecidas. NUNCA confunda com reafirmar a ação anterior.
+8. Mudar a FREQUÊNCIA de um remédio já cadastrado para dias da semana ou dia sim/dia não
+   ("alterar para dias alternados", "só de segunda a sexta") → nao_suportado, mesmo com verbo
+   claro ("alterar", "mudar").`;
 
     // v44 M3 P6.2: tool-use com schema — mesmo padrão da porta (1 retry +
     // degradar). O prompt de classificação não mudou.
@@ -701,11 +706,12 @@ async function processarIntencaoOuEscalar({ user, firstName, message, medication
         return `Você não tem nenhum medicamento cadastrado ainda, ${firstName}. Quer cadastrar um agora?`;
     }
 
-    // Rede de segurança do classificador interno — não decide mais sozinho se é
-    // "não suportado de verdade" ou "suportado por outro agente". Escala pro
-    // classificador central em vez de responder direto.
+    // P1-ajustes §5.2: a configuração entendeu o pedido e NÃO o executa — não
+    // devolve o turno (a devolução virava "não entendi"). O principal escreve
+    // o "ainda não" numa volta única.
     if (acao === 'nao_suportado') {
-        return { escalarParaRoteador: true };
+        await saveConversationState(user.id, { state: 'idle', context: {} });
+        return { naoSuportado: true };
     }
 
     if (acao === 'recusa_opcoes_oferecidas') {

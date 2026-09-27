@@ -116,7 +116,7 @@ function textoEventosProativos(eventos) {
 export function montarContextoPrincipal({
     user = null, agora = new Date(), estado = 'idle', blocoDoses, pendencia = null,
     eventosProativos = [], medicamentos = [], historicoConversa = [],
-    especialistaDevolveu = null, mensagem, temImagem = false
+    especialistaDevolveu = null, especialistaNaoExecuta = null, mensagem, temImagem = false
 }) {
     return `
 === CONTEXTO ===
@@ -142,6 +142,11 @@ ${especialistaDevolveu ? `
 === ATENÇÃO: O ESPECIALISTA "${especialistaDevolveu}" DEVOLVEU ESTE TURNO ===
 Ele concluiu que a mensagem não é dele. As doses e ações deste turno JÁ foram executadas — não as
 repita. Decida só o destino: outro especialista, ou responder/perguntar você mesma.
+` : ''}${especialistaNaoExecuta ? `
+=== ATENÇÃO: O ESPECIALISTA "${especialistaNaoExecuta}" ENTENDEU O PEDIDO E NÃO EXECUTA ===
+O pedido é claro e é algo que a Nami AINDA NÃO FAZ. As doses e ações deste turno JÁ foram
+executadas — não as repita. Não delegue a ninguém e não diga que não entendeu: delegue
+"nao_suportado" com "pedido" e escreva em "message" a resposta do "ainda não".
 ` : ''}
 === FIM DO CONTEXTO ===
 
@@ -157,7 +162,7 @@ const FERRAMENTA = {
     type: 'object',
     properties: {
         tipo: { type: 'string', enum: TIPOS, description: 'A parte principal do turno.' },
-        message: { type: 'string', description: 'Texto para a pessoa. Obrigatório em responder/perguntar, em nao_suportado sem chave e em toda resposta negativa (nao_tomou/ainda_nao); VAZIO em confirmação pura e em delegação.' },
+        message: { type: 'string', description: 'Texto para a pessoa. Obrigatório em responder/perguntar, em nao_suportado (a resposta do "ainda não") e em toda resposta negativa (nao_tomou/ainda_nao); VAZIO em confirmação pura e em delegação a especialista.' },
         doses: {
             type: 'array',
             description: 'Fatos relatados sobre doses do bloco DOSES. Vazio se nenhum.',
@@ -178,6 +183,8 @@ const FERRAMENTA = {
                 especialista: { type: 'string', enum: ESPECIALISTAS },
                 relacao_pendencia: { type: 'string', enum: RELACOES },
                 chave_ainda_nao: { type: 'string', enum: CHAVES_INVENTARIO, description: 'Só com especialista "nao_suportado": o item do inventário que a pessoa pediu.' },
+                pedido: { type: 'string', description: 'Paráfrase curta do que a pessoa pediu, com as palavras dela. Obrigatório com "nao_suportado"; recomendado em toda delegação.' },
+                misto_com_nunca: { type: 'boolean', description: 'Só com "nao_suportado": o pedido mistura uma parte da lista NUNCA (ex.: decisão sobre dose) com o "ainda não".' },
                 campos: {
                     type: 'object',
                     properties: {
@@ -205,9 +212,11 @@ function decisaoValida(input) {
     if (input.doses.some(d => !d?.ref || !FATOS.includes(d.fato))) return false;
     if ((input.tipo === 'responder' || input.tipo === 'perguntar') && !input.message.trim()) return false;
     if (input.tipo === 'delegar' && !ESPECIALISTAS.includes(input.delegar?.especialista)) return false;
-    // Sem texto do principal, a reserva do "ainda não faço" precisa da chave.
+    // Sem texto do principal, a reserva do "ainda não faço" precisa da chave ou
+    // do pedido (P1-ajustes §5.2).
     if (input.delegar?.especialista === 'nao_suportado' && !input.message.trim()
-        && !CHAVES_AINDA_NAO.includes(input.delegar?.chave_ainda_nao)) return false;
+        && !CHAVES_AINDA_NAO.includes(input.delegar?.chave_ainda_nao)
+        && !(typeof input.delegar?.pedido === 'string' && input.delegar.pedido.trim())) return false;
     // P1-copy §2.2: resposta negativa sempre tem o acolhimento do principal.
     if (input.doses.some(d => d.fato === 'nao_tomou' || d.fato === 'ainda_nao') && !input.message.trim()) return false;
     if (input.tipo === 'dose' && input.doses.length === 0) return false;
@@ -230,6 +239,8 @@ export function normalizarDecisao(input, mensagem = null) {
             especialista: d.especialista,
             relacao_pendencia: RELACOES.includes(d.relacao_pendencia) ? d.relacao_pendencia : 'sem_pendencia',
             chaveAindaNao: CHAVES_AINDA_NAO.includes(d.chave_ainda_nao) ? d.chave_ainda_nao : null,
+            pedido: texto(d.pedido) ? texto(d.pedido).slice(0, 200) : null,
+            mistoComNunca: d.misto_com_nunca === true,
             campos: {
                 // O campo DECLARA "sem dosagem": o contrato é feito cumprir aqui, no
                 // mesmo ponto único da porta (replay 21/09, "Predsin 2mg 2mg").

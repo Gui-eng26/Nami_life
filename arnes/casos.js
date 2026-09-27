@@ -68,6 +68,29 @@ function checagensDeForma(checks, rotuloTurno, resposta) {
     checks.push({ nome: `${rotuloTurno}: sem negrito markdown (**)`, ...semNegritoMarkdown(resposta) });
 }
 
+// v45 P1-ajustes: a pergunta aberta vem do último texto da Nami em agent_logs
+// (montarPendencia) — o caso semeia essa fala sem gastar um turno de LLM.
+async function falaDaNami(ctx, user, texto, { estado = 'idle', minutosAtras = 2 } = {}) {
+    const { error } = await ctx.db.from('agent_logs').insert({
+        user_id: user.id, agent: 'cadastro', user_message: '(seed do arnês)', agent_response: texto,
+        estado_conversa: estado, created_at: new Date(Date.now() - minutosAtras * 60_000).toISOString()
+    });
+    if (error) throw new Error(`Seed de fala da Nami falhou: ${error.message}`);
+}
+
+// Quantas vezes o número aparece como número (não como parte de outro).
+function ocorrenciasDoNumero(texto, n) {
+    return (String(texto).match(new RegExp(`(^|[^\\d])${n}(?![\\d])`, 'g')) || []).length;
+}
+
+// Eventos "ainda não" do usuário (§5.5) — lidos e apagados (staging limpo).
+async function eventosAindaNao(ctx, userId) {
+    const { data } = await ctx.db.from('system_events')
+        .select('id, titulo, payload, origem, severidade, status_triagem, agent_log_id')
+        .eq('user_id', userId).eq('tipo', 'intencao_nao_suportada');
+    return data || [];
+}
+
 export const CASOS = [
 
     // --------------------------------------------------------
@@ -2426,7 +2449,7 @@ export const CASOS = [
                 ok: depois?.state === 'adding_med' && depois?.context?.etapa === 'cad_nome' && !depois?.context?.medication_id,
                 detalhe: `estado: ${depois?.state}, etapa: ${depois?.context?.etapa}, nome: ${depois?.context?.nome}`
             });
-            checks.push({ nome: 'o convite anterior NÃO é repetido', ...naoContem(r, /quantos comprimidos|se voc[êe] souber quantos/i, 'convite de estoque repetido') });
+            checks.push({ nome: 'o convite anterior NÃO é repetido', ...naoContem(r, /quantos comprimidos|se voc[êe] souber quant[oa]s/i, 'convite de estoque repetido') });
             checks.push({ nome: 'P1-copy §9: abre com o convite de três linhas', ...contem(r, /Pode me mandar tudo de uma vez, se quiser:\n• o nome do remédio\n• quanto você toma por vez\n• os horários/, 'convite único') });
             checks.push({ nome: 'P1-copy §9: sem "Qual o *nome*"', ...naoContem(r, /Qual o \*nome\*/, 'pergunta campo a campo') });
             const meds = await medicamentos(ctx.db, user.id, { nomeIlike: 'Ferro%' });
@@ -2447,7 +2470,7 @@ export const CASOS = [
             const r = await turno(ctx, user, 'Erro');
             checagensDeForma(checks, '"Erro"', r);
             checks.push({ nome: 'pergunta o que ficou errado', ...contem(r, /\?/, 'uma pergunta') });
-            checks.push({ nome: 'não repete o convite de estoque', ...naoContem(r, /quantos comprimidos|se voc[êe] souber quantos|estoque/i, 'convite de estoque') });
+            checks.push({ nome: 'não repete o convite de estoque', ...naoContem(r, /quantos comprimidos|se voc[êe] souber quant[oa]s|estoque/i, 'convite de estoque') });
             return checks;
         }
     },
@@ -2550,6 +2573,192 @@ export const CASOS = [
                 nome: 'texto de encerramento é o de hoje (sem mudança de copy)',
                 ...contem(r, /Tratamento com \*?Runner\*? encerrado\. Os lembretes foram desativados/, 'texto de encerramento')
             });
+            return checks;
+        }
+    },
+    // --------------------------------------------------------
+    {
+        id: 'A49',
+        marco: 'M4',
+        titulo: 'P1-ajustes §1 (staging 26/09 23:15) — "Juvix 10, Sonex 30" com o convite de estoque do lote aberto: um fato, um autor',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Guilherme', onboarded: true, estado: 'idle' });
+            const { med: juvix } = await seeds.criarMedicamento({ userId: user.id, nome: 'Juvix', estoque: null, horarios: ['08:00'] });
+            const { med: sonex } = await seeds.criarMedicamento({ userId: user.id, nome: 'Sonex', estoque: null, horarios: ['22:00'] });
+            await ctx.db.from('conversation_state').update({
+                state: 'adding_med',
+                context: { sujeito: 'usuario', etapa: 'cad_estoque_lote', estoque_lote: [
+                    { medicationId: juvix.id, nome: 'Juvix' }, { medicationId: sonex.id, nome: 'Sonex' }
+                ] }
+            }).eq('user_id', user.id);
+            await falaDaNami(ctx, user, 'Prontinho, cadastrei os dois! ✅\n\n📦 *Estoque:* se você souber quantos comprimidos tem de cada um, é só me falar — eu te aviso quando estiver acabando.\nSe não souber agora, tudo bem também. 🌿', { estado: 'adding_med' });
+
+            const r = await turno(ctx, user, 'Juvix 10, Sonex 30');
+            checagensDeForma(checks, '"Juvix 10, Sonex 30"', r);
+            for (const [med, n] of [[juvix, 10], [sonex, 30]]) {
+                const { data: m } = await ctx.db.from('medications').select('estoque_atual').eq('id', med.id).single();
+                checks.push({ nome: `estoque do ${med.nome} = ${n}`, ok: Number(m?.estoque_atual) === n, detalhe: `estoque_atual: ${m?.estoque_atual}` });
+                const { data: movs } = await ctx.db.from('stock_movements').select('tipo, estoque_novo').eq('medication_id', med.id);
+                checks.push({ nome: `UM movimento de estoque no ${med.nome}`, ok: (movs || []).length === 1, detalhe: JSON.stringify(movs) });
+                checks.push({ nome: `o número ${n} aparece UMA vez na resposta`, ok: ocorrenciasDoNumero(r, n) === 1, detalhe: `${ocorrenciasDoNumero(r, n)} ocorrência(s)` });
+            }
+            checks.push({ nome: 'sem o informativo do principal ("Estoque atualizado!")', ...naoContem(r, /Estoque atualizado!/, 'segundo autor do fato') });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A50',
+        marco: 'M4',
+        titulo: 'P1-ajustes §1 (Fran 26/09 22:27, Evandro 26/09 18:14) — "120" fora de coleta: principal com UPDATE_STOCK, número uma vez',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Evandro', onboarded: true, estado: 'confirming' });
+            const { med } = await seeds.criarMedicamento({ userId: user.id, nome: 'Losartana', dosagem: '50mg', estoque: 30, horarios: ['08:00', '20:00'] });
+            await falaDaNami(ctx, user, 'Claro, Evandro! Qual a quantidade atual em estoque do *Losartana*?', { estado: 'confirming' });
+
+            const r = await turno(ctx, user, '120');
+            checagensDeForma(checks, '"120"', r);
+            const { data: m } = await ctx.db.from('medications').select('estoque_atual').eq('id', med.id).single();
+            checks.push({ nome: 'estoque do Losartana = 120', ok: Number(m?.estoque_atual) === 120, detalhe: `estoque_atual: ${m?.estoque_atual}` });
+            const { data: movs } = await ctx.db.from('stock_movements').select('tipo').eq('medication_id', med.id);
+            checks.push({ nome: 'UM movimento de estoque', ok: (movs || []).length === 1, detalhe: JSON.stringify(movs) });
+            checks.push({ nome: 'o número 120 aparece UMA vez', ok: ocorrenciasDoNumero(r, 120) === 1, detalhe: `${ocorrenciasDoNumero(r, 120)} ocorrência(s)` });
+            checks.push({ nome: 'nada de narrar a gravação', ...naoContem(r, /\b(vou|vamos) (registrar|anotar|atualizar)\b|\banotad[oa]\b|\banotei\b/i, '"vou registrar…"') });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A51',
+        marco: 'M4',
+        titulo: 'P1-ajustes §2 — fim do onboarding: ponte para o cadastro (template, sem LLM)',
+        async executar() {
+            const checks = [];
+            const { renderizarConviteAoPrimeiroCadastro } = await import('../src/schemas/onboarding.js');
+            const { renderizarPerguntaNome } = await import('../src/schemas/cadastro.js');
+            const comData = renderizarConviteAoPrimeiroCadastro({ nomeColetado: 'Maria Silva' });
+            const esperado = 'Prontinho, Maria, tudo guardado! 📝\n\n'
+                + 'Agora, pra seguirmos com o cadastro dos seus remédios, pode me mandar tudo de uma vez, se quiser:\n'
+                + '• o nome do remédio\n• quanto você toma por vez\n• os horários\n\n'
+                + 'Por exemplo: Losartana 50mg, 1 comprimido, 8h e 20h';
+            checks.push({ nome: 'com data: texto do §2, com a ponte', ok: comData === esperado, detalhe: JSON.stringify(comData) });
+            const semData = renderizarConviteAoPrimeiroCadastro({ nomeColetado: 'Maria', semData: true });
+            checks.push({ nome: 'sem data: "Tudo bem, {nome}! 🌿" com a mesma ponte', ok: semData === esperado.replace('Prontinho, Maria, tudo guardado! 📝', 'Tudo bem, Maria! 🌿'), detalhe: JSON.stringify(semData.slice(0, 120)) });
+            const novo = renderizarPerguntaNome({ userName: 'Maria' });
+            checks.push({ nome: 'cadastro novo NÃO muda (sem a ponte)', ...naoContem(novo, /pra seguirmos com o cadastro/, 'ponte fora do onboarding') });
+            checks.push({ nome: 'cadastro novo segue com o convite de três linhas', ...contem(novo, /Pode me mandar tudo de uma vez, se quiser:/, 'convite único') });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A52',
+        marco: 'M4',
+        titulo: 'P1-ajustes §3 (staging 26/09 Topiramato/Resilex) — "quantos comprimidos" / "quantas unidades" (template, sem LLM)',
+        async executar() {
+            const checks = [];
+            const { renderizarPerguntaEstoque } = await import('../src/schemas/cadastro.js');
+            const { buildConviteEstoqueNaoCadastrado } = await import('../src/templates/estoqueTemplates.js');
+            const { quantosDoRotulo } = await import('../src/templates/dose.js');
+            const pComp = renderizarPerguntaEstoque('cad_estoque', { nome: 'Topiramato', unidade_dose: 'unidade', forma_explicita: 'comprimido' });
+            const pUnid = renderizarPerguntaEstoque('cad_estoque', { nome: 'Resilex', unidade_dose: 'unidade' });
+            checks.push({ nome: 'coleta, comprimido: "quantos comprimidos"', ...contem(pComp, /quantos comprimidos/, '"quantos comprimidos"') });
+            checks.push({ nome: 'coleta, unidade: "quantas unidades"', ...contem(pUnid, /quantas unidades/, '"quantas unidades"') });
+            const cComp = buildConviteEstoqueNaoCadastrado({ medNome: 'Topiramato', medForma: 'comprimido', unidadeEstoque: 'unidade' });
+            const cUnid = buildConviteEstoqueNaoCadastrado({ medNome: 'Resilex', medForma: null, unidadeEstoque: 'unidade' });
+            checks.push({ nome: 'convite pós-dose, comprimido: "quantos comprimidos"', ...contem(cComp, /quantos comprimidos/, '"quantos comprimidos"') });
+            checks.push({ nome: 'convite pós-dose, unidade: "quantas unidades"', ...contem(cUnid, /quantas unidades/, '"quantas unidades"') });
+            const todos = [pComp, pUnid, cComp, cUnid].join('\n');
+            checks.push({ nome: 'nenhum "quantos unidades/cápsulas/gotas"', ...naoContem(todos, /quantos (unidades|cápsulas|gotas)/, 'concordância errada') });
+            const mapa = ['comprimidos', 'frascos', 'sachês', 'ml', 'unidades', 'cápsulas', 'gotas'].map(quantosDoRotulo).join(' · ');
+            checks.push({ nome: 'mapa único do pronome', ok: mapa === 'quantos comprimidos · quantos frascos · quantos sachês · quantos ml · quantas unidades · quantas cápsulas · quantas gotas', detalhe: mapa });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A53',
+        marco: 'M4',
+        titulo: 'P1-ajustes §4 (staging 26/09 23:00, Topiramato) — "Yes" com dose pendente durante o convite de estoque do mesmo remédio: convite uma vez',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Guilherme', onboarded: true, estado: 'idle' });
+            const { med, schedules } = await seeds.criarMedicamento({ userId: user.id, nome: 'Topiramato', dosagem: '25mg', estoque: null, horarios: ['22:58'] });
+            await ctx.db.from('conversation_state').update({
+                state: 'adding_med',
+                context: { sujeito: 'usuario', etapa: 'cad_estoque', medication_id: med.id, nome: 'Topiramato', unidade_dose: 'unidade', forma_explicita: 'comprimido' }
+            }).eq('user_id', user.id);
+            await falaDaNami(ctx, user, 'Topiramato cadastrado! ✅\n\n📦 *Estoque:* se você souber quantos comprimidos tem em casa, é só me falar — eu te aviso quando estiver acabando.\nSe não souber agora, tudo bem também. 🌿', { estado: 'adding_med', minutosAtras: 10 });
+            const dose = await seeds.criarDose({ medicationId: med.id, scheduleId: schedules[0].id, horario: '22:58', minutosAtras: 2 });
+
+            const r = await turno(ctx, user, 'Yes');
+            checagensDeForma(checks, '"Yes"', r);
+            const depois = (await doseLogs(ctx.db, med.id)).find(d => d.id === dose.id);
+            checks.push({ nome: 'dose do Topiramato confirmada', ok: depois?.status === 'confirmado', detalhe: `status: ${depois?.status}` });
+            const convites = (r.match(/estoque/gi) || []).length;
+            checks.push({ nome: 'o convite de estoque aparece UMA vez', ok: convites === 1, detalhe: `${convites} menção(ões) a "estoque": "${r.replace(/\n/g, ' ').slice(0, 200)}"` });
+            checks.push({ nome: 'sem a linha de retomada repetida', ...naoContem(r, /E quando quiser me falar do estoque/, 'retomada duplicada') });
+            checks.push({ nome: 'coleta de estoque preservada', ...(await estadoDaConversa(ctx.db, user.id, 'adding_med')) });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A54',
+        marco: 'M4',
+        titulo: 'P1-ajustes §5 (Evandro 27/09 17:00) — "Posso alterar a dose do Marevan para dias alternados?": ainda não + NUNCA, sem "não entendi"',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Evandro', onboarded: true, estado: 'idle' });
+            const { med } = await seeds.criarMedicamento({ userId: user.id, nome: 'Marevan', dosagem: '5mg', estoque: 30, horarios: ['18:00'] });
+
+            const r = await turno(ctx, user, 'Posso alterar a dose do Marevan para dias alternados?');
+            checagensDeForma(checks, 'Marevan dias alternados', r);
+            checks.push({ nome: 'nenhuma pergunta segura ("não consegui te entender")', ...naoContem(r, /n[ãa]o consegui te entender/i, 'pergunta segura') });
+            checks.push({ nome: 'a resposta nomeia o pedido', ...contem(r, /alternad|dia sim,? dia n[ãa]o/i, 'o pedido (dias alternados)') });
+            const frasesMedicas = r.split(/(?<=[.!?…])\s+|\n+/).filter(f => /m[ée]dic/i.test(f));
+            checks.push({ nome: 'a parte médica aparece', ok: frasesMedicas.length > 0, detalhe: `${frasesMedicas.length} frase(s)` });
+            checks.push({ nome: 'a parte médica vai SEM "ainda" (postura do NUNCA)', ok: frasesMedicas.every(f => !/\bainda\b/i.test(f)), detalhe: frasesMedicas.join(' | ').slice(0, 200) });
+            checks.push({ nome: 'o lembrete recebe o "ainda não"', ...contem(r, /\bainda\b/i, '"ainda"') });
+            const { data: scheds } = await ctx.db.from('schedules').select('horario, ativo').eq('medication_id', med.id);
+            checks.push({ nome: 'nada muda no Marevan', ok: (scheds || []).length === 1 && scheds[0].ativo === true, detalhe: JSON.stringify(scheds) });
+            const eventos = await eventosAindaNao(ctx, user.id);
+            checks.push({ nome: 'UM evento intencao_nao_suportada', ok: eventos.length === 1, detalhe: `${eventos.length} evento(s)` });
+            const ev = eventos[0];
+            checks.push({ nome: 'evento com pedido no payload e título "Ainda não: …"', ok: !!ev?.payload?.pedido && /^Ainda não: /.test(ev?.titulo || ''), detalhe: JSON.stringify({ titulo: ev?.titulo, payload: ev?.payload }) });
+            checks.push({ nome: 'evento: origem porta, severidade baixa, triagem novo, com agent_log_id', ok: ev?.origem === 'porta' && ev?.severidade === 'baixa' && ev?.status_triagem === 'novo' && !!ev?.agent_log_id, detalhe: JSON.stringify({ origem: ev?.origem, severidade: ev?.severidade, status: ev?.status_triagem, log: ev?.agent_log_id }) });
+            if (eventos.length) await ctx.db.from('system_events').delete().in('id', eventos.map(e => e.id));
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A55',
+        marco: 'M4',
+        titulo: 'P1-ajustes §5 — pedido fora de todas as listas ("consegue me lembrar de beber água?"): "ainda não" por padrão, evento gravado',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Ana', onboarded: true, estado: 'idle' });
+            await seeds.criarMedicamento({ userId: user.id, nome: 'Losartana', estoque: 30, horarios: ['08:00'] });
+
+            const r = await turno(ctx, user, 'consegue me lembrar de beber água?');
+            checagensDeForma(checks, 'beber água', r);
+            checks.push({ nome: 'nenhuma pergunta segura', ...naoContem(r, /n[ãa]o consegui te entender/i, 'pergunta segura') });
+            checks.push({ nome: '"ainda não" (honestidade)', ...contem(r, /\bainda\b/i, '"ainda"') });
+            checks.push({ nome: 'não promete nem confirma o lembrete', ...naoContem(r, /(vou|vamos) te lembrar|lembrete (criado|cadastrado|configurado)|combinado, vou/i, 'promessa') });
+            const meds = await medicamentos(ctx.db, user.id);
+            checks.push({ nome: 'nenhum medicamento novo (água não vira cadastro)', ok: meds.length === 1, detalhe: `${meds.length} medicamento(s)` });
+            const eventos = await eventosAindaNao(ctx, user.id);
+            checks.push({ nome: 'UM evento intencao_nao_suportada com pedido', ok: eventos.length === 1 && !!eventos[0]?.payload?.pedido, detalhe: JSON.stringify(eventos.map(e => ({ titulo: e.titulo, payload: e.payload }))) });
+            if (eventos.length) await ctx.db.from('system_events').delete().in('id', eventos.map(e => e.id));
             return checks;
         }
     }

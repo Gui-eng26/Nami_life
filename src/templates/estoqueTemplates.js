@@ -1,6 +1,6 @@
 import { classificarNivelEstoquePorDias } from '../database.js';
 import { verboDoMedicamento } from './verbos.js';
-import { rotuloEstoquePlural } from './dose.js';
+import { rotuloEstoquePlural, quantosDoRotulo } from './dose.js';
 
 // ============================================================
 // TEMPLATES DETERMINÍSTICOS — ALERTA DE ESTOQUE PÓS-CONFIRMAÇÃO
@@ -126,7 +126,7 @@ export function buildConviteEstoqueNaoCadastrado({ medNome, medForma, unidadeEst
     // de saída implícita ("se souber").
     return (
         `\n\n📦 Ainda não tenho o estoque do *${medNome}* cadastrado.\n` +
-        `Se souber quantos ${rotulo} você tem em casa, é só me falar — eu anoto e te aviso ` +
+        `Se souber ${quantosDoRotulo(rotulo)} você tem em casa, é só me falar — eu anoto e te aviso ` +
         `quando estiver acabando, pra você comprar antes de ficar sem.`
     );
 }
