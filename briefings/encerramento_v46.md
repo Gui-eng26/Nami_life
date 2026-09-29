@@ -1,4 +1,6 @@
-# Encerramento v45 — 26/09/2026
+# Encerramento v46 — 26/09/2026
+
+> Registrada originalmente como v45 (commit `1eb3e65`) e renumerada em 29/09: correu em paralelo à v45 técnica (22–29/09, principal como porta única). A data desta sessão é anterior ao fim da v45; a numeração segue a sessão, não a data de fechamento.
 
 **Sessão de documentação e padrão.** Nenhuma linha de código de produção foi alterada.
 Não há merge de `staging` nesta sessão. Tudo abaixo é edição em `main`.

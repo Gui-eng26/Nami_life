@@ -4,7 +4,7 @@
 > Atualizado no encerramento de cada sessão. O backlog **não** vive aqui — vive em
 > `backlog_items` no Supabase.
 
-**Última atualização:** 19/09/2026 (promoção do v44 M2 — runner+schema EM PRODUÇÃO, ver §12.7)
+**Última atualização:** 29/09/2026 (v45 — o principal como porta única EM PRODUÇÃO, ver §14)
 
 ---
 
@@ -41,7 +41,7 @@ Anthropic Claude API · node-cron (agendamento).
 |---|---|
 | `recepcionista` | Primeiro contato, onboarding, consentimento |
 | `cadastro` | Cadastro de medicamentos — desde o M2 (v44) é runner + schema (`src/runner.js` + `src/schemas/cadastro.js`), sem arquivo de agente próprio |
-| `principal` | Conversa geral, confirmação de dose |
+| `principal` | **A porta única** (`src/agentes/principal.js`, desde a v45): uma chamada de interpretação por turno, contexto completo, decisão por tool-use |
 | `lembrete` | Follow-up de doses não confirmadas |
 | `relatorios` | Relatórios de adesão e balanço |
 | `configuracao` | Ajustes de horário, pausa, encerramento |
@@ -61,7 +61,9 @@ follow-ups.
 | `src/templates/adesaoTemplates.js` | Textos de relatório de adesão |
 | `src/templates/balancoTemplates.js` | Textos de balanço |
 | `src/inventario.js` | Inventário de capacidades como dado (P55); **v44: três listas** (FAZ com limites / AINDA_NAO / NUNCA) |
-| `src/porta.js` | **NOVO v44** — porta única de interpretação (tool-use, 1 chamada/turno; proposta, nunca decisão) |
+| `src/porta.js` | Legado residual — `interpretarTurno` ainda usado no absorver do onboarding (sai no P5/R2); `limparDosagemDoNome` usado pelo principal. Não é mais a porta (v45, §14) |
+| `src/contratoPrincipal.js` | **NOVO v45** — definição única do contrato de decisão do principal (tipos, regras por tipo), lida pelo prompt e pelo validador |
+| `src/dosesDoTurno.js` | **NOVO v45** — bloco único de doses do turno (refs D1…), tabela status × fato, execução e texto da confirmação |
 | `src/funil.js` | **NOVO v44** — funil único de saída (`enviarAoUsuario`): todo envio + log em `funil_envios` |
 | `src/validadores/recorrencia.js` | **NOVO v44** — validador determinístico de recorrência (dias da semana/frequência) |
 | `src/schemas/cadastro.js` | **NOVO v44 M2** — schema do cadastro como dado + TODAS as perguntas/mensagens de coleta renderizadas em código (grep-guard: pergunta de coleta só aqui) |
@@ -246,6 +248,24 @@ Números em pt-BR: inteiro sem casas decimais, fracionário com vírgula (`2,5 m
   antes do merge.** O Bloco C da v43 introduziu `estoque_atual = NULL` corretamente e
   cinco leitores ficaram para trás, um deles afirmando ao usuário que o remédio tinha
   acabado. A lição não é sobre estoque: é sobre a varredura.
+- **P59 — linguagem aberta nunca é interpretada por regex ou lista de palavras.** O LLM
+  interpreta e extrai; o código valida (formato, ancoragem, representabilidade) e decide.
+  Única exceção: o atalho de dose por **igualdade exata** com a lista positiva curta, sob
+  quatro guardas de estado (§14.2). Evidência: "6:30h" → 06:00, "segundas" → todos os dias,
+  "b12" → estoque 12, "Ontem eu tomei" confirmando a dose de hoje.
+- **P60 — atuar na motivação, nunca na palavra.** Correções e regras novas partem da
+  intenção por trás da interação. Nenhum texto ou comportamento é acionado por palavra
+  isolada ("Erro", "posso") — isso é regex com outra roupa.
+- **P61 — um fato, um autor, também no texto.** Quando o fato é do código, o texto também
+  é. Nunca filtrar o texto do LLM por regex para esconder um fato duplicado.
+- **P62 — contrato num lugar só.** Prompt e validador leem a mesma definição, e um teste
+  sem LLM garante que toda combinação instruída pelo prompt é aceita (origem: turno de
+  estoque degradado em 29/09).
+- **P63 — a palavra da pessoa prevalece sobre o dado registrado.** Dose confirmada com
+  estoque ≤ 0 é aceita e o estoque passa a nulo (desconhecido).
+- **P64 — "ainda não" por padrão.** FAZ e NUNCA são listas fechadas; todo pedido de
+  capacidade fora delas é "ainda não", respondido com honestidade (nunca "não entendi") e
+  registrado como demanda (`system_events`, `intencao_nao_suportada`).
 - **Sem contador de tentativas em laço controlado pelo usuário.** Teto só onde o sistema
   pode iterar sozinho.
 - **Cálculo de saúde é determinístico.** Resultado numérico relevante para saúde vem de
@@ -729,6 +749,8 @@ Promoção por marco: cada um sobe isolado para `main`, com o arnês verde como 
 
 ### 12.1 Arquitetura entregue
 
+> **Superado na entrada pela §14 (v45, 29/09):** os fast-paths por lista, a porta como chamada separada do principal e as regras que sobrepunham a porta saíram. O restante desta seção (funil, runner, inventário, autoria de fatos, vocabulário) continua valendo.
+
 - **Porta única** (`src/porta.js`): para usuário onboarded, os antigos ramos 4–15 do
   `routeMessage` viraram fast-paths determinísticos → porta → despacho. UMA chamada de
   interpretação por turno (tool-use com schema, nunca JSON em texto livre; 1 retry →
@@ -1157,7 +1179,7 @@ expected-fail. Os agentes artesanais de coleta morreram: `cadastro.js` (3.709 li
 
 ---
 
-## 13. v45 — Definições de métrica de base (26/09/2026)
+## 13. v46 — Definições de métrica de base (26/09/2026)
 
 Fechadas por Guilherme durante a preparação dos entregáveis Traction. Valem para
 dashboard, consultas ad hoc e qualquer material externo. Antes disso cada análise
@@ -1216,3 +1238,106 @@ coortes invalidaria a comparação.
 | Doses perdidas por falta de estoque | 24 (20,0% do agendado) |
 
 Das 35 doses não confirmadas, 24 foram por falta de medicamento e 11 por não resposta.
+
+---
+
+## 14. v45 — O principal como porta única: EM PRODUÇÃO (29/09/2026)
+
+Origem: os usuários do beta que ficaram para trás (Aline, Priscila, Manô, Thaielly, Fran).
+Para oferecer a eles a correção do que a Nami errou, a Nami precisava de fato acertar esses
+casos — e o diagnóstico da Fran (22/09) mostrou que a entrada do M1 não era a arquitetura
+aprovada na v44: atalhos por lista de palavras decidiam antes de tudo, a "porta" era um
+classificador separado do principal, quatro regras de código sobrepunham a interpretação, e
+o principal era chamado sem o lembrete, sem a citação e sem o que a porta extraiu.
+Nos turnos com log do Railway, a interpretação por LLM acertou todos e o código derrubou todos.
+
+### 14.1 Entregas
+
+| Entrega | Commit em `main` | O que fez |
+|---|---|---|
+| Microentrega | — | 12 estados legados `recep_*` migrados para a etapa equivalente do onboarding (pergunta pendente preservada); A36 |
+| P0 | — | corpus `arnes/corpus/` (71 itens reais), baseline sem API |
+| Hotfix | `a391b6c` | encerrar tratamento fecha a dose pendente (`pausado`); follow-up só de remédio ativo (BUG-108) |
+| P1 + copy + ajustes 1–3 | `d9a634a` | o principal como porta única (abaixo) |
+
+### 14.2 Arquitetura entregue
+
+- **Ordem do turno (onboarded):** fila/janela/dedupe → resolução da citação (contexto, sem
+  decisão) → onboarding de não-onboarded (até o P5) → estado de confirmação de exclusão →
+  **atalho exato de dose** → **principal** (única interpretação) → execução pelo código.
+- **Atalho exato de dose:** confirma sem LLM só se as quatro guardas valem: mensagem
+  **idêntica** a uma entrada da lista positiva (sim, s, tomei, tomei sim, já tomei, ok tomei;
+  normalizada, letras repetidas reduzidas); há dose candidata; um único grupo; estado `idle`.
+  Toda negativa vai ao principal.
+- **O principal recebe:** histórico, lembrete/eventos proativos, mensagem citada, bloco único
+  de doses (hoje/ontem/anteontem, refs curtas D1…, status em linguagem de negócio, incluindo
+  sem estoque), pendência aberta (obrigatória/opcional), medicamentos, inventário.
+- **O principal devolve** (contrato em `contratoPrincipal.js`): `responder`, `dose`
+  (`{ref, fato: tomou|nao_tomou|ainda_nao|desfazer}`), `acao` (ação do domínio executada e
+  escrita pelo código), `delegar` (especialista + relação com a pendência:
+  responde|novo|sem_pendencia), `perguntar`.
+- **O código:** valida ref no mapa do turno; escolhe a função pela tabela status × fato;
+  grava; escreve a confirmação lendo o banco.
+- **Dose com estoque ≤ 0 confirmada:** estoque → nulo, movimento `estoque_contestado`.
+- **"Não tomei" com a dose aguardando resposta:** nada é gravado, as cobranças seguem; fecha
+  como não tomada só com "não vou tomar"/"pulei" ou dose fora da janela.
+- **"Ainda não" por padrão (P64):** texto sempre do código (rótulo do inventário ou o pedido
+  nas palavras da pessoa); evento `intencao_nao_suportada` com `pedido` no payload. O principal
+  identifica a motivação principal: capacidade → "ainda não"; orientação → postura do NUNCA.
+- **Correção por intenção (P60):** a pessoa mostra que algo não ficou como queria → se disse o
+  quê, vai a quem é dono do dado; se não disse, a Nami pergunta o que mudar.
+- **Estoque, um autor (P61):** quando o principal atualiza o estoque, a resposta é do código;
+  quando a pessoa responde a um convite de estoque, quem grava e escreve é o especialista.
+
+### 14.3 Decisões de produto (Guilherme, 26–29/09)
+
+- Confirmação de dose correta e confiável, inclusive retroativa: **inegociável**.
+- Dose retroativa registra direto; o texto diz qual dose (dia e hora).
+- Confirmação de hoje leva só a hora; de outro dia, rótulo + data + hora.
+- Abertura variável na confirmação e no estoque (Boa / Perfeito / Isso aí / Que bom /
+  Tudo certo / Show), diferente da última usada com a pessoa; a linha do fato é fixa.
+- Respostas ao "não" pelo principal, sem repetir formulação recente (a Fran recebeu a mesma
+  frase três vezes); dose fechada ganha a linha fixa do fato.
+- Convite de cadastro único em todo cadastro novo: tudo de uma vez, obrigatórios em linhas
+  (nome, quanto toma por vez, horários); fim do onboarding com a ponte para o cadastro.
+- A Nami nunca usa frase no imperativo ("Pode me mandar… se quiser").
+- Alertas proativos de estoque nunca são pergunta: "sim" depois de lembrete é dose.
+- Recompra: o principal atualiza o estoque (`UPDATE_STOCK`).
+
+### 14.4 Medição (corpus, `claude-sonnet-4-6`)
+
+Dose 21/25 (produção antes: 9/25) · delegação 15/15 (antes: 7/15) · extração 26/31
+(porta antiga: 24/31). Comparação com `claude-sonnet-5` adiada por decisão do Guilherme.
+
+### 14.5 Política de testes
+
+Casos de arnês com chamada de LLM estão bloqueados por custo (29/09): o portão roda só
+verificações sem LLM, incluindo o teste de contrato do P62; comportamento dependente do LLM
+é validado manualmente pelo Guilherme no staging.
+
+### 14.6 O que continua aberto
+
+- Recorrência no plural ("às segundas") grava todos os dias, em silêncio — cadastro unitário
+  e lote (Fran 24/09, Alendronato 28/09). Produção tem o defeito desde antes do P1.
+- Cadastro em lote descarta a recorrência (Fran B12 22/09, Alend D 26/09).
+- Correção de uma proposta ainda não gravada é ignorada (Alend D 26/09).
+- Mudar a frequência de um remédio já cadastrado não existe (MH-99; hoje responde "ainda não").
+- Tom desigual: templates fora do guia de composição ("Me conta:", "unidades" para
+  comprimido, formatos diferentes para o mesmo evento).
+- A configuração é uma ilha: classificador, etapas e parsers próprios, fora do runner.
+
+### 14.7 Próximos passos (acordados em 29/09)
+
+Base antes de produto. Objetivos de produto que dependem dela: outras formas farmacêuticas
+(líquido, pó, pomada/gel, adesivo, inalador), áudio e foto, cuidador.
+1. Sessão de desenho do **ponto único de saída**: execução devolve fatos tipados; um
+   compositor escreve a mensagem com o tom da Nami, ancorado nos fatos (fallback
+   determinístico); o "sim" exato e os lembretes seguem sem LLM.
+2. Entrada estruturada (principal extrai tudo, com trecho literal e ancoragem) + cadastro
+   consumindo-a — fecha recorrência no plural, lote, correção de proposta.
+3. Configuração migrada para o modelo de runner e schema, com mudança de frequência.
+4. Catálogo de formas farmacêuticas como dado (pó e líquido primeiro).
+5. Produto: foto, áudio, cuidador.
+Regras de desenho desde o passo 1: "quem fala, sobre quem" nos contratos (prepara o
+cuidador) e verificação do LLM que caiba no custo (contrato sem LLM a cada commit; corpus
+só no fechamento de marco).
