@@ -4,7 +4,7 @@
 > Atualizado no encerramento de cada sessão. O backlog **não** vive aqui — vive em
 > `backlog_items` no Supabase.
 
-**Última atualização:** 29/09/2026 (v45 — o principal como porta única EM PRODUÇÃO, ver §14)
+**Última atualização:** 29/09/2026 (v45 — adendo: norte da Nami na §5.1 e arquitetura-alvo permanente na §5.3)
 
 ---
 
@@ -198,11 +198,28 @@ Números em pt-BR: inteiro sem casas decimais, fracionário com vírgula (`2,5 m
 
 ### 5.1 Fundamentos de produto (não negociáveis)
 
-1. Nunca ignorar o que o usuário diz na chegada — toda mensagem merece resposta.
+**Propósito.** A Nami é uma assistente virtual de saúde que ajuda a pessoa a tomar os
+remédios na hora certa. Ela conversa de forma fluida — como alguém da família — e entrega
+o que promete.
+
+1. Nunca ignorar o que o usuário diz — toda mensagem merece resposta.
 2. O fluxo serve o usuário, não o contrário.
 3. Toda correção de bug exige causa raiz confirmada por evidência (log, código, dado).
    Hipótese apresentada como hipótese, nunca como fato.
 4. Briefings são o contrato entre o chat de planejamento e o Claude Code.
+5. **Confirmação de dose correta e confiável, inclusive retroativa, é inegociável.**
+   Nenhuma mudança de arquitetura pode degradá-la. Quando uma capacidade que funcionava
+   piora, a primeira verificação é comparar com a versão anterior do código (v45: a
+   regressão veio do M1, quando a lista de palavras deixou de rotear e passou a decidir).
+6. **Barra de qualidade:** sem remendos, sem over-engineering, sem becos sem saída, sem
+   tom de robô. Arquitetura de nível sênior; código limpo, fácil de manter e de escalar.
+   Remendo é tratar o sintoma em vez da causa (ex.: dois autores para o mesmo fato
+   "resolvidos" por um filtro que apaga frases). Contenção é aceitável só quando
+   declarada como contenção, com a correção estrutural registrada e agendada.
+7. **Base antes de produto.** Formas farmacêuticas, áudio, foto e cuidador só são
+   construídos sobre uma base em que a Nami entende as mensagens, age dentro das suas
+   capacidades e contorna com honestidade o que está fora delas, sem travar em
+   interações básicas.
 
 ### 5.2 Princípios de arquitetura (seleção de maior valor)
 
@@ -272,6 +289,30 @@ Números em pt-BR: inteiro sem casas decimais, fracionário com vírgula (`2,5 m
   leitura pós-execução, nunca de valor projetado pelo LLM.
 - **Sem consentimento não há base legal para reter dado.** Limpeza de contexto na recusa
   é minimização de dados, não bug.
+
+### 5.3 Arquitetura-alvo de conversa (requisito permanente desde a v44)
+
+Um autor conversacional, uma entrada, uma saída:
+
+- **Entrada única.** O principal (LLM) recebe toda mensagem, interpreta, filtra, extrai
+  os dados necessários com base nas capacidades da Nami (inventário) e direciona ao
+  especialista. Nada determinístico interpreta linguagem antes dele (P59); a única
+  exceção é o atalho do "sim" exato sob guardas de estado (§14.2).
+- **Especialistas.** Recebem os dados já extraídos — não relêem o texto da pessoa —,
+  agem e devolvem **fatos**, lidos do banco depois da escrita (P56).
+- **Saída única.** A mensagem ao usuário é escrita pelo LLM, ancorada nos fatos do
+  código, com o tom homogêneo da Nami. Fato do código nunca é reescrito ou filtrado
+  (P61); se a escrita falhar na verificação, sai o texto determinístico daquele fato.
+- **Correção guiada pela motivação** por trás da interação, nunca por palavra ou frase
+  isolada (P60).
+- **Divergência entre o desenho aprovado e o implementado é sinalizada ao Guilherme**
+  no momento em que é percebida. Na v44, a decisão escrita ("portões determinísticos
+  ficam antes da porta") contradisse o diagrama aprovado e não foi apontada; a v45
+  existiu para desfazer isso.
+
+Estado em 29/09/2026: entrada única entregue (§14). Especialistas ainda relêem o texto
+(cadastro e configuração) e a saída ainda tem vários autores (templates e prompts) —
+ver §14.6 e §14.7.
 
 ---
 
@@ -749,7 +790,7 @@ Promoção por marco: cada um sobe isolado para `main`, com o arnês verde como 
 
 ### 12.1 Arquitetura entregue
 
-> **Superado na entrada pela §14 (v45, 29/09):** os fast-paths por lista, a porta como chamada separada do principal e as regras que sobrepunham a porta saíram. O restante desta seção (funil, runner, inventário, autoria de fatos, vocabulário) continua valendo.
+> **Superado na entrada pela §14 (v45, 29/09):** os fast-paths por lista, a porta como chamada separada do principal e as regras que sobrepunham a porta saíram. O restante desta seção (funil, runner, inventário, autoria de fatos, vocabulário) continua valendo. A arquitetura-alvo permanente está na §5.3.
 
 - **Porta única** (`src/porta.js`): para usuário onboarded, os antigos ramos 4–15 do
   `routeMessage` viraram fast-paths determinísticos → porta → despacho. UMA chamada de
@@ -1291,7 +1332,7 @@ Nos turnos com log do Railway, a interpretação por LLM acertou todos e o códi
 
 ### 14.3 Decisões de produto (Guilherme, 26–29/09)
 
-- Confirmação de dose correta e confiável, inclusive retroativa: **inegociável**.
+- Confirmação de dose correta e confiável, inclusive retroativa: **inegociável** (fundamento 5, §5.1).
 - Dose retroativa registra direto; o texto diz qual dose (dia e hora).
 - Confirmação de hoje leva só a hora; de outro dia, rótulo + data + hora.
 - Abertura variável na confirmação e no estoque (Boa / Perfeito / Isso aí / Que bom /
@@ -1330,7 +1371,7 @@ verificações sem LLM, incluindo o teste de contrato do P62; comportamento depe
 
 Base antes de produto. Objetivos de produto que dependem dela: outras formas farmacêuticas
 (líquido, pó, pomada/gel, adesivo, inalador), áudio e foto, cuidador.
-1. Sessão de desenho do **ponto único de saída**: execução devolve fatos tipados; um
+1. Sessão de desenho do **ponto único de saída** (requisito da §5.3): execução devolve fatos tipados; um
    compositor escreve a mensagem com o tom da Nami, ancorado nos fatos (fallback
    determinístico); o "sim" exato e os lembretes seguem sem LLM.
 2. Entrada estruturada (principal extrai tudo, com trecho literal e ancoragem) + cadastro
