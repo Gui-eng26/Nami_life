@@ -48,7 +48,7 @@ export function naoContem(texto, regex, rotulo) {
 
 // Constituição regra 2 / A5: os blocos de estoque vêm de template determinístico.
 // Marcadores dos templates de estoqueTemplates.js e do convite de estoque.
-const MARCADORES_BLOCO_ESTOQUE = /(\*Lembrete de estoque:\*|🚨 \*Atenção:\*|⚠️ \*Atenção:\*|📦 Ainda não tenho o estoque|📦 Estoque atualizado)/g;
+const MARCADORES_BLOCO_ESTOQUE = /(\*Lembrete de estoque:\*|🚨 \*Atenção:\*|⚠️ \*Atenção:\*|📦 Ainda não tenho o estoque|📦 Estoque atualizado|📦 Estoque do \*[^*\n]+\* atualizado)/g;
 
 export function blocosDeEstoque(texto) {
     return (String(texto).match(MARCADORES_BLOCO_ESTOQUE) || []).length;

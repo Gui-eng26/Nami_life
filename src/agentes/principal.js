@@ -146,7 +146,8 @@ repita. Decida só o destino: outro especialista, ou responder/perguntar você m
 === ATENÇÃO: O ESPECIALISTA "${especialistaNaoExecuta}" ENTENDEU O PEDIDO E NÃO EXECUTA ===
 O pedido é claro e é algo que a Nami AINDA NÃO FAZ. As doses e ações deste turno JÁ foram
 executadas — não as repita. Não delegue a ninguém e não diga que não entendeu: delegue
-"nao_suportado" com "pedido" e escreva em "message" a resposta do "ainda não".
+"nao_suportado" com "pedido" (e "chave_ainda_nao", se for um caso conhecido). O texto do "ainda
+não" é do sistema: deixe "message" vazia.
 ` : ''}
 === FIM DO CONTEXTO ===
 
@@ -162,7 +163,7 @@ const FERRAMENTA = {
     type: 'object',
     properties: {
         tipo: { type: 'string', enum: TIPOS, description: 'A parte principal do turno.' },
-        message: { type: 'string', description: 'Texto para a pessoa. Obrigatório em responder/perguntar, em nao_suportado (a resposta do "ainda não") e em toda resposta negativa (nao_tomou/ainda_nao); VAZIO em confirmação pura e em delegação a especialista.' },
+        message: { type: 'string', description: 'Texto para a pessoa. Obrigatório em responder/perguntar e em toda resposta negativa (nao_tomou/ainda_nao); VAZIO em confirmação pura, em delegação a especialista, em nao_suportado e quando dispara UPDATE_STOCK (esses textos são do sistema).' },
         doses: {
             type: 'array',
             description: 'Fatos relatados sobre doses do bloco DOSES. Vazio se nenhum.',
@@ -212,9 +213,9 @@ function decisaoValida(input) {
     if (input.doses.some(d => !d?.ref || !FATOS.includes(d.fato))) return false;
     if ((input.tipo === 'responder' || input.tipo === 'perguntar') && !input.message.trim()) return false;
     if (input.tipo === 'delegar' && !ESPECIALISTAS.includes(input.delegar?.especialista)) return false;
-    // Sem texto do principal, a reserva do "ainda não faço" precisa da chave ou
+    // O "ainda não" é texto do código (P1-ajustes 2 §1): precisa da chave ou
     // do pedido (P1-ajustes §5.2).
-    if (input.delegar?.especialista === 'nao_suportado' && !input.message.trim()
+    if (input.delegar?.especialista === 'nao_suportado'
         && !CHAVES_AINDA_NAO.includes(input.delegar?.chave_ainda_nao)
         && !(typeof input.delegar?.pedido === 'string' && input.delegar.pedido.trim())) return false;
     // P1-copy §2.2: resposta negativa sempre tem o acolhimento do principal.
@@ -328,13 +329,18 @@ async function executarAcao(action, user) {
                 const statusInfo = await getEstoqueStatusSimples(action.medicationId);
                 if (!statusInfo) return '';
                 // Informativo determinístico (nunca o número que o LLM escreveu).
-                return buildEstoqueAtualizadoMessage({
-                    medNome: statusInfo.medNome,
-                    estoqueAnterior,
-                    estoqueNovo,
-                    deltaAplicado,
-                    quantidadeSolicitada: action.modo === 'set' ? null : action.quantidade
-                }) + buildAlertaEstoquePosAjuste(statusInfo);
+                return {
+                    linha: buildEstoqueAtualizadoMessage({
+                        medNome: statusInfo.medNome,
+                        estoqueAnterior,
+                        estoqueNovo,
+                        deltaAplicado,
+                        quantidadeSolicitada: action.modo === 'set' ? null : action.quantidade,
+                        unidadeEstoque: statusInfo.unidadeEstoque,
+                        medForma: statusInfo.medForma
+                    }),
+                    alerta: buildAlertaEstoquePosAjuste(statusInfo)
+                };
             } catch (e) {
                 console.error('⚠️ Erro ao montar mensagem de estoque atualizado:', e.message);
                 return '';
@@ -347,14 +353,23 @@ async function executarAcao(action, user) {
     }
 }
 
-export async function executarAcoesDoPrincipal(actions, user) {
-    let texto = '';
+// v45 P1-ajustes 2 §2 — o texto do turno de estoque é todo do código: uma
+// linha 📦 por remédio, a abertura uma vez só (ausente quando a confirmação de
+// dose do mesmo turno já abriu a mensagem), alertas depois das linhas.
+export async function executarAcoesDoPrincipal(actions, user, { abertura = null } = {}) {
+    const linhas = [];
+    let alertas = '';
     for (const acao of actions || []) {
         try {
-            texto += await executarAcao(acao, user);
+            const r = await executarAcao(acao, user);
+            if (r?.linha) {
+                linhas.push(r.linha);
+                alertas += r.alerta || '';
+            }
         } catch (e) {
             console.error(`⚠️ Erro ao executar ${acao?.type}:`, e.message);
         }
     }
-    return texto.replace(/^\n+/, '');
+    if (!linhas.length) return '';
+    return (abertura ? `${abertura} ` : '') + linhas.join('\n') + alertas;
 }

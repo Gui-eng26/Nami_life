@@ -447,7 +447,8 @@ function descreverDose(dose, { negrito = true } = {}) {
 // código escolhe uma DIFERENTE da última confirmação daquela pessoa; o fato
 // que vem depois dela é fixo. Nenhuma chamada de LLM.
 export const ABERTURAS_CONFIRMACAO = ['Boa', 'Perfeito', 'Isso aí', 'Que bom', 'Tudo certo', 'Show'];
-const RE_ABERTURA = new RegExp(`^(${ABERTURAS_CONFIRMACAO.join('|')})(?:, [^!\\n]+)?! ✅`);
+// P1-ajustes 2 §2: a mesma abertura abre a atualização de estoque ("! 📦").
+const RE_ABERTURA = new RegExp(`^(${ABERTURAS_CONFIRMACAO.join('|')})(?:, [^!\\n]+)?! (?:✅|📦)`);
 
 export function aberturaUsada(texto) {
     return String(texto || '').match(RE_ABERTURA)?.[1] ?? null;
@@ -459,7 +460,7 @@ export function escolherAbertura({ nome, ultima = null, sorteio = Math.random })
     return nome ? `${base}, ${nome}!` : `${base}!`;
 }
 
-async function ultimaAberturaDoUsuario(userId) {
+export async function ultimaAberturaDoUsuario(userId) {
     try {
         const respostas = await getUltimasRespostasDaNami(userId, 20);
         for (const r of respostas) {
@@ -511,6 +512,7 @@ async function montarTextoPosEscrita({ executados, jaRegistradas = [], user, sem
     const jaConfirmadas = jaRegistradas.filter(p => p.fato === 'tomou').map(p => porId.get(p.id)).filter(Boolean);
 
     const antes = [];
+    const abriu = confirmadas.length > 0;
     if (confirmadas.length) {
         const abertura = escolherAbertura({ nome, ultima: await ultimaAberturaDoUsuario(user.id) });
         antes.push(textoDeConfirmacao({
@@ -542,7 +544,7 @@ async function montarTextoPosEscrita({ executados, jaRegistradas = [], user, sem
             if (alerta.convite) convitesEstoque.add(medId);
         }
     }
-    return { antes: antes.join('\n\n') + alertas, depois: depois.join('\n'), convitesEstoque };
+    return { antes: antes.join('\n\n') + alertas, depois: depois.join('\n'), convitesEstoque, abriu };
 }
 
 // Executa os fatos relatados (pelo principal ou pelo atalho). Tudo ou nada
@@ -583,8 +585,8 @@ export async function executarFatosDeDose({ user, fatos, mapa, semAlertaPara = n
     if (executados.length === 0) return { ok: false, motivo: 'nenhuma_dose_executada', texto: '', textoDepois: '', executados };
 
     console.log(`💊 [DOSES] ${executados.map(p => `${p.ref}:${p.fato}`).join(', ')} — ${user.phone}`);
-    const { antes, depois, convitesEstoque } = await montarTextoPosEscrita({ executados, jaRegistradas, user, semAlertaPara });
-    return { ok: true, texto: antes, textoDepois: depois, executados, convitesEstoque };
+    const { antes, depois, convitesEstoque, abriu } = await montarTextoPosEscrita({ executados, jaRegistradas, user, semAlertaPara });
+    return { ok: true, texto: antes, textoDepois: depois, executados, convitesEstoque, abriu };
 }
 
 // O atalho executa a mesma tabela: monta um mapa mínimo só com as candidatas.

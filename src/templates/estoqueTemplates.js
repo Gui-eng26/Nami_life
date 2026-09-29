@@ -1,6 +1,6 @@
 import { classificarNivelEstoquePorDias } from '../database.js';
 import { verboDoMedicamento } from './verbos.js';
-import { rotuloEstoquePlural, quantosDoRotulo } from './dose.js';
+import { rotuloEstoquePlural, quantosDoRotulo, formatarQuantidadeDose } from './dose.js';
 
 // ============================================================
 // TEMPLATES DETERMINÍSTICOS — ALERTA DE ESTOQUE PÓS-CONFIRMAÇÃO
@@ -94,8 +94,25 @@ export function buildAlertaEstoquePosAjuste(info) {
 // v44 §5.7 — movido de principal.js. Informativo determinístico pós-ajuste manual
 // de estoque (complemento MH-042): o único número comunicado depois de UPDATE_STOCK
 // vem daqui, montado da leitura pós-escrita, nunca do texto do LLM.
-export function buildEstoqueAtualizadoMessage({ medNome, estoqueAnterior, estoqueNovo, deltaAplicado, quantidadeSolicitada }) {
-    let msg = `\n\n📦 Estoque atualizado! Seu novo estoque de *${medNome}* é *${estoqueNovo}* ${estoqueNovo === 1 ? 'unidade' : 'unidades'}.`;
+// v45 P1-ajustes 2 §2: formato da confirmação de dose — a LINHA do fato, sem
+// abertura (quem abre a mensagem é o router, uma vez só no turno) e com o
+// rótulo da forma do remédio ("comprimidos", "gotas"…), nunca "unidades" para
+// comprimido.
+export function rotuloEstoque(quantidade, { unidade_estoque, forma_farmaceutica } = {}) {
+    if (Number(quantidade) === 1) {
+        const singular = formatarQuantidadeDose({
+            quantidade: 1, unidade_dose: unidade_estoque === 'ml' ? 'ml' : 'unidade', forma_farmaceutica
+        });
+        if (singular) return singular.replace(/^1 /, '');
+    }
+    return rotuloEstoquePlural({ unidade_estoque, forma_farmaceutica });
+}
+
+export function buildEstoqueAtualizadoMessage({ medNome, estoqueAnterior, estoqueNovo, deltaAplicado,
+                                               quantidadeSolicitada, unidadeEstoque, medForma }) {
+    const numero = String(estoqueNovo).replace('.', ',');
+    const rotulo = rotuloEstoque(estoqueNovo, { unidade_estoque: unidadeEstoque, forma_farmaceutica: medForma });
+    let msg = `📦 Estoque do *${medNome}* atualizado: *${numero}* ${rotulo}.`;
 
     // Se o que foi de fato aplicado é menor (em módulo) do que o solicitado, o clamp em 0 entrou em ação —
     // só é detectável comparando o delta pedido com o delta realmente aplicado.

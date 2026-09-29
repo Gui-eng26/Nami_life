@@ -2202,16 +2202,17 @@ export async function getEstoqueInfoParaAlerta(medicationId) {
 export async function getEstoqueStatusSimples(medicationId) {
     const { data: med } = await supabase
         .from('medications')
-        .select('nome, estoque_atual, estoque_minimo')
+        .select('nome, estoque_atual, estoque_minimo, forma_farmaceutica, unidade_estoque')
         .eq('id', medicationId)
         .single();
 
     if (!med) return null;
+    const forma = { medForma: med.forma_farmaceutica ?? null, unidadeEstoque: med.unidade_estoque ?? null };
 
     // v43 Bloco C Adendo 1 (P49): NULL nunca é "crítico" — é "desconhecido". Quem
     // consumir `status` precisa tratar 'desconhecido' sem afirmar quantidade.
     if (med.estoque_atual === null || med.estoque_atual === undefined) {
-        return { medNome: med.nome, estoqueAtual: null, status: 'desconhecido' };
+        return { medNome: med.nome, estoqueAtual: null, status: 'desconhecido', ...forma };
     }
 
     const status = med.estoque_atual <= 0
@@ -2220,7 +2221,7 @@ export async function getEstoqueStatusSimples(medicationId) {
             ? 'baixo'
             : 'ok';
 
-    return { medNome: med.nome, estoqueAtual: med.estoque_atual, status };
+    return { medNome: med.nome, estoqueAtual: med.estoque_atual, status, ...forma };
 }
 
 // Conta confirmações de hoje para o medicamento (determina se é 1ª do dia)

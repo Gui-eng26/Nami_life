@@ -4,7 +4,8 @@ import { getConversationState, logAgentInteraction, saveConversationState,
     getUltimoTurnoUsuario } from './database.js';
 import { registrarEvento, registrarFeedback, executarComContagemLLM } from './observabilidade.js';
 import { montarContextoPrincipal, interpretarComPrincipal, executarAcoesDoPrincipal } from './agentes/principal.js';
-import { montarDosesDoTurno, renderizarBlocoDoses, avaliarAtalhoExato, executarAtalho, executarFatosDeDose } from './dosesDoTurno.js';
+import { montarDosesDoTurno, renderizarBlocoDoses, avaliarAtalhoExato, executarAtalho, executarFatosDeDose,
+         escolherAbertura, ultimaAberturaDoUsuario } from './dosesDoTurno.js';
 import { executarRunner, executarOnboarding, repetirPergunta } from './runner.js';
 import { SCHEMA_CADASTRO, renderizarFechamentoAnterior } from './schemas/cadastro.js';
 import { handleRelatorios } from './agentes/relatorios.js';
@@ -299,31 +300,15 @@ async function carregarMedicamentos(userId, doses) {
     return meds.map(m => ({ ...m, temDoseEmAberto: emAberto.has(m.id) }));
 }
 
-// P1-ajustes §1 — "um fato, um autor": quando o principal grava o estoque, o
-// número e a gravação são do template. Frases da `message` que repetem o
-// número ou narram a gravação ("vou registrar…") saem, com log.
-const RE_NARRA_GRAVACAO = /\b(vou|vamos|irei) (registrar|anotar|atualizar|salvar|gravar)\b|\b(registrei|anotei|atualizei|salvei|gravei)\b|\b(anotad[oa]|registrad[oa]|atualizad[oa])\b/i;
-
-export function limparTextoDoFatoDeEstoque(texto, actions) {
-    const numeros = (actions || [])
-        .filter(a => a?.type === 'UPDATE_STOCK' && a.quantidade != null)
-        .map(a => String(a.quantidade).replace('.', ','));
-    if (!texto || !numeros.length) return texto;
-    const frases = texto.split(/(?<=[.!?…])\s+|\n+/);
-    const mantidas = frases.filter(f => {
-        const repeteNumero = numeros.some(n => new RegExp(`(^|[^\\d,])${n}([^\\d,]|$)`).test(f.replace(/(\d)\.(\d)/g, '$1,$2')));
-        return !repeteNumero && !RE_NARRA_GRAVACAO.test(f);
-    });
-    return mantidas.join(' ').trim();
-}
-
-// P1-ajustes §5 — o "ainda não" do turno: quem entendeu, o que foi pedido.
+// P1-ajustes 2 §1 — o "ainda não" é sempre texto do código: a `message` do
+// principal nunca é lida aqui (um autor por fato). Com chave conhecida → a
+// resposta honesta do inventário; sem chave → a reserva que nomeia o pedido.
+// `misto_com_nunca` fica só no payload do evento, não muda o texto.
 function textoAindaNao({ user, decisao, pedidoAnterior }) {
     const d = decisao?.delegar;
     const pedido = d?.pedido || pedidoAnterior || null;
-    if (decisao?.message) return decisao.message;
-    if (d?.chaveAindaNao && !d?.mistoComNunca) return `${respostaHonestaAindaNao(d.chaveAindaNao)}\n\nPosso te ajudar com outra coisa? 🌿`;
-    return respostaAindaNaoPadrao({ nome: primeiroNome(user), pedido, mistoComNunca: !!d?.mistoComNunca });
+    if (d?.chaveAindaNao) return `${respostaHonestaAindaNao(d.chaveAindaNao)}\n\nPosso te ajudar com outra coisa? 🌿`;
+    return respostaAindaNaoPadrao({ nome: primeiroNome(user), pedido });
 }
 
 async function turnoDoPrincipal({ user, message, image, state, historicoConversa, contextoProativo,
@@ -348,10 +333,9 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
     // ÚNICA e termina no "ainda não", nunca em outra delegação nem em "não
     // entendi". Principal falhou → reserva do inventário.
     if (especialistaNaoExecuta) {
-        const escreveu = decisao && (decisao.delegar?.especialista === 'nao_suportado'
-            || (!decisao.delegar && ['responder', 'perguntar'].includes(decisao.tipo) && decisao.message));
-        if (!escreveu) console.warn(`⚠️ [PRINCIPAL] "ainda não" de ${especialistaNaoExecuta} sem texto do principal — reserva — ${user.phone}`);
-        const d = escreveu ? decisao : null;
+        // O texto é do código; do principal vêm só o pedido e a chave.
+        const d = decisao?.delegar?.especialista === 'nao_suportado' ? decisao : null;
+        if (!d) console.warn(`⚠️ [PRINCIPAL] "ainda não" de ${especialistaNaoExecuta} sem nao_suportado do principal — reserva — ${user.phone}`);
         return {
             agentName: 'principal',
             response: juntar(textosAnteriores, textoAindaNao({ user, decisao: d, pedidoAnterior })),
@@ -384,6 +368,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
     const partes = [...textosAnteriores];
     let agentName = 'principal';
     let dosesExecutadas = false;
+    let dosesAbriram = false;
     let convitesEstoque = new Set();
     let textoDepoisDaMensagem = '';
     let naoSuportado = null;
@@ -406,6 +391,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
             partes.push(r.texto);
             textoDepoisDaMensagem = r.textoDepois;
             dosesExecutadas = true;
+            dosesAbriram = !!r.abriu;
             convitesEstoque = r.convitesEstoque || new Set();
             agentName = 'principal_dose';
         }
@@ -414,28 +400,37 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
     // Texto do próprio principal (responder/perguntar, ou o acolhimento de uma
     // resposta negativa). P1-copy §2.2: a linha fixa do fato ("ficou registrado
     // como não tomado") vem DEPOIS do acolhimento.
+    // P1-ajustes 2 §1/§2: no turno que grava estoque ou que é "ainda não", o
+    // fato é do código — e o texto também; a `message` do principal não entra.
     const executaEstoque = primeiraRodada && actions.some(a => a?.type === 'UPDATE_STOCK');
+    const aindaNaoDoTurno = decisao.delegar?.especialista === 'nao_suportado';
     if (decisao.message && decisao.tipo !== 'delegar') {
-        const texto = executaEstoque ? limparTextoDoFatoDeEstoque(decisao.message, actions) : decisao.message;
-        if (texto !== decisao.message) console.log(`📦 [PRINCIPAL] texto do principal sem o fato do estoque (autor é o template) — ${user.phone}`);
-        partes.push(texto);
+        if (executaEstoque || aindaNaoDoTurno) {
+            console.log(`🧾 [PRINCIPAL] message do principal descartada: o texto do ${executaEstoque ? 'estoque' : '"ainda não"'} é do código — ${user.phone}`);
+        } else {
+            partes.push(decisao.message);
+        }
     }
     if (textoDepoisDaMensagem) partes.push(textoDepoisDaMensagem);
 
     // 7b. Ações do domínio do principal.
     if (primeiraRodada && actions.length) {
-        partes.push(await executarAcoesDoPrincipal(actions, user));
+        // §2: a abertura vem uma vez só no turno — a da confirmação de dose, se
+        // houve; senão a do estoque, diferente da última usada com a pessoa.
+        const abertura = executaEstoque && !dosesAbriram
+            ? escolherAbertura({ nome: primeiroNome(user), ultima: await ultimaAberturaDoUsuario(user.id) })
+            : null;
+        partes.push(await executarAcoesDoPrincipal(actions, user, { abertura }));
     }
 
     // 7c. Delegação.
     let delegou = false;
     if (decisao.delegar) {
         if (decisao.delegar.especialista === 'nao_suportado') {
-            // §5: "ainda não" por padrão — texto do principal ou reserva que
-            // nomeia o pedido (nunca "isso"). Vale também na volta de uma
-            // devolução (§5.3: nunca "não entendi" para um pedido claro).
-            // (Com tipo ≠ delegar, a `message` já entrou acima.)
-            if (!(decisao.message && decisao.tipo !== 'delegar')) partes.push(textoAindaNao({ user, decisao, pedidoAnterior }));
+            // §5: "ainda não" por padrão — sempre texto do código (P1-ajustes 2
+            // §1), que nomeia o pedido (nunca "isso"). Vale também na volta de
+            // uma devolução (§5.3: nunca "não entendi" para um pedido claro).
+            partes.push(textoAindaNao({ user, decisao, pedidoAnterior }));
             naoSuportado = {
                 pedido: decisao.delegar.pedido || pedidoAnterior || null,
                 especialista: especialistaDevolveu || 'principal',

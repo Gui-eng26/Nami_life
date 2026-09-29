@@ -144,15 +144,12 @@ export function respostaHonestaAindaNao(chave) {
 
 // P1-ajustes §5.1/§5.2 — reserva do "ainda não" por padrão (fora da lista ou
 // sem chave): nomeia o pedido com as palavras da pessoa; sem prazo (regra 6).
-// Pedido misto com o NUNCA: a parte médica vai sem "ainda" (§5.4).
-export function respostaAindaNaoPadrao({ nome = null, pedido = null, mistoComNunca = false } = {}) {
+// P1-ajustes 2 §1: o texto não muda com `misto_com_nunca` (indicador só no
+// payload do evento intencao_nao_suportada).
+export function respostaAindaNaoPadrao({ nome = null, pedido = null } = {}) {
   const abertura = pedido
     ? `Entendi${nome ? `, ${nome}` : ''} — você quer ${pedido}.`
     : `Entendi${nome ? `, ${nome}` : ''}.`;
-  if (mistoComNunca) {
-    return `${abertura} A decisão sobre a dose é do seu médico — isso eu não faço. ` +
-      `Já ajustar os lembretes pra isso eu ainda não consigo: ainda estou em desenvolvimento e aprendendo coisas novas. 🌿`;
-  }
   return `${abertura} Isso eu ainda não consigo fazer: ainda estou em desenvolvimento e aprendendo coisas novas. 🌿`;
 }
 

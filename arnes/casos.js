@@ -91,6 +91,16 @@ async function eventosAindaNao(ctx, userId) {
     return data || [];
 }
 
+// P1-ajustes 2 §1 — o "ainda não" do turno é SEMPRE texto do código: o
+// esperado é reconstruído do payload do evento (chave ou pedido).
+async function textoAindaNaoEsperado(ev, nome) {
+    const { respostaHonestaAindaNao, respostaAindaNaoPadrao } = await import('../src/inventario.js');
+    if (ev?.payload?.chave_ainda_nao) return `${respostaHonestaAindaNao(ev.payload.chave_ainda_nao)}\n\nPosso te ajudar com outra coisa? 🌿`;
+    return respostaAindaNaoPadrao({ nome, pedido: ev?.payload?.pedido || null });
+}
+
+const RE_ABERTURA_ESTOQUE = /^(Boa|Perfeito|Isso aí|Que bom|Tudo certo|Show)(, [^!\n]+)?! /;
+
 export const CASOS = [
 
     // --------------------------------------------------------
@@ -470,6 +480,49 @@ export const CASOS = [
                 nome: 'P1: normalização do atalho reduz letras repetidas e bordas ("Simmm!" → "sim")',
                 ok: normalizarParaAtalho('Simmm!') === 'sim' && normalizarParaAtalho('Já tomei 👍') === 'ja tomei' && normalizarParaAtalho('Não') === 'nao',
                 detalhe: `${normalizarParaAtalho('Simmm!')} | ${normalizarParaAtalho('Já tomei 👍')} | ${normalizarParaAtalho('Não')}`
+            });
+
+            // ---- Guardas do v45 P1-ajustes 2 (um autor por fato, sem LLM) ----
+            const filtroRegex = [...conteudo.entries()].filter(([, c]) => /limparTextoDoFatoDeEstoque|RE_NARRA_GRAVACAO/.test(c)).map(([f]) => f);
+            checks.push({ marco: 'M4', nome: 'grep (P1-ajustes 2 §2): limparTextoDoFatoDeEstoque/RE_NARRA_GRAVACAO não existem', ok: filtroRegex.length === 0, detalhe: filtroRegex.join(', ') || 'limpo' });
+            const corpoAindaNao = router.match(/function textoAindaNao\([\s\S]*?\n\}/)?.[0] || '';
+            checks.push({ marco: 'M4', nome: 'grep (P1-ajustes 2 §1): textoAindaNao não lê decisao.message', ok: !!corpoAindaNao && !/\.message\b/.test(corpoAindaNao), detalhe: corpoAindaNao ? 'limpo' : 'função não encontrada' });
+            const promptP = conteudo.get('prompts.js') || '';
+            checks.push({
+                marco: 'M4',
+                nome: 'grep (P1-ajustes 2 §3): bloco "ERRO" SEM DIZER O QUÊ fora do prompt; regra de INTENÇÃO DE CORRIGIR no lugar',
+                ok: !/"ERRO" SEM DIZER O QU/.test(promptP) && /INTENÇÃO DE CORRIGIR/.test(promptP),
+                detalhe: `bloco antigo: ${/"ERRO" SEM DIZER O QU/.test(promptP)}, regra nova: ${/INTENÇÃO DE CORRIGIR/.test(promptP)}`
+            });
+            checks.push({
+                marco: 'M4',
+                nome: 'grep (P1-ajustes 2 §1): prompt sem a regra de oferecer alternativa no "ainda não"',
+                ok: !/algo próximo que a Nami já faz/.test(promptP),
+                detalhe: /algo próximo que a Nami já faz/.test(promptP) ? 'regra presente' : 'limpo'
+            });
+            const { respostaAindaNaoPadrao } = await import('../src/inventario.js');
+            const padraoSimples = respostaAindaNaoPadrao({ nome: 'Ana', pedido: 'mudar o Rivotril para dias alternados' });
+            checks.push({
+                marco: 'M4',
+                nome: 'P1-ajustes 2 §1: reserva do "ainda não" não muda com misto_com_nunca',
+                ok: respostaAindaNaoPadrao({ nome: 'Ana', pedido: 'mudar o Rivotril para dias alternados', mistoComNunca: true }) === padraoSimples,
+                detalhe: padraoSimples
+            });
+            const { buildEstoqueAtualizadoMessage } = await import('../src/templates/estoqueTemplates.js');
+            const linhaEst = (n, medForma, unidadeEstoque = 'unidade') => buildEstoqueAtualizadoMessage({ medNome: 'X', estoqueAnterior: 0, estoqueNovo: n, deltaAplicado: n, quantidadeSolicitada: n, medForma, unidadeEstoque });
+            const linhasEst = [linhaEst(20, 'comprimido'), linhaEst(1, 'comprimido'), linhaEst(30, 'capsula'), linhaEst(20, 'gotas', 'ml')];
+            checks.push({
+                marco: 'M4',
+                nome: 'P1-ajustes 2 §2: linha do estoque no formato da confirmação, com o rótulo da forma (nunca "unidades" p/ comprimido)',
+                ok: linhasEst[0] === '📦 Estoque do *X* atualizado: *20* comprimidos.' && linhasEst[1] === '📦 Estoque do *X* atualizado: *1* comprimido.'
+                    && linhasEst[2] === '📦 Estoque do *X* atualizado: *30* cápsulas.' && linhasEst[3] === '📦 Estoque do *X* atualizado: *20* ml.',
+                detalhe: linhasEst.join(' | ')
+            });
+            checks.push({
+                marco: 'M4',
+                nome: 'P1-ajustes 2 §2: a abertura do estoque conta como "última abertura" da pessoa',
+                ok: aberturaUsada('Show, Ana! 📦 Estoque do *X* atualizado: *20* comprimidos.') === 'Show',
+                detalhe: String(aberturaUsada('Show, Ana! 📦 Estoque do *X* atualizado: *20* comprimidos.'))
             });
             return checks;
         }
@@ -2462,7 +2515,7 @@ export const CASOS = [
     {
         id: 'A45',
         marco: 'M4',
-        titulo: 'Fran 22/09 07:58 — "Erro" logo após o cadastro',
+        titulo: 'Fran 22/09 07:58 — "Erro" logo após o cadastro (P1-ajustes 2 §3: verde pela INTENÇÃO de corrigir, não pela palavra)',
         async executar({ ctx, seeds }) {
             const checks = [];
             const user = await seeds.criarUsuario({ nome: 'Fran', onboarded: true, estado: 'post_onboarding' });
@@ -2471,6 +2524,8 @@ export const CASOS = [
             checagensDeForma(checks, '"Erro"', r);
             checks.push({ nome: 'pergunta o que ficou errado', ...contem(r, /\?/, 'uma pergunta') });
             checks.push({ nome: 'não repete o convite de estoque', ...naoContem(r, /quantos comprimidos|se voc[êe] souber quant[oa]s|estoque/i, 'convite de estoque') });
+            const meds = await medicamentos(ctx.db, user.id);
+            checks.push({ nome: 'nada é gravado: o Puran T4 segue único, sem estoque', ok: meds.length === 1 && meds[0].estoque_atual === null, detalhe: `${meds.length} medicamento(s), estoque: ${meds[0]?.estoque_atual}` });
             return checks;
         }
     },
@@ -2627,6 +2682,8 @@ export const CASOS = [
             checks.push({ nome: 'UM movimento de estoque', ok: (movs || []).length === 1, detalhe: JSON.stringify(movs) });
             checks.push({ nome: 'o número 120 aparece UMA vez', ok: ocorrenciasDoNumero(r, 120) === 1, detalhe: `${ocorrenciasDoNumero(r, 120)} ocorrência(s)` });
             checks.push({ nome: 'nada de narrar a gravação', ...naoContem(r, /\b(vou|vamos) (registrar|anotar|atualizar)\b|\banotad[oa]\b|\banotei\b/i, '"vou registrar…"') });
+            // P1-ajustes 2 §2: o texto do turno de estoque é todo do código.
+            checks.push({ nome: 'resposta = abertura + linha 📦 do código (nenhum texto do principal)', ok: RE_ABERTURA_ESTOQUE.test(r) && r.replace(RE_ABERTURA_ESTOQUE, '') === '📦 Estoque do *Losartana* atualizado: *120* comprimidos.', detalhe: JSON.stringify(r) });
             return checks;
         }
     },
@@ -2722,10 +2779,7 @@ export const CASOS = [
             const r = await turno(ctx, user, 'Posso alterar a dose do Marevan para dias alternados?');
             checagensDeForma(checks, 'Marevan dias alternados', r);
             checks.push({ nome: 'nenhuma pergunta segura ("não consegui te entender")', ...naoContem(r, /n[ãa]o consegui te entender/i, 'pergunta segura') });
-            checks.push({ nome: 'a resposta nomeia o pedido', ...contem(r, /alternad|dia sim,? dia n[ãa]o/i, 'o pedido (dias alternados)') });
-            const frasesMedicas = r.split(/(?<=[.!?…])\s+|\n+/).filter(f => /m[ée]dic/i.test(f));
-            checks.push({ nome: 'a parte médica aparece', ok: frasesMedicas.length > 0, detalhe: `${frasesMedicas.length} frase(s)` });
-            checks.push({ nome: 'a parte médica vai SEM "ainda" (postura do NUNCA)', ok: frasesMedicas.every(f => !/\bainda\b/i.test(f)), detalhe: frasesMedicas.join(' | ').slice(0, 200) });
+            checks.push({ nome: 'a resposta nomeia o pedido', ...contem(r, /alternad|dia sim,? dia n[ãa]o|frequ[êe]ncia/i, 'o pedido (dias alternados)') });
             checks.push({ nome: 'o lembrete recebe o "ainda não"', ...contem(r, /\bainda\b/i, '"ainda"') });
             const { data: scheds } = await ctx.db.from('schedules').select('horario, ativo').eq('medication_id', med.id);
             checks.push({ nome: 'nada muda no Marevan', ok: (scheds || []).length === 1 && scheds[0].ativo === true, detalhe: JSON.stringify(scheds) });
@@ -2734,6 +2788,9 @@ export const CASOS = [
             const ev = eventos[0];
             checks.push({ nome: 'evento com pedido no payload e título "Ainda não: …"', ok: !!ev?.payload?.pedido && /^Ainda não: /.test(ev?.titulo || ''), detalhe: JSON.stringify({ titulo: ev?.titulo, payload: ev?.payload }) });
             checks.push({ nome: 'evento: origem porta, severidade baixa, triagem novo, com agent_log_id', ok: ev?.origem === 'porta' && ev?.severidade === 'baixa' && ev?.status_triagem === 'novo' && !!ev?.agent_log_id, detalhe: JSON.stringify({ origem: ev?.origem, severidade: ev?.severidade, status: ev?.status_triagem, log: ev?.agent_log_id }) });
+            // P1-ajustes 2 §1: o texto é do código (nenhuma frase do principal).
+            const esperado54 = await textoAindaNaoEsperado(ev, 'Evandro');
+            checks.push({ nome: 'resposta = texto do código do "ainda não"', ok: r === esperado54, detalhe: JSON.stringify({ r, esperado: esperado54 }).slice(0, 400) });
             if (eventos.length) await ctx.db.from('system_events').delete().in('id', eventos.map(e => e.id));
             return checks;
         }
@@ -2758,7 +2815,140 @@ export const CASOS = [
             checks.push({ nome: 'nenhum medicamento novo (água não vira cadastro)', ok: meds.length === 1, detalhe: `${meds.length} medicamento(s)` });
             const eventos = await eventosAindaNao(ctx, user.id);
             checks.push({ nome: 'UM evento intencao_nao_suportada com pedido', ok: eventos.length === 1 && !!eventos[0]?.payload?.pedido, detalhe: JSON.stringify(eventos.map(e => ({ titulo: e.titulo, payload: e.payload }))) });
+            // P1-ajustes 2 §1: o texto é do código (nenhuma frase do principal).
+            const esperado55 = await textoAindaNaoEsperado(eventos[0], 'Ana');
+            checks.push({ nome: 'resposta = texto do código do "ainda não"', ok: r === esperado55, detalhe: JSON.stringify({ r, esperado: esperado55 }).slice(0, 400) });
             if (eventos.length) await ctx.db.from('system_events').delete().in('id', eventos.map(e => e.id));
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A56',
+        marco: 'M4',
+        titulo: 'P1-ajustes 2 §1 (staging 28/09 18:19/18:21, Rivotril) — duas perguntas de mesmo teor sobre dias alternados: as duas com o texto do código, sem oferta de recadastro',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Guilherme', onboarded: true, estado: 'idle' });
+            const { med } = await seeds.criarMedicamento({ userId: user.id, nome: 'Rivotril', dosagem: '2mg', estoque: 30, horarios: ['22:00'] });
+
+            const respostas = [];
+            for (const [i, msg] of ['Posso alterar a dose do Rivotril para dias alternados?', 'Quero atualizar os dias, tomo em dias alternados'].entries()) {
+                const r = await turno(ctx, user, msg);
+                respostas.push(r);
+                checagensDeForma(checks, `turno ${i + 1}`, r);
+                const eventos = await eventosAindaNao(ctx, user.id);
+                checks.push({ nome: `turno ${i + 1}: ${i + 1} evento(s) intencao_nao_suportada no total (um por turno)`, ok: eventos.length === i + 1, detalhe: `${eventos.length} evento(s)` });
+                const esperados = await Promise.all(eventos.map(e => textoAindaNaoEsperado(e, 'Guilherme')));
+                checks.push({ nome: `turno ${i + 1}: resposta = texto do código do "ainda não"`, ok: esperados.includes(r), detalhe: JSON.stringify({ r, esperados }).slice(0, 400) });
+                checks.push({ nome: `turno ${i + 1}: não oferece cadastrar de novo`, ...naoContem(r, /cadastr/i, 'oferta de recadastro') });
+            }
+            const meds = await medicamentos(ctx.db, user.id);
+            checks.push({ nome: 'o Rivotril segue único e ativo', ok: meds.length === 1 && meds[0].id === med.id, detalhe: `${meds.length} medicamento(s)` });
+            const eventos = await eventosAindaNao(ctx, user.id);
+            if (eventos.length) await ctx.db.from('system_events').delete().in('id', eventos.map(e => e.id));
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A57',
+        marco: 'M4',
+        titulo: 'P1-ajustes 2 §2 — "Comprei 20 comprimidos do Atenolol" fora de coleta: abertura + linha 📦 do código, número uma vez',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Ana', onboarded: true, estado: 'idle' });
+            const { med } = await seeds.criarMedicamento({ userId: user.id, nome: 'Atenolol', dosagem: '25mg', estoque: 0, horarios: ['08:00'] });
+            await ctx.db.from('medications').update({ estoque_minimo: 5 }).eq('id', med.id);
+
+            const r = await turno(ctx, user, 'Comprei 20 comprimidos do Atenolol');
+            checagensDeForma(checks, 'compra', r);
+            const { data: m } = await ctx.db.from('medications').select('estoque_atual').eq('id', med.id).single();
+            checks.push({ nome: 'estoque do Atenolol = 20', ok: Number(m?.estoque_atual) === 20, detalhe: `estoque_atual: ${m?.estoque_atual}` });
+            checks.push({ nome: 'resposta = abertura + "📦 Estoque do *Atenolol* atualizado: *20* comprimidos."', ok: RE_ABERTURA_ESTOQUE.test(r) && r.replace(RE_ABERTURA_ESTOQUE, '') === '📦 Estoque do *Atenolol* atualizado: *20* comprimidos.', detalhe: JSON.stringify(r) });
+            checks.push({ nome: 'o número 20 aparece UMA vez', ok: ocorrenciasDoNumero(r, 20) === 1, detalhe: `${ocorrenciasDoNumero(r, 20)} ocorrência(s)` });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A58',
+        marco: 'M4',
+        titulo: 'P1-ajustes 2 §2 — "Comprei 60 comprimidos / Sim" com a dose aberta: uma abertura, a linha da dose, a linha do estoque',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Flávia', onboarded: true, estado: 'idle' });
+            const { med, schedules } = await seeds.criarMedicamento({ userId: user.id, nome: 'Regenesis', estoque: 0, horarios: ['11:58'] });
+            await ctx.db.from('medications').update({ estoque_minimo: 5 }).eq('id', med.id);
+            const { envio, messageId } = await seeds.criarEnvioFunil({
+                user, minutosAtras: 4, origem: 'proativo:alerta_estoque_zerado',
+                texto: '⏰ Flávia, está na hora do seu *Regenesis*!\n\nPelas minhas contas o estoque acabou — mas se você ainda tem e já tomou, é só responder SIM que eu registro. 💊\n\nSe comprou mais, me conta quantos: *"Comprei 30 comprimidos de Regenesis"*'
+            });
+            const dose = await seeds.criarDose({ medicationId: med.id, scheduleId: schedules[0].id, horario: '11:58', minutosAtras: 4, status: 'sem_estoque', funilEnvioId: envio.id });
+
+            const r = await turno(ctx, user, 'Comprei 60 comprimidos\nSim', { referenceMessageId: messageId });
+            checagensDeForma(checks, 'compra + sim', r);
+            const st = (await doseLogs(ctx.db, med.id)).find(d => d.id === dose.id)?.status;
+            checks.push({ nome: 'dose confirmada', ok: st === 'confirmado', detalhe: `status: ${st}` });
+            const { data: m } = await ctx.db.from('medications').select('estoque_atual').eq('id', med.id).single();
+            checks.push({ nome: 'estoque = 60 (a dose do mesmo turno pode ter baixado 1)', ok: [59, 60].includes(Number(m?.estoque_atual)), detalhe: `estoque_atual: ${m?.estoque_atual}` });
+            const aberturas = (r.match(/(^|\n)(Boa|Perfeito|Isso aí|Que bom|Tudo certo|Show)(, [^!\n]+)?! /g) || []).length;
+            checks.push({ nome: 'UMA abertura', ok: aberturas === 1, detalhe: `${aberturas} abertura(s): ${JSON.stringify(r)}` });
+            const iDose = r.search(/\*Regenesis\* de hoje \(\d{2}:\d{2}\) confirmada 💊/);
+            const iEst = r.search(/📦 Estoque do \*Regenesis\* atualizado: \*\d+\* comprimidos\./);
+            checks.push({ nome: 'a linha da dose e depois a linha do estoque', ok: iDose >= 0 && iEst > iDose, detalhe: `dose@${iDose}, estoque@${iEst}` });
+            checks.push({ nome: 'a abertura abre a mensagem (na linha da dose)', ok: RE_ABERTURA_ESTOQUE.test(r) && /^[^\n]+! ✅/.test(r), detalhe: r.split('\n')[0] });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A59',
+        marco: 'M4',
+        titulo: 'P1-ajustes 2 §3 — "hmm, não foi isso que eu te falei" logo após o cadastro (sem a palavra "erro"): pergunta o que mudar, nada gravado',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Fran', onboarded: true, estado: 'post_onboarding' });
+            await turno(ctx, user, 'Puran T4 75mcg, 1 comprimido às 6:30');
+            const antes = await medicamentos(ctx.db, user.id);
+            const { data: schedAntes } = await ctx.db.from('schedules').select('id, horario, ativo').in('medication_id', antes.map(m => m.id));
+
+            const r = await turno(ctx, user, 'hmm, não foi isso que eu te falei');
+            checagensDeForma(checks, '"não foi isso"', r);
+            checks.push({ nome: 'pergunta o que mudar', ...contem(r, /\?/, 'uma pergunta') });
+            checks.push({ nome: 'não repete o convite de estoque', ...naoContem(r, /quantos comprimidos|se voc[êe] souber quant[oa]s|estoque/i, 'convite de estoque') });
+            const depois = await medicamentos(ctx.db, user.id);
+            const { data: schedDepois } = await ctx.db.from('schedules').select('id, horario, ativo').in('medication_id', depois.map(m => m.id));
+            const chave = (l) => JSON.stringify((l || []).map(x => [x.id, x.horario, x.ativo]).sort());
+            checks.push({ nome: 'nada é gravado (medicamentos e horários iguais)', ok: depois.length === antes.length && chave(schedDepois) === chave(schedAntes) && depois.every(m => m.estoque_atual === null), detalhe: `${antes.length}→${depois.length} medicamento(s)` });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A60',
+        marco: 'M4',
+        titulo: 'P1-ajustes 2 §3 (Guilherme 28/09 18:30, Decadron) — "não é esse horário, é 18:30" logo após cadastrar às 18:00: vai à configuração e o horário passa a 18:30',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const user = await seeds.criarUsuario({ nome: 'Guilherme', onboarded: true, estado: 'post_onboarding' });
+            await turno(ctx, user, 'Decadron 4mg, 1 comprimido às 18:00');
+            const [dec] = await medicamentos(ctx.db, user.id, { nomeIlike: 'Decadron%' });
+            if (!dec) return [{ nome: 'setup: Decadron cadastrado às 18:00', ok: false, detalhe: 'sem medicamento' }];
+
+            let r = await turno(ctx, user, 'não é esse horário, é 18:30');
+            checagensDeForma(checks, '"é 18:30"', r);
+            if (/Confirmar\?/.test(r)) r = await turno(ctx, user, 'Sim');
+            const { data: scheds } = await ctx.db.from('schedules').select('horario, ativo').eq('medication_id', dec.id);
+            const ativos = (scheds || []).filter(s => s.ativo).map(s => String(s.horario).slice(0, 5));
+            checks.push({ nome: 'o horário do Decadron passa a 18:30 (e só ele)', ok: ativos.length === 1 && ativos[0] === '18:30', detalhe: JSON.stringify(scheds) });
+            const meds = await medicamentos(ctx.db, user.id, { nomeIlike: 'Decadron%' });
+            checks.push({ nome: 'nenhum Decadron duplicado', ok: meds.length === 1, detalhe: `${meds.length} registro(s)` });
             return checks;
         }
     }
