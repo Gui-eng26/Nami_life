@@ -31,9 +31,8 @@ import { buildAlertaEstoquePosAjuste, buildEstoqueAtualizadoMessage } from '../t
 
 export const MODELO_PRINCIPAL = process.env.PRINCIPAL_MODEL || 'claude-sonnet-4-6';
 
-const TIPOS = ['responder', 'dose', 'delegar', 'perguntar'];
-// P1-copy §3: `ainda_nao` = a dose segue aguardando (nada é gravado).
-const FATOS = ['tomou', 'nao_tomou', 'ainda_nao', 'desfazer'];
+// P1-ajustes 3 §1.2: tipos, fatos e regras de cada tipo vêm do contrato único.
+import { TIPOS, FATOS, violacaoDoContrato, textoDasRegras } from '../contratoPrincipal.js';
 // P1-copy §8: o item do inventário que a pessoa pediu — a reserva do "ainda
 // não faço" nomeia o item em vez de dizer "isso".
 const CHAVES_AINDA_NAO = AINDA_NAO.map(i => i.chave);
@@ -162,8 +161,8 @@ Mensagem da pessoa: ${mensagem || (temImagem ? '[a pessoa enviou uma imagem]' : 
 const FERRAMENTA = {
     type: 'object',
     properties: {
-        tipo: { type: 'string', enum: TIPOS, description: 'A parte principal do turno.' },
-        message: { type: 'string', description: 'Texto para a pessoa. Obrigatório em responder/perguntar e em toda resposta negativa (nao_tomou/ainda_nao); VAZIO em confirmação pura, em delegação a especialista, em nao_suportado e quando dispara UPDATE_STOCK (esses textos são do sistema).' },
+        tipo: { type: 'string', enum: TIPOS, description: `A parte principal do turno. Regras de cada tipo:\n${textoDasRegras()}` },
+        message: { type: 'string', description: 'Texto para a pessoa — obrigatório ou vazio conforme as regras do tipo (ver "tipo").' },
         doses: {
             type: 'array',
             description: 'Fatos relatados sobre doses do bloco DOSES. Vazio se nenhum.',
@@ -207,21 +206,11 @@ const FERRAMENTA = {
     required: ['tipo', 'message', 'doses', 'feedback']
 };
 
-function decisaoValida(input) {
-    if (!input || !TIPOS.includes(input.tipo) || typeof input.message !== 'string') return false;
-    if (!Array.isArray(input.doses)) return false;
-    if (input.doses.some(d => !d?.ref || !FATOS.includes(d.fato))) return false;
-    if ((input.tipo === 'responder' || input.tipo === 'perguntar') && !input.message.trim()) return false;
-    if (input.tipo === 'delegar' && !ESPECIALISTAS.includes(input.delegar?.especialista)) return false;
-    // O "ainda não" é texto do código (P1-ajustes 2 §1): precisa da chave ou
-    // do pedido (P1-ajustes §5.2).
-    if (input.delegar?.especialista === 'nao_suportado'
-        && !CHAVES_AINDA_NAO.includes(input.delegar?.chave_ainda_nao)
-        && !(typeof input.delegar?.pedido === 'string' && input.delegar.pedido.trim())) return false;
-    // P1-copy §2.2: resposta negativa sempre tem o acolhimento do principal.
-    if (input.doses.some(d => d.fato === 'nao_tomou' || d.fato === 'ainda_nao') && !input.message.trim()) return false;
-    if (input.tipo === 'dose' && input.doses.length === 0) return false;
-    return true;
+// P1-ajustes 3 §1.2: o validador lê o MESMO contrato que o prompt descreve.
+export function decisaoValida(input) {
+    const violacao = violacaoDoContrato(input, { especialistas: ESPECIALISTAS, chavesAindaNao: CHAVES_AINDA_NAO });
+    if (violacao) console.warn(`⚠️ [PRINCIPAL] decisão fora do contrato — ${violacao}`);
+    return !violacao;
 }
 
 export const DECISAO_DEGRADADA = { tipo: 'degradado', message: '', doses: [], actions: [], delegar: null, feedback: 'nenhum' };
@@ -275,7 +264,7 @@ export async function interpretarComPrincipal({ contexto, mensagem = null, image
         maxTokens: 1200,
         model,
         nomeFerramenta: 'responder_usuario',
-        descricaoFerramenta: 'Registra a decisão do turno: responder, relatar doses, delegar ou perguntar.',
+        descricaoFerramenta: `Registra a decisão do turno: ${TIPOS.join(', ')}.`,
         schema: FERRAMENTA,
         validar: decisaoValida,
         motivo: 'principal_decisao_invalida',

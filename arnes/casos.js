@@ -524,6 +524,47 @@ export const CASOS = [
                 ok: aberturaUsada('Show, Ana! 📦 Estoque do *X* atualizado: *20* comprimidos.') === 'Show',
                 detalhe: String(aberturaUsada('Show, Ana! 📦 Estoque do *X* atualizado: *20* comprimidos.'))
             });
+
+            // ---- Guardas do v45 P1-ajustes 3 (contrato único da decisão, sem LLM) ----
+            // Cada combinação que o prompt instrui o principal a usar tem que passar
+            // no validador — se divergirem, quebra aqui, não no WhatsApp.
+            const { decisaoValida } = await import('../src/agentes/principal.js');
+            const { textoDosTipos, textoDasRegras, TIPOS: TIPOS_CONTRATO } = await import('../src/contratoPrincipal.js');
+            const est = { type: 'UPDATE_STOCK', medicationId: 'm1', modo: 'soma', quantidade: 20, motivo: 'recompra' };
+            const base = { message: '', doses: [], actions: [], feedback: 'nenhum' };
+            const combinacoes = [
+                ['acao + message vazia + UPDATE_STOCK (soma)', { ...base, tipo: 'acao', actions: [est] }, true],
+                ['acao + message vazia + UPDATE_STOCK (set)', { ...base, tipo: 'acao', actions: [{ ...est, modo: 'set', motivo: null }] }, true],
+                ['dose + dose + UPDATE_STOCK (compra + "Sim")', { ...base, tipo: 'dose', doses: [{ ref: 'D1', fato: 'tomou' }], actions: [est] }, true],
+                ['dose "tomou" pura, message vazia', { ...base, tipo: 'dose', doses: [{ ref: 'D1', fato: 'tomou' }] }, true],
+                ['delegar nao_suportado + message vazia + chave', { ...base, tipo: 'delegar', delegar: { especialista: 'nao_suportado', relacao_pendencia: 'novo', chave_ainda_nao: 'alterar_frequencia' } }, true],
+                ['delegar nao_suportado + message vazia + pedido', { ...base, tipo: 'delegar', delegar: { especialista: 'nao_suportado', relacao_pendencia: 'novo', pedido: 'me lembrar de beber água' } }, true],
+                ['delegar configuracao + message vazia', { ...base, tipo: 'delegar', delegar: { especialista: 'configuracao', relacao_pendencia: 'novo' } }, true],
+                ['dose ainda_nao + acolhimento', { ...base, tipo: 'dose', message: 'Tudo bem, me avisa quando tomar. 🌿', doses: [{ ref: 'D1', fato: 'ainda_nao' }] }, true],
+                ['dose nao_tomou + acolhimento', { ...base, tipo: 'dose', message: 'Tudo bem, acontece. 🌿', doses: [{ ref: 'D1', fato: 'nao_tomou' }] }, true],
+                ['perguntar + message', { ...base, tipo: 'perguntar', message: 'Poxa, me desculpa! O que ficou errado?' }, true],
+                ['responder + message', { ...base, tipo: 'responder', message: 'Oi! 🌿' }, true],
+                ['acao + SET_USER_NAME + message', { ...base, tipo: 'acao', message: 'Combinado, Gui! 🌿', actions: [{ type: 'SET_USER_NAME', name: 'Gui' }] }, true],
+                ['RECUSA: acao sem ação', { ...base, tipo: 'acao' }, false],
+                ['RECUSA: acao só SET_USER_NAME sem message', { ...base, tipo: 'acao', actions: [{ type: 'SET_USER_NAME', name: 'Gui' }] }, false],
+                ['RECUSA: dose sem dose', { ...base, tipo: 'dose', actions: [est] }, false],
+                ['RECUSA: nao_suportado sem chave nem pedido', { ...base, tipo: 'delegar', delegar: { especialista: 'nao_suportado', relacao_pendencia: 'novo' } }, false],
+                ['RECUSA: nao_tomou sem acolhimento', { ...base, tipo: 'dose', doses: [{ ref: 'D1', fato: 'nao_tomou' }] }, false],
+                ['RECUSA: perguntar sem message', { ...base, tipo: 'perguntar' }, false]
+            ];
+            const { NAMI_SYSTEM_PROMPT: promptRender } = await import('../src/prompts.js');
+            const avessas = combinacoes.filter(([, dec, esperado]) => decisaoValida(dec) !== esperado).map(([n]) => n);
+            checks.push({ marco: 'M4', nome: `P1-ajustes 3 §2: validador aceita cada combinação que o prompt instrui (${combinacoes.length} combinações, 6 recusas)`, ok: avessas.length === 0, detalhe: avessas.join(' | ') || 'todas conforme' });
+            checks.push({
+                marco: 'M4',
+                nome: 'P1-ajustes 3 §1.2: prompt descreve os tipos e as regras a partir do contrato único (inclui "acao")',
+                ok: promptRender.includes(textoDosTipos()) && promptRender.includes(textoDasRegras()) && TIPOS_CONTRATO.includes('acao'),
+                detalhe: `tipos: ${promptRender.includes(textoDosTipos())}, regras: ${promptRender.includes(textoDasRegras())}, tipos do contrato: ${TIPOS_CONTRATO.join(',')}`
+            });
+            const principalSrc = conteudo.get(path.join('agentes', 'principal.js')) || '';
+            const corpoValida = principalSrc.match(/function decisaoValida\([\s\S]*?\n\}/)?.[0] || '';
+            checks.push({ marco: 'M4', nome: 'grep (P1-ajustes 3 §1.2): nenhuma regra de tipo escrita à mão no validador', ok: !!corpoValida && !/input\.tipo\s*===|\.message\.trim|doses\.length/.test(corpoValida) && /violacaoDoContrato/.test(corpoValida), detalhe: corpoValida ? 'só o contrato' : 'decisaoValida não encontrada' });
+            checks.push({ marco: 'M4', nome: 'P1-ajustes 3 §1.3: estoque manda usar o tipo "acao" com message vazia', ok: /use o tipo "acao"[\s\S]{0,80}deixe "message" vazia/.test(promptP), detalhe: 'regra UM FATO, UM AUTOR' });
             return checks;
         }
     },
