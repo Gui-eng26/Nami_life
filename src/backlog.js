@@ -41,7 +41,8 @@ export async function registrarItemBacklog({
 
 export async function atualizarStatusBacklogItem({
     tipo, numero, novoStatus, sessaoFechamento, dataFechamento, notas,
-    parte = '', relacionado, prioridade, novaParte, novoTitulo, novaDescricao
+    parte = '', relacionado, prioridade, novaParte, novoTitulo, novaDescricao,
+    novaSessaoCriacao
 }) {
     // parte SEMPRE no filtro (default '') — desde a v29, tipo+numero sozinhos não
     // identificam mais uma linha única quando o item foi dividido em partes. Omitir
@@ -65,6 +66,9 @@ export async function atualizarStatusBacklogItem({
     if (novaParte !== undefined) campos.parte = novaParte;
     if (novoTitulo !== undefined) campos.titulo = novoTitulo;
     if (novaDescricao !== undefined) campos.descricao = novaDescricao;
+    // v45 (29/09): corrige a sessão de origem quando uma sessão é renumerada
+    // (ex: Mescla v45 → v46), sem SQL direto.
+    if (novaSessaoCriacao !== undefined) campos.sessao_criacao = novaSessaoCriacao;
 
     const { data, error } = await supabase
         .from('backlog_items')
