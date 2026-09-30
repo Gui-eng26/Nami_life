@@ -19,7 +19,7 @@ import {
     confirmDoseByLogId, confirmarDoseRetroativa, confirmarDoseSemEstoque,
     registrarNaoTomado, reverterConfirmacao, getDosesPorIds,
     getEstoqueInfoParaAlerta, contarConfirmacoesHoje, calcularAlertaEstoque,
-    getUltimasRespostasDaNami
+    classificarNivelEstoquePorDias, getUltimasRespostasDaNami
 } from './database.js';
 import { buildAlertaEstoquePosConfirmacao, buildConviteEstoqueNaoCadastrado, buildConviteEstoqueContestado } from './templates/estoqueTemplates.js';
 import { degradar } from './observabilidade.js';
@@ -352,18 +352,19 @@ export function validarFatos(fatos, mapa) {
     return { ok: true, planos };
 }
 
-// Devolve { texto, convite } — `convite` diz se o texto é o CONVITE de estoque
-// (P1-ajustes §4: a retomada da coleta de estoque não repete o convite).
+// Devolve { texto, convite, nivel } — `convite` diz se o texto é o CONVITE de
+// estoque (P1-ajustes §4: a retomada da coleta de estoque não repete o
+// convite); `nivel` alimenta o fato alerta_estoque do compositor (v47 Onda 1).
 async function alertaEstoquePosConfirmacao(medicationId) {
     try {
         const estoqueInfo = await getEstoqueInfoParaAlerta(medicationId);
-        if (!estoqueInfo) return { texto: '', convite: false };
+        if (!estoqueInfo) return { texto: '', convite: false, nivel: null };
         const confirmacoesDoDia = await contarConfirmacoesHoje(medicationId);
         if (estoqueInfo.estoqueDesconhecido) {
             // Estoque nunca informado (ou contestado): CONVITE, só na 1ª do dia.
             return confirmacoesDoDia <= 1
-                ? { texto: buildConviteEstoqueNaoCadastrado(estoqueInfo), convite: true }
-                : { texto: '', convite: false };
+                ? { texto: buildConviteEstoqueNaoCadastrado(estoqueInfo), convite: true, nivel: null }
+                : { texto: '', convite: false, nivel: null };
         }
         const deveAlertar = calcularAlertaEstoque({
             diasRestantes: estoqueInfo.diasRestantes,
@@ -372,10 +373,15 @@ async function alertaEstoquePosConfirmacao(medicationId) {
             diasRestantesTratamento: estoqueInfo.diasRestantesTratamento,
             confirmacoesDoDia
         });
-        return { texto: deveAlertar ? buildAlertaEstoquePosConfirmacao(estoqueInfo) : '', convite: false };
+        if (!deveAlertar) return { texto: '', convite: false, nivel: null };
+        return {
+            texto: buildAlertaEstoquePosConfirmacao(estoqueInfo),
+            convite: false,
+            nivel: classificarNivelEstoquePorDias({ novoEstoque: estoqueInfo.novoEstoque, diasRestantes: estoqueInfo.diasRestantes })
+        };
     } catch (e) {
         console.error('⚠️ Erro ao verificar alerta de estoque pós-confirmação:', e.message);
-        return { texto: '', convite: false };
+        return { texto: '', convite: false, nivel: null };
     }
 }
 
@@ -501,6 +507,9 @@ export function linhaNaoTomada(dose) {
 // §6.3: o texto sai de uma leitura do banco DEPOIS da gravação e diz qual
 // dose e de qual dia. Devolve duas partes: `antes` (confirmações, com a
 // abertura) e `depois` (fatos negativos, que seguem o acolhimento do principal).
+// v47 Onda 1: devolve também os FATOS TIPADOS pós-escrita (§1 do briefing do
+// compositor) — este módulo é o produtor de fatos E o dono da renderização
+// canônica; o texto daqui é o fallback determinístico da composição.
 async function montarTextoPosEscrita({ executados, jaRegistradas = [], user, semAlertaPara = new Set() }) {
     const lidas = await getDosesPorIds([...executados, ...jaRegistradas].map(p => p.id));
     const porId = new Map(lidas.map(d => [d.id, d]));
@@ -510,6 +519,40 @@ async function montarTextoPosEscrita({ executados, jaRegistradas = [], user, sem
     const naoTomadas = executados.filter(p => p.acao === 'nao_tomado' && porId.get(p.id)?.status === 'nao_tomado');
     const desfeitas = executados.filter(p => p.fato === 'desfazer' && porId.get(p.id)?.status !== 'confirmado');
     const jaConfirmadas = jaRegistradas.filter(p => p.fato === 'tomou').map(p => porId.get(p.id)).filter(Boolean);
+
+    // Fatos tipados — cada um com os dados prontos (rótulo de dia/hora por
+    // código, BUG-059) e o fragmento canônico correspondente.
+    const fatos = [];
+    const fatoDeDose = (p, extras = {}) => {
+        const d = porId.get(p.id);
+        return {
+            sujeito: 'usuario',
+            medicamento: d?.medications?.nome || 'seu remédio',
+            medicationId: p.medicationId,
+            doseLogId: p.id,
+            quando: d ? quandoDaDose(d) : null,
+            canonico: d ? descreverDose(d) : '',
+            ...extras
+        };
+    };
+    for (const p of confirmadas) {
+        fatos.push(fatoDeDose(p, {
+            tipo: 'dose_confirmada',
+            retroativa: ['confirmar_retroativa', 'corrigir_para_tomada', 'confirmar_sem_estoque'].includes(p.acao),
+            corrigida: p.acao === 'corrigir_para_tomada',
+            semEstoque: p.acao === 'confirmar_sem_estoque',
+            contestado: !!p.contestado
+        }));
+    }
+    for (const p of desfeitas) {
+        fatos.push(fatoDeDose(p, { tipo: 'dose_revertida', statusDevolvido: porId.get(p.id)?.status }));
+    }
+    for (const p of naoTomadas) {
+        fatos.push(fatoDeDose(p, { tipo: 'dose_nao_tomada', canonico: linhaNaoTomada(porId.get(p.id)) }));
+    }
+    for (const p of jaRegistradas.filter(x => x.fato === 'tomou')) {
+        if (porId.get(p.id)) fatos.push(fatoDeDose(p, { tipo: 'dose_ja_registrada' }));
+    }
 
     const antes = [];
     const abriu = confirmadas.length > 0;
@@ -534,23 +577,31 @@ async function montarTextoPosEscrita({ executados, jaRegistradas = [], user, sem
     const convitesEstoque = new Set();
     const contestados = new Set(confirmadas.filter(p => p.contestado).map(p => p.medicationId));
     for (const medId of [...new Set(confirmadas.map(p => p.medicationId))].filter(id => !semAlertaPara.has(id))) {
+        const dose = porId.get(confirmadas.find(p => p.medicationId === medId).id);
+        const medNome = dose?.medications?.nome || 'seu remédio';
         if (contestados.has(medId)) {
-            const dose = porId.get(confirmadas.find(p => p.medicationId === medId).id);
-            alertas += buildConviteEstoqueContestado({ medNome: dose?.medications?.nome || 'seu remédio' });
+            const fragmento = buildConviteEstoqueContestado({ medNome });
+            alertas += fragmento;
             convitesEstoque.add(medId);
+            fatos.push({ tipo: 'convite_estoque', motivo: 'estoque_contestado', sujeito: 'usuario', medicamento: medNome, medicationId: medId, canonico: fragmento.trim() });
         } else {
             const alerta = await alertaEstoquePosConfirmacao(medId);
             alertas += alerta.texto;
-            if (alerta.convite) convitesEstoque.add(medId);
+            if (alerta.convite) {
+                convitesEstoque.add(medId);
+                fatos.push({ tipo: 'convite_estoque', motivo: 'estoque_nao_informado', sujeito: 'usuario', medicamento: medNome, medicationId: medId, canonico: alerta.texto.trim() });
+            } else if (alerta.texto) {
+                fatos.push({ tipo: 'alerta_estoque', nivel: alerta.nivel, sujeito: 'usuario', medicamento: medNome, medicationId: medId, canonico: alerta.texto.trim() });
+            }
         }
     }
-    return { antes: antes.join('\n\n') + alertas, depois: depois.join('\n'), convitesEstoque, abriu };
+    return { antes: antes.join('\n\n') + alertas, depois: depois.join('\n'), convitesEstoque, abriu, fatos };
 }
 
 // Executa os fatos relatados (pelo principal ou pelo atalho). Tudo ou nada
 // na validação; texto final só de leitura pós-escrita.
 export async function executarFatosDeDose({ user, fatos, mapa, semAlertaPara = new Set() }) {
-    if (!fatos?.length) return { ok: true, texto: '', textoDepois: '', executados: [] };
+    if (!fatos?.length) return { ok: true, texto: '', textoDepois: '', executados: [], fatosDoTurno: [] };
 
     const validacao = validarFatos(fatos, mapa);
     if (!validacao.ok) {
@@ -558,7 +609,7 @@ export async function executarFatosDeDose({ user, fatos, mapa, semAlertaPara = n
             origem: 'principal', motivo: 'ref_dose_invalida', agent: 'principal', userId: user.id,
             detalhe: { motivo: validacao.motivo, fatos }, fallback: null
         });
-        return { ok: false, motivo: validacao.motivo, texto: '', textoDepois: '', executados: [] };
+        return { ok: false, motivo: validacao.motivo, texto: '', textoDepois: '', executados: [], fatosDoTurno: [] };
     }
 
     const jaRegistradas = validacao.planos.filter(p => p.acao === JA_REGISTRADA);
@@ -567,7 +618,7 @@ export async function executarFatosDeDose({ user, fatos, mapa, semAlertaPara = n
     if (aindaNao.length) console.log(`💊 [DOSES] ainda não — dose segue pendente: ${aindaNao.map(p => p.ref).join(', ')} — ${user.phone}`);
     const planos = validacao.planos.filter(p => !SEM_ESCRITA.has(p.acao));
     if (planos.length === 0) {
-        return { ok: true, texto: '', textoDepois: '', executados: [], soJaRegistradas: aindaNao.length === 0, soAindaNao: aindaNao.length > 0 };
+        return { ok: true, texto: '', textoDepois: '', executados: [], fatosDoTurno: [], soJaRegistradas: aindaNao.length === 0, soAindaNao: aindaNao.length > 0 };
     }
 
     const executados = [];
@@ -582,11 +633,16 @@ export async function executarFatosDeDose({ user, fatos, mapa, semAlertaPara = n
         }
         executados.push({ ...plano, contestado: r.contestado });
     }
-    if (executados.length === 0) return { ok: false, motivo: 'nenhuma_dose_executada', texto: '', textoDepois: '', executados };
+    if (executados.length === 0) return { ok: false, motivo: 'nenhuma_dose_executada', texto: '', textoDepois: '', executados, fatosDoTurno: [] };
 
     console.log(`💊 [DOSES] ${executados.map(p => `${p.ref}:${p.fato}`).join(', ')} — ${user.phone}`);
-    const { antes, depois, convitesEstoque, abriu } = await montarTextoPosEscrita({ executados, jaRegistradas, user, semAlertaPara });
-    return { ok: true, texto: antes, textoDepois: depois, executados, convitesEstoque, abriu };
+    const { antes, depois, convitesEstoque, abriu, fatos: fatosDoTurno } = await montarTextoPosEscrita({ executados, jaRegistradas, user, semAlertaPara });
+    // v47 Onda 1: "ainda não" não escreve nada, mas é fato do turno — o
+    // compositor precisa saber que a dose segue aberta (a porta fica aberta).
+    for (const p of aindaNao) {
+        fatosDoTurno.push({ tipo: 'ainda_nao', sujeito: 'usuario', medicamento: p.nome || 'seu remédio', medicationId: p.medicationId, doseLogId: p.id, canonico: '' });
+    }
+    return { ok: true, texto: antes, textoDepois: depois, executados, fatosDoTurno, convitesEstoque, abriu };
 }
 
 // O atalho executa a mesma tabela: monta um mapa mínimo só com as candidatas.

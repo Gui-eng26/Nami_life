@@ -3233,5 +3233,140 @@ export const CASOS = [
             checks.push({ nome: 'grep: buildAlertaEstoqueNaoInformado não existe mais (rename → buildCobrancaEncerrada)', ok: builderVelho.length === 0, detalhe: builderVelho.join(', ') || 'limpo' });
             return checks;
         }
+    },
+
+    // --------------------------------------------------------
+    // v47 ONDA 1 (compositor, MH-100 B) — casos SEM LLM: âncora e natureza são
+    // funções puras; a produção de fatos e o canônico saem das funções de
+    // escrita reais (banco), nunca de routeMessage.
+    // --------------------------------------------------------
+    {
+        id: 'A65',
+        marco: 'M4',
+        titulo: 'v47 compositor §6.1 caso-ouro 17:24 — fatos tipados pós-escrita, natureza correcao, âncora aprova/reprova, fallback canônico = montagem atual',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const { executarFatosDeDose, textoDeConfirmacao } = await import('../src/dosesDoTurno.js');
+            const { verificarComposicao, derivarNatureza } = await import('../src/compositor.js');
+
+            const user = await seeds.criarUsuario({ nome: 'Guilherme', onboarded: true, estado: 'idle' });
+            const { med: creatina, schedules: sC } = await seeds.criarMedicamento({ userId: user.id, nome: 'Creatina', estoque: null, horarios: ['08:30'] });
+            const { med: omega, schedules: sO } = await seeds.criarMedicamento({ userId: user.id, nome: 'Ômega 3', estoque: null, horarios: ['09:00'] });
+            // Creatina registrada como NÃO tomada (a pessoa vai corrigir: "tomei sim");
+            // Ômega 3 confirmado por engano (a pessoa vai desfazer) — cobranças esgotadas.
+            const doseCreatina = await seeds.criarDose({ medicationId: creatina.id, scheduleId: sC[0].id, horario: '08:30', quando: hojeHaMinutos(90), status: 'nao_tomado', tentativas: 3 });
+            const doseOmega = await seeds.criarDose({ medicationId: omega.id, scheduleId: sO[0].id, horario: '09:00', quando: hojeHaMinutos(60), status: 'confirmado', tentativas: 3 });
+
+            const mapa = new Map([
+                ['D1', { id: doseCreatina.id, status: 'nao_tomada', statusBanco: 'nao_tomado', medicationId: creatina.id, nome: 'Creatina' }],
+                ['D2', { id: doseOmega.id, status: 'confirmada', statusBanco: 'confirmado', medicationId: omega.id, nome: 'Ômega 3' }]
+            ]);
+            const r = await executarFatosDeDose({ user, fatos: [{ ref: 'D1', fato: 'tomou' }, { ref: 'D2', fato: 'desfazer' }], mapa });
+            if (!r.ok) return [{ nome: 'setup: execução dos fatos do caso-ouro', ok: false, detalhe: r.motivo }];
+
+            // Fatos tipados pós-escrita (§1 do briefing do compositor).
+            const tipos = r.fatosDoTurno.map(f => f.tipo).sort();
+            const fConf = r.fatosDoTurno.find(f => f.tipo === 'dose_confirmada');
+            const fRev = r.fatosDoTurno.find(f => f.tipo === 'dose_revertida');
+            const fConv = r.fatosDoTurno.find(f => f.tipo === 'convite_estoque');
+            checks.push({
+                nome: 'fatos tipados: dose_confirmada (corrigida) + dose_revertida + convite_estoque',
+                ok: tipos.join(',') === 'convite_estoque,dose_confirmada,dose_revertida'
+                    && fConf?.corrigida === true && fConf?.medicamento === 'Creatina'
+                    && fRev?.statusDevolvido === 'nao_informado' && fRev?.medicamento === 'Ômega 3'
+                    && fConv?.motivo === 'estoque_nao_informado',
+                detalhe: JSON.stringify(r.fatosDoTurno.map(f => ({ tipo: f.tipo, med: f.medicamento })))
+            });
+            checks.push({ nome: 'natureza derivada por código: correcao', ok: derivarNatureza(r.fatosDoTurno) === 'correcao', detalhe: derivarNatureza(r.fatosDoTurno) });
+
+            // (c) Fallback canônico = a montagem atual (dosesDoTurno + templates).
+            const RE_CANONICO = /^(Boa|Perfeito|Isso aí|Que bom|Tudo certo|Show)(, Guilherme)?! ✅ \*Creatina\* de hoje \(08:30\) confirmada 💊\n\nDesfiz a confirmação: \*Ômega 3\* de hoje \(09:00\)\. 🌿\n\n📦 Ainda não tenho o estoque do \*Creatina\* cadastrado\./;
+            checks.push({ nome: 'canônico dos mesmos fatos = montagem atual (confirmação, desfiz, convite)', ...contem(r.texto, RE_CANONICO, 'formato canônico') });
+            const doseLida = (await doseLogs(ctx.db, creatina.id)).find(d => d.id === doseCreatina.id);
+            const doseParaTexto = { ...doseLida, medications: { nome: 'Creatina' } };
+            const t1 = textoDeConfirmacao({ abertura: 'Boa!', confirmadas: [doseParaTexto] });
+            const t2 = textoDeConfirmacao({ abertura: 'Boa!', confirmadas: [doseParaTexto] });
+            checks.push({ nome: 'renderização canônica determinística (mesma entrada, mesmo byte)', ok: t1 === t2 && t1.length > 0, detalhe: JSON.stringify(t1) });
+            checks.push({ nome: 'a âncora APROVA o próprio canônico', ok: verificarComposicao(r.fatosDoTurno, r.texto, { medicamentosDoUsuario: ['Creatina', 'Ômega 3'] }).ok === true, detalhe: JSON.stringify(verificarComposicao(r.fatosDoTurno, r.texto, { medicamentosDoUsuario: ['Creatina', 'Ômega 3'] })) });
+
+            // (a) A âncora aprova um texto-fixture bem composto destes fatos.
+            const bemComposto = 'Prontinho, Guilherme — corrigi aqui: a *Creatina* de hoje (08:30) está registrada como tomada, e desfiz a confirmação do *Ômega 3* de hoje (09:00), que voltou a aguardar sua resposta. 🌿\n\nSe souber quantos comprimidos de Creatina você tem em casa, me conta que eu anoto e te aviso quando estiver acabando.';
+            checks.push({ nome: 'âncora aprova o fixture bem composto', ok: verificarComposicao(r.fatosDoTurno, bemComposto, { medicamentosDoUsuario: ['Creatina', 'Ômega 3'] }).ok === true, detalhe: JSON.stringify(verificarComposicao(r.fatosDoTurno, bemComposto, { medicamentosDoUsuario: ['Creatina', 'Ômega 3'] })) });
+
+            // (b) A âncora REPROVA as três violações do briefing (+ horário inventado).
+            const reprovas = [
+                ['número inventado', `${bemComposto}\n\nVocê ainda tem 12 comprimidos.`, /^numero_inventado/],
+                ['medicamento do fato ausente', 'Prontinho, Guilherme — corrigi aqui: a *Creatina* de hoje (08:30) está registrada como tomada. 🌿', /^fato_ausente:medicamento/],
+                ['medicamento estranho aos fatos', `${bemComposto.replace(' 🌿', '')} A Dipirona segue como estava. 🌿`, /^medicamento_fora_dos_fatos/],
+                ['horário inventado', `${bemComposto.replace('(09:00)', '(10:15)')}`, /^(horario_inventado|fato_ausente:horario)/]
+            ];
+            for (const [rotulo, textoRuim, reMotivo] of reprovas) {
+                const v = verificarComposicao(r.fatosDoTurno, textoRuim, { medicamentosDoUsuario: ['Creatina', 'Ômega 3', 'Dipirona'] });
+                checks.push({ nome: `âncora reprova: ${rotulo}`, ok: v.ok === false && reMotivo.test(v.motivo || ''), detalhe: v.motivo || 'aprovou (errado)' });
+            }
+
+            // Limite documentado da heurística (§2.2): palavras numéricas ("duas")
+            // não são checadas — só dígitos. O lado seguro escolhido é reprovar na
+            // dúvida de DÍGITO; palavra numérica passa (registrado aqui de propósito).
+            const comPalavraNumerica = bemComposto.replace('está registrada como tomada', 'está registrada como tomada (suas duas doses do dia em ordem)');
+            checks.push({ nome: 'limite documentado: palavra numérica não reprova (só dígitos contam)', ok: verificarComposicao(r.fatosDoTurno, comPalavraNumerica, { medicamentosDoUsuario: ['Creatina', 'Ômega 3'] }).ok === true, detalhe: 'heurística é sobre dígitos' });
+
+            // Estado do banco coerente com o caso-ouro (a execução é a real).
+            const stC = (await doseLogs(ctx.db, creatina.id)).find(d => d.id === doseCreatina.id)?.status;
+            const stO = (await doseLogs(ctx.db, omega.id)).find(d => d.id === doseOmega.id)?.status;
+            checks.push({ nome: 'banco: Creatina corrigida para confirmada; Ômega 3 devolvido a nao_informado', ok: stC === 'confirmado' && stO === 'nao_informado', detalhe: `Creatina: ${stC}, Ômega 3: ${stO}` });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A66',
+        marco: 'M4',
+        titulo: 'v47 compositor §6.3–6.5 — escopo por construção: compositor só no turno com fatos; atalho e proativos isentos; message do principal nunca concatenada após fatos',
+        async executar() {
+            const checks = [];
+            const fs = await import('node:fs');
+            const path = await import('node:path');
+            const url = await import('node:url');
+            const raizSrc = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../src');
+            const ler = (rel) => fs.readFileSync(path.join(raizSrc, rel), 'utf8');
+            const router = ler('router.js');
+            const linhasRouter = router.split('\n');
+
+            // §6.3 — uma única chamada ao compositor, dentro do guard de fatos.
+            const chamadas = linhasRouter.map((l, i) => ({ l, i })).filter(({ l }) => /comporComAncora\(/.test(l) && !/import/.test(l));
+            checks.push({ nome: 'compositor chamado UMA vez no router', ok: chamadas.length === 1, detalhe: `${chamadas.length} chamada(s)` });
+            const guardOk = chamadas.length === 1
+                && linhasRouter.slice(Math.max(0, chamadas[0].i - 12), chamadas[0].i).join('\n').includes('if (resultadoDoses)');
+            checks.push({ nome: 'chamada guardada por "if (resultadoDoses)" — turno sem fatos não compõe', ok: guardOk, detalhe: guardOk ? 'guard presente' : 'guard ausente na vizinhança' });
+
+            // §6.4 — isenções por construção: atalho, proativas e o próprio dono
+            // do canônico não conhecem o compositor.
+            const isentos = ['scheduler.js', path.join('agentes', 'lembrete.js'), path.join('agentes', 'relatorios.js'), 'dosesDoTurno.js', 'agent.js', 'funil.js'];
+            const violadores = isentos.filter(f => /comporComAncora|comporMensagemDoTurno|from '[^']*compositor\.js'/.test(ler(f)));
+            checks.push({ nome: 'grep: atalho/proativos/canônico não importam o compositor', ok: violadores.length === 0, detalhe: violadores.join(', ') || 'limpo' });
+            const atalhoLinhas = linhasRouter.map((l, i) => ({ l, i })).filter(({ l }) => /executarAtalho\(/.test(l) && !/import/.test(l));
+            const atalhoLimpo = atalhoLinhas.every(({ i }) => !linhasRouter.slice(Math.max(0, i - 10), i + 10).join('\n').includes('comporComAncora'));
+            checks.push({ nome: 'atalho exato responde pelo canônico direto (sem compositor na vizinhança)', ok: atalhoLinhas.length > 0 && atalhoLimpo, detalhe: `${atalhoLinhas.length} uso(s) de executarAtalho` });
+
+            // §6.5 — a montagem antiga não sobrevive como segundo caminho: a
+            // `message` do principal só é concatenada no ramo SEM fatos.
+            const pushes = linhasRouter.map((l, i) => ({ l, i })).filter(({ l }) => /partes\.push\(decisao\.message\)/.test(l));
+            checks.push({ nome: 'UM único ponto concatena decisao.message', ok: pushes.length === 1, detalhe: `${pushes.length} ponto(s)` });
+            const noRamoSemFatos = pushes.length === 1
+                && linhasRouter.slice(Math.max(0, pushes[0].i - 12), pushes[0].i).join('\n').includes('SEM fato de dose executado');
+            checks.push({ nome: 'e ele vive no ramo "SEM fato de dose executado" (grep-guard §6.5)', ok: noRamoSemFatos, detalhe: noRamoSemFatos ? 'no ramo certo' : 'fora do ramo marcado' });
+
+            // Fonte única do guia (§1): o compositor herda GUIA_COMPOSICAO +
+            // seção de turno de templates/composicao.js — nenhum segundo guia.
+            const compositor = ler('compositor.js');
+            checks.push({
+                nome: 'guia único: compositor importa GUIA_COMPOSICAO/GUIA_COMPOSICAO_TURNO de templates/composicao.js',
+                ok: /GUIA_COMPOSICAO, GUIA_COMPOSICAO_TURNO.*templates\/composicao\.js/s.test(compositor) && !/COMPOSIÇÃO DA MENSAGEM — vale para toda mensagem/.test(compositor),
+                detalhe: 'fonte única'
+            });
+            return checks;
+        }
     }
 ];

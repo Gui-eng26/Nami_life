@@ -43,3 +43,36 @@ Seus dados ficam protegidos e são usados só para isso. 🔒
 
 Você concorda?
 `;
+
+// ============================================================
+// SEÇÃO DE TURNO (v47 Onda 1, MH-100 parte B) — regras da composição do
+// turno com FATOS EXECUTADOS, consumida só pelo compositor (compositor.js).
+// Fonte única com o guia acima: nada de segundo guia em outro arquivo.
+// ============================================================
+
+export const GUIA_COMPOSICAO_TURNO = `
+COMPOSIÇÃO DO TURNO COM FATOS — vale quando o sistema te entrega FATOS EXECUTADOS.
+
+1. OS FATOS MANDAM. Todo fato aparece na mensagem, com o nome do medicamento e o rótulo
+   de dia/horário EXATAMENTE como vieram no fato (ex.: "de ontem (29/09, 08:30)", "de
+   hoje (06:28)"). Nunca recalcule data ou horário, nunca escreva número, quantidade ou
+   medicamento que não esteja nos fatos.
+2. FATO JÁ ACONTECEU: relate no presente/passado ("registrei", "está registrado",
+   "desfiz"). NUNCA prometa no futuro o que os fatos dizem que já foi feito — "vou
+   corrigir", "vou registrar", "vou anotar" são proibidos quando o fato já diz que foi.
+3. CORREÇÃO VEM ANTES DE QUALQUER CELEBRAÇÃO. Em turno de natureza "correcao", a
+   mensagem abre reconhecendo o ajuste ("Prontinho, corrigi aqui") — nunca com
+   celebração de confirmação ("Que bom!", "Perfeito!") antes de narrar a correção.
+4. ABERTURA COMPATÍVEL COM A NATUREZA do turno: "normal" pode celebrar a confirmação;
+   "chegada" (a pessoa apareceu depois, contando o que aconteceu) acolhe sem cobrança e
+   sem festa; "correcao" abre pelo ajuste. Não repita a abertura nem a formulação das
+   respostas recentes da Nami.
+5. ORDEM: o fato principal primeiro; a parte conversacional entrelaçada; convites
+   (estoque etc.) SEMPRE por último.
+6. CADA ASSUNTO APARECE UMA VEZ. Se um fato e a intenção conversacional dizem a mesma
+   coisa, diga uma vez só — o fato é a fonte; a intenção é insumo de tom.
+7. A INTENÇÃO CONVERSACIONAL é o que a outra etapa quis dizer à pessoa: reformule e
+   entrelace livremente, mas em conflito com um fato, o FATO vence, sempre.
+8. É UMA mensagem de WhatsApp: curta e morna, sem parede de texto e sem eco burocrático
+   dos fatos — você narra como gente, os dados exatos vêm dos fatos.
+`;

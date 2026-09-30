@@ -6,6 +6,7 @@ import { registrarEvento, registrarFeedback, executarComContagemLLM } from './ob
 import { montarContextoPrincipal, interpretarComPrincipal, executarAcoesDoPrincipal } from './agentes/principal.js';
 import { montarDosesDoTurno, renderizarBlocoDoses, avaliarAtalhoExato, executarAtalho, executarFatosDeDose,
          escolherAbertura, ultimaAberturaDoUsuario } from './dosesDoTurno.js';
+import { comporComAncora } from './compositor.js';
 import { executarRunner, executarOnboarding, repetirPergunta } from './runner.js';
 import { SCHEMA_CADASTRO, renderizarFechamentoAnterior } from './schemas/cadastro.js';
 import { handleRelatorios } from './agentes/relatorios.js';
@@ -324,7 +325,7 @@ function textoAindaNao({ user, decisao, pedidoAnterior }) {
 async function turnoDoPrincipal({ user, message, image, state, historicoConversa, contextoProativo,
                                   envioCitado, dosesCitadas, doses, especialistaDevolveu = null,
                                   especialistaNaoExecuta = null, pedidoAnterior = null,
-                                  textosAnteriores = [], assuntosAnteriores = [] }) {
+                                  textosAnteriores = [], assuntosAnteriores = [], composicaoAnterior = null }) {
     const estado = state?.state || 'idle';
     const { estrutura, mapa } = await montarDosesDoTurno({ userId: user.id, envioCitado, dosesCitadas, doses });
     const pendencia = montarPendencia({ state, historicoConversa, ultimoLembrete: estrutura.ultimoLembrete });
@@ -351,6 +352,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
             response: juntar(textosAnteriores, textoAindaNao({ user, decisao: d, pedidoAnterior })),
             feedback: decisao?.feedback ?? null,
             assuntos: assuntosAnteriores,
+            composicao: composicaoAnterior,
             naoSuportado: {
                 pedido: d?.delegar?.pedido || pedidoAnterior || null,
                 especialista: especialistaNaoExecuta,
@@ -362,7 +364,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
     }
 
     if (!decisao) {
-        return { agentName: 'principal_degradado', response: juntar(textosAnteriores, reperguntaSegura(user)), feedback: null, assuntos: assuntosAnteriores };
+        return { agentName: 'principal_degradado', response: juntar(textosAnteriores, reperguntaSegura(user)), feedback: null, assuntos: assuntosAnteriores, composicao: composicaoAnterior };
     }
     console.log(`🚪 [PRINCIPAL] tipo: ${decisao.tipo}${decisao.doses.length ? ` · doses: ${decisao.doses.map(d => `${d.ref}:${d.fato}`).join(',')}` : ''}${decisao.delegar ? ` · delegar: ${decisao.delegar.especialista}/${decisao.delegar.relacao_pendencia}` : ''}${decisao.actions.length ? ` · ações: ${decisao.actions.map(a => a.type).join(',')}` : ''} — ${user.phone}`);
 
@@ -381,28 +383,28 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
     let dosesExecutadas = false;
     let dosesAbriram = false;
     let convitesEstoque = new Set();
-    let textoDepoisDaMensagem = '';
     let naoSuportado = null;
     let assuntosDoTurno = [...assuntosAnteriores];
+    let composicaoDoTurno = composicaoAnterior; // v47 Onda 1: composto | fallback_* | null
 
     // Na volta de uma devolução, doses e ações já foram executadas na 1ª rodada.
     const primeiraRodada = !especialistaDevolveu;
 
-    // 7a. Doses primeiro.
+    // 7a. Doses primeiro — a EXECUÇÃO é intocada (TABELA status × fato, P56).
+    let resultadoDoses = null;
     if (primeiraRodada && decisao.doses.length) {
         const medsComAcaoDeEstoque = new Set(actions
             .filter(a => a?.type === 'UPDATE_STOCK' && a.medicationId).map(a => a.medicationId));
         const r = await executarFatosDeDose({ user, fatos: decisao.doses, mapa, semAlertaPara: medsComAcaoDeEstoque });
         if (!r.ok) {
             // §6.1: ref inválida → o turno vira pergunta segura (degradar já registrado).
-            return { agentName: 'principal_degradado', response: juntar(partes, reperguntaSegura(user)), feedback: decisao.feedback, assuntos: assuntosDoTurno };
+            return { agentName: 'principal_degradado', response: juntar(partes, reperguntaSegura(user)), feedback: decisao.feedback, assuntos: assuntosDoTurno, composicao: composicaoDoTurno };
         }
         assuntosDoTurno.push(...assuntosDosFatos(r.executados));
         if (r.soJaRegistradas) {
             if (!decisao.message) partes.push('Tudo certo — isso já estava registrado aqui ✅');
         } else if (!r.soAindaNao) {
-            partes.push(r.texto);
-            textoDepoisDaMensagem = r.textoDepois;
+            resultadoDoses = r;
             dosesExecutadas = true;
             dosesAbriram = !!r.abriu;
             convitesEstoque = r.convitesEstoque || new Set();
@@ -410,30 +412,51 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
         }
     }
 
-    // Texto do próprio principal (responder/perguntar, ou o acolhimento de uma
-    // resposta negativa). P1-copy §2.2: a linha fixa do fato ("ficou registrado
-    // como não tomado") vem DEPOIS do acolhimento.
-    // P1-ajustes 2 §1/§2: no turno que grava estoque ou que é "ainda não", o
-    // fato é do código — e o texto também; a `message` do principal não entra.
     const executaEstoque = primeiraRodada && actions.some(a => a?.type === 'UPDATE_STOCK');
     const aindaNaoDoTurno = decisao.delegar?.especialista === 'nao_suportado';
-    if (decisao.message && decisao.tipo !== 'delegar') {
-        if (executaEstoque || aindaNaoDoTurno) {
-            console.log(`🧾 [PRINCIPAL] message do principal descartada: o texto do ${executaEstoque ? 'estoque' : '"ainda não"'} é do código — ${user.phone}`);
-        } else {
-            partes.push(decisao.message);
-        }
-    }
-    if (textoDepoisDaMensagem) partes.push(textoDepoisDaMensagem);
 
-    // 7b. Ações do domínio do principal.
+    // 7b. Ações do domínio do principal — executadas ANTES de qualquer texto
+    // (escrita primeiro; todo texto sai de leitura pós-escrita, P56).
+    let resultadoAcoes = { texto: '', fatos: [] };
     if (primeiraRodada && actions.length) {
         // §2: a abertura vem uma vez só no turno — a da confirmação de dose, se
         // houve; senão a do estoque, diferente da última usada com a pessoa.
         const abertura = executaEstoque && !dosesAbriram
             ? escolherAbertura({ nome: primeiroNome(user), ultima: await ultimaAberturaDoUsuario(user.id) })
             : null;
-        partes.push(await executarAcoesDoPrincipal(actions, user, { abertura }));
+        resultadoAcoes = await executarAcoesDoPrincipal(actions, user, { abertura });
+    }
+
+    // v47 Onda 1 — COMPOSITOR (MH-100 B): turno com fatos de dose executados
+    // sai como UMA mensagem composta dos fatos tipados, sob âncora, com
+    // fallback no canônico (a montagem determinística abaixo). A `message` do
+    // principal deixa de ir ao usuário como está: vira intenção conversacional.
+    if (resultadoDoses) {
+        const canonico = juntar(resultadoDoses.texto, resultadoDoses.textoDepois, resultadoAcoes.texto);
+        const composicao = await comporComAncora({
+            user,
+            fatos: [...resultadoDoses.fatosDoTurno, ...resultadoAcoes.fatos],
+            intencao: (decisao.tipo !== 'delegar' && !aindaNaoDoTurno) ? decisao.message : '',
+            assuntoCitacao: envioCitado ? { origem: envioCitado.origem } : null,
+            historicoCurto: historicoConversa.slice(-2).map(h => h?.agent_response).filter(Boolean),
+            medicamentosDoUsuario: medicamentos.map(m => m.nome).filter(Boolean),
+            canonico
+        });
+        partes.push(composicao.texto);
+        composicaoDoTurno = composicao.caminho;
+    } else {
+        // SEM fato de dose executado: fluxo de hoje, intocado — este é o ÚNICO
+        // ponto que concatena a `message` do principal (grep-guard A66).
+        // P1-ajustes 2 §1/§2: no turno que grava estoque ou que é "ainda não",
+        // o fato é do código — e o texto também; a `message` não entra.
+        if (decisao.message && decisao.tipo !== 'delegar') {
+            if (executaEstoque || aindaNaoDoTurno) {
+                console.log(`🧾 [PRINCIPAL] message do principal descartada: o texto do ${executaEstoque ? 'estoque' : '"ainda não"'} é do código — ${user.phone}`);
+            } else {
+                partes.push(decisao.message);
+            }
+        }
+        if (resultadoAcoes.texto) partes.push(resultadoAcoes.texto);
     }
 
     // 7c. Delegação.
@@ -461,7 +484,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
                     user, message, image, state: estadoAtual, historicoConversa, contextoProativo,
                     envioCitado, dosesCitadas, doses: await getDosesJanelaPrincipal(user.id),
                     especialistaNaoExecuta: r.especialista, pedidoAnterior: decisao.delegar.pedido,
-                    textosAnteriores: partes, assuntosAnteriores: assuntosDoTurno
+                    textosAnteriores: partes, assuntosAnteriores: assuntosDoTurno, composicaoAnterior: composicaoDoTurno
                 }).then(volta => ({ ...volta, feedback: volta.feedback ?? decisao.feedback }));
             }
             if (r.devolveu) {
@@ -471,7 +494,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
                     if (['configurando', 'aguardando_escolha_tratamento'].includes(estado)) {
                         await saveConversationState(user.id, { state: 'idle', context: {} });
                     }
-                    return { agentName: 'principal_degradado', response: juntar(partes, reperguntaSegura(user)), feedback: decisao.feedback, assuntos: assuntosDoTurno };
+                    return { agentName: 'principal_degradado', response: juntar(partes, reperguntaSegura(user)), feedback: decisao.feedback, assuntos: assuntosDoTurno, composicao: composicaoDoTurno };
                 }
                 console.log(`🔁 [PRINCIPAL] ${decisao.delegar.especialista} devolveu o turno — uma volta ao principal — ${user.phone}`);
                 const estadoAtual = await getConversationState(user.id);
@@ -479,7 +502,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
                     user, message, image, state: estadoAtual, historicoConversa, contextoProativo,
                     envioCitado, dosesCitadas, doses: await getDosesJanelaPrincipal(user.id),
                     especialistaDevolveu: decisao.delegar.especialista, pedidoAnterior: decisao.delegar.pedido,
-                    textosAnteriores: partes, assuntosAnteriores: assuntosDoTurno
+                    textosAnteriores: partes, assuntosAnteriores: assuntosDoTurno, composicaoAnterior: composicaoDoTurno
                 });
                 return { ...volta, feedback: volta.feedback ?? decisao.feedback, escalouPara: volta.agentName };
             }
@@ -524,6 +547,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
         feedback: decisao.feedback,
         naoSuportado,
         assuntos: assuntosDoTurno,
+        composicao: composicaoDoTurno,
         escalouPara: especialistaDevolveu ? agentName : null
     };
 }
@@ -580,6 +604,7 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
     let naoSuportadoDetectado = null; // P1-ajustes §5.5
     let escalouParaDetectado = null; // MH-48: sinal de escalada consultável em agent_logs
     let assuntosDetectados = []; // v47 §1: fatos de dose do turno → assunto do envio da resposta
+    let composicaoDetectada = null; // v47 Onda 1 §3.4: composto | fallback_* | canonico_direto
 
     const irAoPrincipal = async (extras = {}) => {
         const r = await turnoDoPrincipal({
@@ -592,6 +617,7 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
         escalouParaDetectado = r.escalouPara ?? escalouParaDetectado;
         if (r.naoSuportado) naoSuportadoDetectado = r.naoSuportado;
         if (r.assuntos?.length) assuntosDetectados = r.assuntos;
+        composicaoDetectada = r.composicao ?? composicaoDetectada;
     };
 
     // ---- 3. Onboarding no RUNNER (v44 M4) — sem mudança (P5).
@@ -643,6 +669,7 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
                 agentName = 'atalho_dose_exato';
                 response = r.texto;
                 assuntosDetectados = assuntosDosFatos(r.executados);
+                composicaoDetectada = 'canonico_direto'; // isenção do compositor (v47 Onda 1 §6.4)
                 console.log(`⚡ [ATALHO] ${atalho.doses.length} dose(s) confirmada(s) sem LLM — ${user.phone}`);
             }
         } else {
@@ -654,14 +681,19 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
     }
 
     // MH-48: quando o turno escalou, o sinal fica consultável em agent_logs.
+    // v47 Onda 1 §3.4: o caminho da mensagem (composto | fallback_* |
+    // canonico_direto) também — sem tabela nova, no contexto do log.
+    const extrasLog = {};
+    if (escalouParaDetectado) extrasLog.escalada = { para: escalouParaDetectado };
+    if (composicaoDetectada) extrasLog.composicao = composicaoDetectada;
     const agentLogId = await logAgentInteraction({
         userId: user.id,
         agent: agentName,
         userMessage: message,
         agentResponse: response,
         estadoConversa: currentState || null,
-        contextoConversa: escalouParaDetectado
-            ? { ...(state?.context || {}), escalada: { para: escalouParaDetectado } }
+        contextoConversa: Object.keys(extrasLog).length
+            ? { ...(state?.context || {}), ...extrasLog }
             : (state?.context || null),
         referenceMessageId: referenceMessageId || null
     });

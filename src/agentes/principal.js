@@ -334,7 +334,9 @@ async function executarAcao(action, user) {
                         unidadeEstoque: statusInfo.unidadeEstoque,
                         medForma: statusInfo.medForma
                     }),
-                    alerta: buildAlertaEstoquePosAjuste(statusInfo)
+                    alerta: buildAlertaEstoquePosAjuste(statusInfo),
+                    // v47 Onda 1 (compositor): dados prontos do fato de estoque.
+                    dados: { medNome: statusInfo.medNome, medicationId: action.medicationId, estoqueNovo, nivel: statusInfo.status }
                 };
             } catch (e) {
                 console.error('⚠️ Erro ao montar mensagem de estoque atualizado:', e.message);
@@ -351,20 +353,38 @@ async function executarAcao(action, user) {
 // v45 P1-ajustes 2 §2 — o texto do turno de estoque é todo do código: uma
 // linha 📦 por remédio, a abertura uma vez só (ausente quando a confirmação de
 // dose do mesmo turno já abriu a mensagem), alertas depois das linhas.
+// v47 Onda 1: devolve { texto, fatos } — os fatos de estoque entram na mesma
+// composição do turno quando há fatos de dose; o texto segue sendo a
+// renderização canônica (fallback e turnos só de ação).
 export async function executarAcoesDoPrincipal(actions, user, { abertura = null } = {}) {
     const linhas = [];
     let alertas = '';
+    const fatos = [];
     for (const acao of actions || []) {
         try {
             const r = await executarAcao(acao, user);
             if (r?.linha) {
                 linhas.push(r.linha);
                 alertas += r.alerta || '';
+                if (r.dados) {
+                    fatos.push({
+                        tipo: 'estoque_atualizado', sujeito: 'usuario',
+                        medicamento: r.dados.medNome, medicationId: r.dados.medicationId,
+                        estoqueNovo: r.dados.estoqueNovo, canonico: r.linha
+                    });
+                    if (r.alerta) {
+                        fatos.push({
+                            tipo: 'alerta_estoque', sujeito: 'usuario', nivel: r.dados.nivel,
+                            medicamento: r.dados.medNome, medicationId: r.dados.medicationId,
+                            canonico: r.alerta.trim()
+                        });
+                    }
+                }
             }
         } catch (e) {
             console.error(`⚠️ Erro ao executar ${acao?.type}:`, e.message);
         }
     }
-    if (!linhas.length) return '';
-    return (abertura ? `${abertura} ` : '') + linhas.join('\n') + alertas;
+    if (!linhas.length) return { texto: '', fatos };
+    return { texto: (abertura ? `${abertura} ` : '') + linhas.join('\n') + alertas, fatos };
 }

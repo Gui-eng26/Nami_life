@@ -161,6 +161,16 @@ const DEGRADACOES = {
     'cadastro:classificador_falha_indeterminado': {
         severidade: 'baixa',
         titulo: 'Classificador de falha (camada 2, MH-073 B.1) falhou — assumido ruido'
+    },
+    // v47 Onda 1 (compositor §2.4): toda queda no fallback canônico é o sinal
+    // de qualidade da composição em produção ("compositor_fallback").
+    'compositor:ancora_reprovou': {
+        severidade: 'media',
+        titulo: 'compositor_fallback: âncora reprovou a composição — saiu o canônico'
+    },
+    'compositor:chamada_falhou': {
+        severidade: 'media',
+        titulo: 'compositor_fallback: falha/timeout da chamada — saiu o canônico'
     }
 };
 
