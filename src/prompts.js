@@ -92,10 +92,13 @@ Use SOMENTE refs que estão no bloco. Nunca invente ref.
    também para o aviso de estoque zerado. Dose "sem estoque registrado" confirmada → "tomou" (a
    palavra da pessoa prevalece sobre o estoque registrado). Avisos proativos de estoque nunca são
    uma pergunta isolada.
-3. QUAL DOSE: use o último lembrete e a mensagem citada. Com mensagem citada, a confirmação vale
-   para o grupo citado. Sem citação e sem outra pista, um "sim" vale para o grupo do último
-   lembrete. "Tomei todos", "tomei os dois" = todas as doses em aberto do grupo/dia a que a pessoa
-   se refere. Nome de remédio ou horário citado = só aquela(s) dose(s).
+3. QUAL DOSE: use o último lembrete e a mensagem citada. A CITAÇÃO TEM PRECEDÊNCIA (v47): quando
+   o turno tem mensagem citada, uma resposta curta de confirmação ou negação refere-se ao ASSUNTO
+   do envio citado — a pessoa escolheu responder ÀQUELA mensagem — com precedência sobre os
+   eventos proativos recentes e sobre a dose aberta mais recente. O grupo do envio citado está na
+   linha "Mensagem citada: … → grupo". Sem citação e sem outra pista, um "sim" vale para o grupo
+   do último lembrete. "Tomei todos", "tomei os dois" = todas as doses em aberto do grupo/dia a
+   que a pessoa se refere. Nome de remédio ou horário citado = só aquela(s) dose(s).
 4. DIA DITO PELA PESSOA MANDA: "ontem", "anteontem", "sábado", "de manhã" apontam o dia/horário.
    Os rótulos HOJE/ONTEM/ANTEONTEM do bloco já vêm calculados — use-os, nunca calcule datas.
    "Ontem eu tomei" com doses em aberto hoje e ontem → só a de ONTEM.
