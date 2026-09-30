@@ -101,6 +101,7 @@ const resumo = texto.replace(/\s+/g, ' ').trim().slice(0, 120);
 // ------------------------------------------------------------
 console.log('\n━━━━━━━━━━━━ PREVIEW — NADA FOI ENVIADO ━━━━━━━━━━━━');
 console.log(`Banco:        ${process.env.SUPABASE_URL}${args.staging ? ' (staging)' : ''}`);
+console.log(`Z-API:        instância ${process.env.ZAPI_INSTANCE_ID || '(não configurada)'} — confira que é a do MESMO ambiente do banco`);
 console.log(`Destinatário: ${user.phone}`);
 console.log(`Nome:         ${user.name || '(sem nome)'}${user.onboarded ? '' : '  ⚠️ NÃO onboarded'}`);
 console.log(`Assunto:      mensagem_direcionada${medsReferidos.length ? ` — medicamentos: ${medsReferidos.map(m => m.nome).join(', ')}` : ' (sem medicamento)'}`);
