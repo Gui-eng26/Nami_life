@@ -34,7 +34,7 @@ import {
     resolverDataReferencia, validarJanela, rotularData, diasAtras, hojeBRT,
     extrairExpressaoData, extrairIntervalo, diasDoIntervalo
 } from '../dataReferencia.js';
-import { rotuloDias } from '../validadores/recorrencia.js';
+import { rotuloDiasPorExtenso } from '../validadores/recorrencia.js';
 import { rotuloDaDose, pluralizarRotulo } from '../validadores/derivacoes.js';
 import {
     montarBlocoFactual, resumirSituacao, molduraPadrao, montarCabecalhoData,
@@ -453,18 +453,21 @@ async function relatorioMeusRemedios({ user, message, params }) {
                 .map(s => ({
                     h: String(s.horario).substring(0, 5),
                     q: Number(s.quantidade_por_dose) || 1,
-                    dias: rotuloDias(s.dias_semana)
+                    // Copy 30/09 (validação Etapa 1): recorrência não-diária por
+                    // extenso e ABRINDO a posologia — "toda terça — 1 comprimido
+                    // às 16:00", nunca uma sigla tímida "(ter)" no fim.
+                    dias: rotuloDiasPorExtenso(s.dias_semana)
                 }))
                 .sort((a, b) => a.h.localeCompare(b.h));
             const quantidadesIguais = new Set(pares.map(par => par.q)).size === 1;
             const diasIguais = new Set(pares.map(par => par.dias || '')).size === 1;
             if (quantidadesIguais && diasIguais) {
                 const q = pares[0].q;
-                posologia = `${q} ${pluralizarRotulo(rotulo, q)} às ${pares.map(par => par.h).join(' e às ')}`
-                    + (pares[0].dias ? ` (${pares[0].dias})` : '');
+                posologia = (pares[0].dias ? `${pares[0].dias} — ` : '')
+                    + `${q} ${pluralizarRotulo(rotulo, q)} às ${pares.map(par => par.h).join(' e às ')}`;
             } else {
                 posologia = pares
-                    .map(par => `${par.h} — ${par.q} ${pluralizarRotulo(rotulo, par.q)}${par.dias ? ` (${par.dias})` : ''}`)
+                    .map(par => `${par.h} — ${par.q} ${pluralizarRotulo(rotulo, par.q)}${par.dias ? `, ${par.dias}` : ''}`)
                     .join(' · ');
             }
         }
@@ -501,11 +504,11 @@ async function relatorioMedicamentoEspecifico({ user, firstName, medicationId })
         .map(sch => ({
             horario: String(sch.horario).slice(0, 5),
             quantidade: Number(sch.quantidade_por_dose),
-            dias: rotuloDias(sch.dias_semana)
+            dias: rotuloDiasPorExtenso(sch.dias_semana)
         }))
         .sort((a, b) => a.horario.localeCompare(b.horario));
     const linhasPosologia = pares
-        .map(par => `   • ${par.horario} — ${par.quantidade} por vez${par.dias ? ` (${par.dias})` : ''}`)
+        .map(par => `   • ${par.horario} — ${par.quantidade} por vez${par.dias ? `, ${par.dias}` : ''}`)
         .join('\n');
 
     const linhas = [`💊 *${med.nome}*${med.dosagem ? ` — ${med.dosagem}` : ''} (${med.forma_farmaceutica})`];

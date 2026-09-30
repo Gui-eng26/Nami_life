@@ -3675,5 +3675,57 @@ export const CASOS = [
             });
             return checks;
         }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A70',
+        marco: 'M4',
+        titulo: 'v47 ajustes pós-validação Etapa 1 (30/09) — recorrência por extenso no relatório; instrução de estoque neutralizado sem "sistema" e apontando a delegação',
+        async executar() {
+            const checks = [];
+            const fs = await import('node:fs');
+            const path = await import('node:path');
+            const url = await import('node:url');
+            const raizSrc = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../src');
+            const ler = (rel) => fs.readFileSync(path.join(raizSrc, rel), 'utf8');
+
+            // Copy: recorrência não-diária por extenso (caso Farmix, "(ter)" tímido).
+            const { rotuloDiasPorExtenso } = await import('../src/validadores/recorrencia.js');
+            const cenarios = [
+                [['ter'], 'toda terça'],
+                [['sab'], 'todo sábado'],
+                [['ter', 'qui'], 'toda terça e toda quinta'],
+                [['seg', 'ter', 'qua', 'qui', 'sex'], 'de segunda a sexta'],
+                [['sab', 'dom'], 'todo sábado e todo domingo'],
+                [[], null],
+                [['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sab'], null]
+            ];
+            const errados = cenarios.filter(([dias, esperado]) => rotuloDiasPorExtenso(dias) !== esperado)
+                .map(([dias]) => `${JSON.stringify(dias)} → ${JSON.stringify(rotuloDiasPorExtenso(dias))}`);
+            checks.push({ nome: `rotuloDiasPorExtenso: ${cenarios.length} cenários (dia único, gênero, lista, faixa, diário=null)`, ok: errados.length === 0, detalhe: errados.join(' | ') || 'todos conforme' });
+
+            const relatorios = ler(path.join('agentes', 'relatorios.js'));
+            checks.push({ nome: 'relatório de remédios usa o rótulo POR EXTENSO (sigla "(ter)" morta no relatório)', ok: /rotuloDiasPorExtenso/.test(relatorios) && !/[^o]rotuloDias\(/.test(relatorios), detalhe: 'listagem + visão do medicamento' });
+
+            // Caso Rivotril: a instrução de neutralização não fala em "sistema" e
+            // manda a ação certa (REGRA ABSOLUTA: não existe outra entidade).
+            const violadoresSistema = [];
+            (function varrer(dir) {
+                for (const nome of fs.readdirSync(dir)) {
+                    const p = path.join(dir, nome);
+                    if (fs.statSync(p).isDirectory()) varrer(p);
+                    else if (p.endsWith('.js') && /comunicado pelo sistema/.test(fs.readFileSync(p, 'utf8'))) violadoresSistema.push(path.relative(raizSrc, p));
+                }
+            })(raizSrc);
+            checks.push({ nome: 'grep: "comunicado pelo sistema" morto em src/', ok: violadoresSistema.length === 0, detalhe: violadoresSistema.join(', ') || 'limpo' });
+            const principal = ler(path.join('agentes', 'principal.js'));
+            checks.push({
+                nome: 'estoque neutralizado (dose em aberto) instrui: pedido de estoque → delegar relatorios/estoque',
+                ok: /não cite um número de memória[\s\S]{0,80}delegue a relatorios com subtipo "estoque"/.test(principal),
+                detalhe: 'instrução acionável no contexto'
+            });
+            return checks;
+        }
     }
 ];

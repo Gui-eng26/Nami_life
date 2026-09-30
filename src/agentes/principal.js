@@ -67,10 +67,14 @@ function textoMedicamentos(medicamentos) {
         const proximaStr = proxima ? `próxima dose: ${proxima.horario} (${proxima.quando})` : 'sem próxima dose calculada';
         // P49: "não informado" nunca vira "estoque: null". §5.7: com dose em
         // aberto, o número pré-débito é neutralizado (autor único do número).
+        // Validação Etapa 1 (30/09, caso Rivotril): a instrução antiga citava
+        // um "sistema" que comunicaria o número, e o principal ECOOU isso à
+        // pessoa (REGRA ABSOLUTA violada) em vez de buscar o valor. Agora ela
+        // manda a ação certa: pedido de estoque → relatorios/estoque (banco).
         const estoque = (m.estoque_atual === null || m.estoque_atual === undefined)
             ? 'estoque: não informado'
             : m.temDoseEmAberto
-                ? 'estoque: registrado (número comunicado pelo sistema após a confirmação — não cite)'
+                ? 'estoque: registrado (não cite um número de memória; se a pessoa PERGUNTAR o estoque, delegue a relatorios com subtipo "estoque")'
                 : `estoque: ${m.estoque_atual}`;
         const status = m.status && m.status !== 'ativo' ? `, ${m.status}` : '';
         return `- [id:${m.id}] ${m.nome} (${m.dosagem || 'dosagem não informada'}, ${estoque}, horários: ${horarios}, ${proximaStr}, tipo: ${m.tipo_tratamento || 'contínuo'}${status})`;

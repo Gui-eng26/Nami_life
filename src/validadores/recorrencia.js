@@ -238,3 +238,25 @@ export function rotuloDias(diasSemana) {
     if (contigua) return `${ROTULO_DIA[ordemUtil[idx[0]]]} a ${ROTULO_DIA[ordemUtil[idx[idx.length - 1]]]}`;
     return idx.map(i => ROTULO_DIA[ordemUtil[i]]).join(' e ');
 }
+
+// v47 (ajustes pós-validação da Etapa 1, 30/09): versão POR EXTENSO do rótulo
+// de dias, para o relatório de remédios — a recorrência não-diária precisa
+// ficar evidente junto do medicamento, nunca uma sigla tímida entre
+// parênteses ("(ter)"). null quando a dose é diária (mesma regra do
+// rotuloDias, que permanece para os resumos compactos da coleta).
+const NOME_DIA_EXTENSO = { dom: 'domingo', seg: 'segunda', ter: 'terça', qua: 'quarta', qui: 'quinta', sex: 'sexta', sab: 'sábado' };
+const DIA_MASCULINO = new Set(['sab', 'dom']);
+
+export function rotuloDiasPorExtenso(diasSemana) {
+    const dias = diasSemana || [];
+    if (dias.length === 0 || dias.length === 7) return null;
+    const ordemUtil = ['seg', 'ter', 'qua', 'qui', 'sex', 'sab', 'dom'];
+    const idx = ORDEM_SEMANA.filter(d => dias.includes(d))
+        .map(d => ordemUtil.indexOf(d)).sort((a, b) => a - b);
+    const contigua = idx.length >= 3 && idx.every((v, i) => i === 0 || v === idx[i - 1] + 1);
+    if (contigua) return `de ${NOME_DIA_EXTENSO[ordemUtil[idx[0]]]} a ${NOME_DIA_EXTENSO[ordemUtil[idx[idx.length - 1]]]}`;
+    return idx.map(i => {
+        const d = ordemUtil[i];
+        return `${DIA_MASCULINO.has(d) ? 'todo' : 'toda'} ${NOME_DIA_EXTENSO[d]}`;
+    }).join(' e ');
+}
