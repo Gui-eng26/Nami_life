@@ -2628,7 +2628,10 @@ export async function registrarAssuntosDoEnvio(envioId, assuntos) {
             envio_id: envioId,
             fato: a.fato,
             dose_log_id: a.doseLogId ?? null,
-            medication_id: a.medicationId ?? null
+            medication_id: a.medicationId ?? null,
+            // v47 Onda 3 §2: detalhe curto e estruturado (etapa/campo/chave) —
+            // nunca texto do usuário.
+            detalhe: a.detalhe ?? null
         }));
         const { error } = await supabase.from('funil_envio_assuntos').insert(linhas);
         if (error) throw new Error(error.message);
@@ -2652,7 +2655,7 @@ export async function getAssuntoDoEnvio(envioId) {
     if (!envioId) return null;
     const { data: assuntos, error } = await supabase
         .from('funil_envio_assuntos')
-        .select('fato, dose_log_id, medication_id')
+        .select('fato, dose_log_id, medication_id, detalhe')
         .eq('envio_id', envioId)
         .order('created_at', { ascending: true });
     if (error) {

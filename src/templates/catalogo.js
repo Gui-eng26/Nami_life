@@ -22,6 +22,14 @@ import {
 } from './estoqueTemplates.js';
 import { textoDeConfirmacao, linhaNaoTomada, linhaDosesRevertidas } from './dose.js';
 import { montarResumoAdesao } from './adesaoTemplates.js';
+import { respostaRecusaAudio, respostaErroTecnico } from '../inventario.js';
+
+// v47 Onda 3: renderizador cuja casa importa ESTE módulo (ex.: reperguntaSegura
+// no router) registra-se aqui no load — o índice aponta sem criar ciclo.
+const TARDIOS = {};
+export function registrarRenderizadorTardio(tipo, fn) {
+    TARDIOS[tipo] = fn;
+}
 
 const CATALOGO = {
     // --- Proativas (scheduler / lembrete / relatorios) ---
@@ -50,7 +58,40 @@ const CATALOGO = {
         : buildAlertaEstoquePosConfirmacao(f.estoqueInfo),
     convite_estoque: (f) => f.motivo === 'estoque_contestado'
         ? buildConviteEstoqueContestado({ medNome: f.medNome })
-        : buildConviteEstoqueNaoCadastrado(f.estoqueInfo)
+        : buildConviteEstoqueNaoCadastrado(f.estoqueInfo),
+
+    // --- Jornada (v47 Onda 3 §1) — entradas canônicas sem ciclo de import ---
+    recusa_audio: () => respostaRecusaAudio(),
+    erro_global: () => respostaErroTecnico(),
+    degradado: (f) => {
+        if (!TARDIOS.degradado) throw new Error('renderizador tardio "degradado" não registrado (router.js o registra no load)');
+        return TARDIOS.degradado(f?.user ?? null);
+    }
+};
+
+// ------------------------------------------------------------
+// v47 Onda 3 §1 — ÍNDICE DA JORNADA: fatos cujo renderizador PERMANECE na
+// casa de origem (a coesão manda — ex.: campo↔pergunta↔validador no schema,
+// grep-guard M2 §8.2 em vigor). O catálogo unifica o LOOKUP e a autoria
+// registrada; não força mudança de casa. `entrada: 'indice'` = apontador
+// (não chamável por renderizarCanonico); os fluxos seguem chamando a casa.
+// ------------------------------------------------------------
+export const INDICE_DA_JORNADA = {
+    pergunta_coleta: {
+        casa: 'schemas/cadastro.js (renderizarPergunta*; montagem em runner.js: montarPerguntaPendente/repetirPergunta)',
+        entrada: 'indice',
+        nota: 'coesão campo↔pergunta↔validador fica no schema — sub-catálogo da coleta'
+    },
+    pergunta_onboarding: { casa: 'schemas/onboarding.js', entrada: 'indice' },
+    pergunta_nascimento: { casa: 'schemas/onboarding.js (etapa onb_nascimento; parsing em dataNascimento.js)', entrada: 'indice' },
+    boas_vindas: { casa: 'schemas/onboarding.js', entrada: 'indice', nota: 'redação-LLM com regras — sem canônico fixo' },
+    dialogo_exclusao: { casa: 'agentes/exclusaoConta.js', entrada: 'indice' },
+    nao_suportado: { casa: 'inventario.js (base) + router.js (composição do turno)', entrada: 'indice' },
+    nunca: { casa: 'inventario.js (fronteira NUNCA)', entrada: 'indice', nota: 'redação-LLM: a postura é escrita pelo principal, a fronteira é a lista' },
+    recusa_audio: { casa: 'inventario.js', entrada: 'canonico' },
+    erro_global: { casa: 'inventario.js', entrada: 'canonico' },
+    degradado: { casa: 'router.js (reperguntaSegura, registrada tardia)', entrada: 'canonico' },
+    configuracao: { casa: 'agentes/configuracao.js', entrada: 'DIVIDA_ETAPA_3', nota: 'fora do catálogo até a reconstrução em runner+schema (Etapa 3)' }
 };
 
 // Fato fora do catálogo é erro de programação, nunca condição de runtime

@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import { getOrCreateUser, getConversationState, logAgentInteraction } from './database.js';
-import { respostaHonestaAindaNao } from './inventario.js';
+// v47 Onda 3 §1.3: textos de sistema do pipeline vivem em inventario.js —
+// este arquivo não contém texto de mensagem (guard A69).
+import { respostaRecusaAudio, respostaErroTecnico } from './inventario.js';
 import { enviarAoUsuario } from './funil.js';
 import { routeMessage } from './router.js';
 import { registrarEvento, tituloEstavel } from './observabilidade.js';
@@ -10,7 +12,7 @@ import { registrarEvento, tituloEstavel } from './observabilidade.js';
 // Constituição regra 6), é registrada em agent_logs e sai pelo funil.
 async function recusarAudio(user, phone) {
     const state = await getConversationState(user.id);
-    const texto = `${respostaHonestaAindaNao('audio')}\n\nPode me escrever o que você disse?`;
+    const texto = respostaRecusaAudio();
 
     const agentLogId = await logAgentInteraction({
         userId: user.id,
@@ -26,7 +28,9 @@ async function recusarAudio(user, phone) {
         userId: user.id,
         texto,
         origem: 'agente:recusa_capacidade',
-        agentLogId
+        agentLogId,
+        // v47 Onda 3 §2: o envio da recusa carrega o assunto.
+        assuntos: [{ fato: 'recusa_audio' }]
     });
 }
 
@@ -86,7 +90,7 @@ export async function handleIncomingMessage({ phone, text, audio, image, message
             await enviarAoUsuario({
                 phone,
                 userId: (typeof user !== 'undefined' && user?.id) ? user.id : null,
-                texto: 'Desculpe, tive um probleminha aqui. Pode repetir o que você disse? 🌿',
+                texto: respostaErroTecnico(),
                 origem: 'agente:erro'
             });
         } catch (sendError) {

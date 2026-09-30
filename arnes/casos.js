@@ -3549,5 +3549,131 @@ export const CASOS = [
             checks.push({ nome: 'catálogo cobre as entradas do §1 (proativas + fatos do turno da Onda 1)', ok: faltando.length === 0, detalhe: faltando.join(', ') || `${FATOS_CATALOGADOS.length} entradas` });
             return checks;
         }
+    },
+
+    // --------------------------------------------------------
+    // v47 ONDA 3 (jornada catalogada, MH-100 D) — fecho da Etapa 1.
+    // --------------------------------------------------------
+    {
+        id: 'A69',
+        marco: 'M4',
+        titulo: 'v47 Onda 3 — guard de cobertura total (casas fechadas de texto), índice da jornada, assunto da jornada e fixtures dos textos de sistema movidos',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const fs = await import('node:fs');
+            const path = await import('node:path');
+            const url = await import('node:url');
+            const raizSrc = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../src');
+
+            // ---- §3: LISTA FECHADA de casas autorizadas a conter texto de
+            // mensagem ao usuário. Casa nova de texto = regressão vermelha.
+            // LIMITES DA HEURÍSTICA (documentados de propósito): detecta emoji
+            // de mensagem em linha de código (fora de comentário // ou * e de
+            // linhas com console.*); fragmentos sem emoji (ex.: aberturas
+            // "Boa", "Perfeito") ficam fora dela — o A31/A47 os cobrem.
+            const CASAS_DE_MENSAGEM = new Set([
+                'inventario.js',        // textos de sistema (ainda não / nunca / recusa / erro)
+                'dataNascimento.js',    // diálogo do nascimento (parsing + textos)
+                'router.js',            // reperguntaSegura + retomadas de coleta (§1.3: aponta, não move)
+                'runner.js',            // conectivos do motor de coleta
+                path.join('agentes', 'exclusaoConta.js'),
+                path.join('agentes', 'relatorios.js'),   // relatórios reativos — casa própria
+                path.join('agentes', 'configuracao.js')  // DÍVIDA ETAPA 3: fora do catálogo até runner+schema
+            ]);
+            const EXCECOES_NAO_MENSAGEM = {
+                'prompts.js': 'prompt de sistema (instrução ao LLM, não mensagem pronta)',
+                'index.js': 'banner de terminal (console multilinha)',
+                'juizOffline.js': 'títulos de observabilidade (system_events)',
+                'dosesDoTurno.js': 'regex de detecção da abertura de confirmação'
+            };
+            const EMOJI_MENSAGEM = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]|⏰|✅|⚠️/u;
+            const arquivos = [];
+            (function varrer(dir) {
+                for (const nome of fs.readdirSync(dir)) {
+                    const p = path.join(dir, nome);
+                    if (fs.statSync(p).isDirectory()) varrer(p);
+                    else if (p.endsWith('.js')) arquivos.push(p);
+                }
+            })(raizSrc);
+            const violacoes = [];
+            for (const p of arquivos) {
+                const rel = path.relative(raizSrc, p);
+                if (rel.startsWith(`templates${path.sep}`) || rel.startsWith(`schemas${path.sep}`)) continue;
+                if (CASAS_DE_MENSAGEM.has(rel) || EXCECOES_NAO_MENSAGEM[rel]) continue;
+                fs.readFileSync(p, 'utf8').split('\n').forEach((l, i) => {
+                    if (/^\s*\/\//.test(l) || /^\s*\*/.test(l) || /console\.(log|error|warn)/.test(l)) return;
+                    if (EMOJI_MENSAGEM.test(l)) violacoes.push(`${rel}:${i + 1}`);
+                });
+            }
+            checks.push({ nome: 'guard §3: nenhuma casa NOVA de texto de mensagem fora da lista fechada (dívida da Etapa 3: agentes/configuracao.js)', ok: violacoes.length === 0, detalhe: violacoes.join(' | ') || 'limpo' });
+
+            // ---- §1: o índice da jornada cobre as entradas do briefing e as
+            // entradas "canonico" existem de fato no catálogo.
+            const { INDICE_DA_JORNADA, FATOS_CATALOGADOS, renderizarCanonico } = await import('../src/templates/catalogo.js');
+            const exigidos = ['pergunta_coleta', 'pergunta_onboarding', 'pergunta_nascimento', 'boas_vindas',
+                'dialogo_exclusao', 'nao_suportado', 'nunca', 'recusa_audio', 'erro_global', 'degradado', 'configuracao'];
+            const semIndice = exigidos.filter(t => !INDICE_DA_JORNADA[t]);
+            checks.push({ nome: 'índice da jornada cobre as entradas do §1.2 (+ dívida da configuração explícita)', ok: semIndice.length === 0 && INDICE_DA_JORNADA.configuracao?.entrada === 'DIVIDA_ETAPA_3', detalhe: semIndice.join(', ') || `${Object.keys(INDICE_DA_JORNADA).length} entradas` });
+            const canonicosSemFn = Object.entries(INDICE_DA_JORNADA)
+                .filter(([, v]) => v.entrada === 'canonico').map(([k]) => k)
+                .filter(k => !FATOS_CATALOGADOS.includes(k));
+            checks.push({ nome: 'toda entrada "canonico" do índice existe no catálogo', ok: canonicosSemFn.length === 0, detalhe: canonicosSemFn.join(', ') || 'todas' });
+            checks.push({ nome: 'boas_vindas marcada como redação-LLM (sem canônico fixo)', ok: /redação-LLM/.test(INDICE_DA_JORNADA.boas_vindas?.nota || ''), detalhe: INDICE_DA_JORNADA.boas_vindas?.nota });
+
+            // ---- §1.3/§4: fixtures dos textos de sistema movidos de agent.js
+            // (fotografia = a composição literal que agent.js fazia em 30/09).
+            const { respostaRecusaAudio, respostaErroTecnico, respostaHonestaAindaNao } = await import('../src/inventario.js');
+            const recusaEsperada = `${respostaHonestaAindaNao('audio')}\n\nPode me escrever o que você disse?`;
+            checks.push({ nome: 'byte-idêntico: recusa de áudio (ex-agent.js)', ok: respostaRecusaAudio() === recusaEsperada && renderizarCanonico('recusa_audio', {}) === recusaEsperada, detalhe: JSON.stringify(respostaRecusaAudio()) });
+            const erroEsperado = 'Desculpe, tive um probleminha aqui. Pode repetir o que você disse? 🌿';
+            checks.push({ nome: 'byte-idêntico: fallback do catch global (ex-agent.js)', ok: respostaErroTecnico() === erroEsperado && renderizarCanonico('erro_global', {}) === erroEsperado, detalhe: JSON.stringify(respostaErroTecnico()) });
+
+            // ---- §1.3: reperguntaSegura fica no router e chega ao catálogo por
+            // registro tardio (importar o router dispara o registro).
+            const { derivarAssuntoDaJornada } = await import('../src/router.js');
+            const degradadoComNome = renderizarCanonico('degradado', { user: { name: 'Fran Silva' } });
+            const degradadoSemNome = renderizarCanonico('degradado', { user: null });
+            checks.push({
+                nome: 'entrada "degradado" rende a reperguntaSegura do router (com e sem nome)',
+                ok: degradadoComNome === 'Fran, desculpa, não consegui te entender direito. 🌿\n\nPode me dizer de outro jeito o que você precisa?'
+                    && degradadoSemNome === 'Desculpa, não consegui te entender direito. 🌿\n\nPode me dizer de outro jeito o que você precisa?',
+                detalhe: JSON.stringify(degradadoComNome)
+            });
+
+            // ---- §2: derivação do assunto da jornada (pura) — agente + estado
+            // pós-turno; configuração fica fora de propósito (§1.4).
+            const cenarios = [
+                ['onboarding em curso (nascimento)', { agente: 'onboarding', estadoPos: { state: 'onboarding', context: { etapa: 'onb_nascimento' } } }, { fato: 'pergunta_nascimento' }],
+                ['onboarding em curso (outra etapa)', { agente: 'onboarding', estadoPos: { state: 'onboarding', context: { etapa: 'onb_lgpd' } } }, { fato: 'pergunta_onboarding', detalhe: 'onb_lgpd' }],
+                ['onboarding encerrou o turno', { agente: 'onboarding', estadoPos: { state: 'post_onboarding', context: {} } }, { fato: 'boas_vindas' }],
+                ['coleta do cadastro aberta', { agente: 'cadastro', estadoPos: { state: 'adding_med', context: { etapa: 'cad_posologia', medication_id: 'm1' } } }, { fato: 'pergunta_coleta', detalhe: 'cad_posologia', medicationId: 'm1' }],
+                ['cadastro concluído (sem pergunta aberta)', { agente: 'cadastro', estadoPos: { state: 'idle', context: {} } }, null],
+                ['exclusão de conta', { agente: 'exclusao_conta', estadoPos: { state: 'aguardando_confirmacao_exclusao', context: {} } }, { fato: 'dialogo_exclusao' }],
+                ['degradado', { agente: 'principal_degradado', estadoPos: { state: 'idle', context: {} } }, { fato: 'degradado' }],
+                ['ainda não (com chave)', { agente: 'principal', estadoPos: { state: 'idle', context: {} }, naoSuportado: { chave: 'audio' } }, { fato: 'nao_suportado', detalhe: 'audio' }],
+                ['configuração fica fora (dívida Etapa 3)', { agente: 'configuracao', estadoPos: { state: 'configurando', context: { etapa: 'identif_intencao' } } }, null],
+                ['atalho exato não é jornada', { agente: 'atalho_dose_exato', estadoPos: { state: 'idle', context: {} } }, null]
+            ];
+            const divergentes = cenarios.filter(([, entrada, esperado]) =>
+                JSON.stringify(derivarAssuntoDaJornada(entrada) ?? null) !== JSON.stringify(esperado ?? null))
+                .map(([rotulo, entrada]) => `${rotulo}: ${JSON.stringify(derivarAssuntoDaJornada(entrada))}`);
+            checks.push({ nome: `assunto da jornada: ${cenarios.length} cenários mapeados (onboarding/nascimento/boas-vindas/coleta/exclusão/degradado/ainda-não; configuração e atalho fora)`, ok: divergentes.length === 0, detalhe: divergentes.join(' | ') || 'todos conforme' });
+
+            // ---- §2: round-trip no banco — o detalhe do assunto persiste.
+            const { registrarAssuntosDoEnvio, getAssuntoDoEnvio } = await import('../src/database.js');
+            const user = await seeds.criarUsuario({ nome: 'Fran', onboarded: true, estado: 'adding_med' });
+            const { med } = await seeds.criarMedicamento({ userId: user.id, nome: 'Puran T4', estoque: null, horarios: ['06:30'] });
+            const { envio } = await seeds.criarEnvioFunil({ user, minutosAtras: 3, origem: 'agente:cadastro', texto: 'Quantos comprimidos de Puran T4 você tem em casa?' });
+            await registrarAssuntosDoEnvio(envio.id, [{ fato: 'pergunta_coleta', detalhe: 'cad_estoque', medicationId: med.id }]);
+            const assunto = await getAssuntoDoEnvio(envio.id);
+            checks.push({
+                nome: 'assunto da jornada persistido e resolvível pela mecânica da Onda 0 (citação dias depois)',
+                ok: assunto?.assuntos?.length === 1 && assunto.assuntos[0].fato === 'pergunta_coleta'
+                    && assunto.assuntos[0].detalhe === 'cad_estoque' && assunto.assuntos[0].medication_id === med.id
+                    && assunto.doses.length === 0,
+                detalhe: JSON.stringify(assunto?.assuntos)
+            });
+            return checks;
+        }
     }
 ];

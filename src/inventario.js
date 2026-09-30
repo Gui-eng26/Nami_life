@@ -153,6 +153,20 @@ export function respostaAindaNaoPadrao({ nome = null, pedido = null } = {}) {
   return `${abertura} Isso eu ainda não consigo fazer: ainda estou em desenvolvimento e aprendendo coisas novas. 🌿`;
 }
 
+// v47 Onda 3 §1.3 — textos de sistema do pipeline, movidos de agent.js POR
+// EQUIVALÊNCIA ESTRITA (fixtures no A69): a casa dos textos de sistema é esta.
+
+// Recusa de áudio (v44 §5.5): a base vem da lista AINDA_NÃO; o convite a
+// escrever fecha a mensagem.
+export function respostaRecusaAudio() {
+  return `${respostaHonestaAindaNao('audio')}\n\nPode me escrever o que você disse?`;
+}
+
+// Fallback do catch global do pipeline (agent.js): o usuário nunca vê erro cru.
+export function respostaErroTecnico() {
+  return 'Desculpe, tive um probleminha aqui. Pode repetir o que você disse? 🌿';
+}
+
 // Compatibilidade: consumidores que enxergam o "ainda não" como lista plana de
 // rótulos (porta, dashboard Corrente 3). Ponto único continua sendo AINDA_NAO.
 export const NAO_SUPORTADO = AINDA_NAO.map(i => i.rotulo);

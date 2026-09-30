@@ -7,6 +7,7 @@ import { montarContextoPrincipal, interpretarComPrincipal, executarAcoesDoPrinci
 import { montarDosesDoTurno, renderizarBlocoDoses, avaliarAtalhoExato, executarAtalho, executarFatosDeDose,
          escolherAbertura, ultimaAberturaDoUsuario } from './dosesDoTurno.js';
 import { comporComAncora } from './compositor.js';
+import { registrarRenderizadorTardio } from './templates/catalogo.js';
 import { executarRunner, executarOnboarding, repetirPergunta } from './runner.js';
 import { SCHEMA_CADASTRO, renderizarFechamentoAnterior } from './schemas/cadastro.js';
 import { handleRelatorios } from './agentes/relatorios.js';
@@ -60,6 +61,33 @@ function primeiroNome(user) {
 function reperguntaSegura(user) {
     const nome = primeiroNome(user);
     return `${nome ? `${nome}, d` : 'D'}esculpa, não consegui te entender direito. 🌿\n\nPode me dizer de outro jeito o que você precisa?`;
+}
+
+// v47 Onda 3 §1.3: a repergunta fica AQUI (aponta, não move); o catálogo a
+// enxerga como entrada 'degradado' via registro tardio (sem ciclo de import).
+registrarRenderizadorTardio('degradado', reperguntaSegura);
+
+// ------------------------------------------------------------
+// v47 Onda 3 §2 — ASSUNTO DA JORNADA: derivado do agente do turno e do estado
+// PÓS-turno (a pergunta que ficou aberta), nunca do texto. Configuração fica
+// fora de propósito (§1.4 — Etapa 3). Pura, exportada para o arnês (A69).
+// ------------------------------------------------------------
+export function derivarAssuntoDaJornada({ agente, estadoPos, naoSuportado = null }) {
+    if (naoSuportado) return { fato: 'nao_suportado', detalhe: naoSuportado.chave || null };
+    const estado = estadoPos?.state || 'idle';
+    const etapa = estadoPos?.context?.etapa || null;
+    if (agente === 'onboarding') {
+        if (estado !== 'onboarding') return { fato: 'boas_vindas' };
+        return etapa === 'onb_nascimento'
+            ? { fato: 'pergunta_nascimento' }
+            : { fato: 'pergunta_onboarding', detalhe: etapa };
+    }
+    if (agente === 'exclusao_conta') return { fato: 'dialogo_exclusao' };
+    if (agente === 'principal_degradado') return { fato: 'degradado' };
+    if (agente === 'cadastro' && ['adding_med', 'cadastrando_medicamento'].includes(estado)) {
+        return { fato: 'pergunta_coleta', detalhe: etapa, medicationId: estadoPos?.context?.medication_id ?? null };
+    }
+    return null;
 }
 
 // Convite de estoque aberto (P1-ajustes §1/§4): a etapa da coleta e os
@@ -678,6 +706,14 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
 
         // ---- 6–7. PRINCIPAL: a única chamada de interpretação do turno.
         if (response === undefined) await irAoPrincipal({ doses });
+    }
+
+    // v47 Onda 3 §2: envio da jornada carrega assunto — quando o turno não
+    // produziu fatos de dose, o assunto vem do agente + estado pós-turno.
+    if (!assuntosDetectados.length && response) {
+        const estadoPos = await getConversationState(user.id);
+        const assuntoJornada = derivarAssuntoDaJornada({ agente: agentName, estadoPos, naoSuportado: naoSuportadoDetectado });
+        if (assuntoJornada) assuntosDetectados = [assuntoJornada];
     }
 
     // MH-48: quando o turno escalou, o sinal fica consultável em agent_logs.
