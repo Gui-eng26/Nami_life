@@ -21,18 +21,15 @@ import { enviarAoUsuario } from '../funil.js';
 import { encontrarMedicamento } from '../nlp_helpers.js';
 import {
     escolherFaixa,
-    montarMensagemSemanal,
-    montarMensagemMensal,
-    montarBlocoMotivo,
-    montarBlocoTurno,
-    montarBlocoTendencia,
-    montarBlocoMarco,
     montarBlocoEstoque,
     escolherFaseProgresso,
     montarMensagemProgresso,
     montarFallbackContinuo,
     montarResumoCompacto
 } from '../templates/adesaoTemplates.js';
+// v47 Onda 2 (MH-100 C): o resumo proativo é FATO + renderização canônica do
+// catálogo — a montagem do texto vive em templates/adesaoTemplates.js.
+import { renderizarCanonico } from '../templates/catalogo.js';
 import {
     resolverDataReferencia, validarJanela, rotularData, diasAtras, hojeBRT,
     extrairExpressaoData, extrairIntervalo, diasDoIntervalo
@@ -819,40 +816,37 @@ export async function enviarResumoSemanal(user) {
             ? 1
             : (adesaoEstado.semana_atual_na_faixa || 1) + 1;
 
-        let texto = isMensal
-            ? montarMensagemMensal({ nome: firstName, taxa: dados.percentual, faixa: faixaNova })
-            : montarMensagemSemanal({ nome: firstName, taxa: dados.percentual, faixa: faixaNova, semana: semanaNova });
-
+        // v47 Onda 2: a DECISÃO de quais blocos entram continua aqui (lógica de
+        // domínio); o texto sai inteiro do catálogo, por equivalência estrita.
         // Bloco motivo dominante — só o de maior contagem entre os 3; empate/zerado, omite
         const motivos = ['nao_tomado', 'nao_informado', 'sem_estoque'];
         const motivoDominante = motivos.reduce((maior, atual) =>
             dados.porStatus[atual] > (dados.porStatus[maior] || 0) ? atual : maior, null);
 
-        if (motivoDominante) {
-            texto += `\n\n${montarBlocoMotivo(motivoDominante)}`;
-
-            // Turno — só no fechamento mensal, só para nao_tomado/nao_informado
-            if (isMensal && motivoDominante !== 'sem_estoque' && dados.diagnosticoPorTurno) {
-                const turno = dados.diagnosticoPorTurno[motivoDominante];
-                if (turno) texto += `\n\n${montarBlocoTurno(turno)}`;
-            }
-        }
+        // Turno — só no fechamento mensal, só para nao_tomado/nao_informado
+        const turnoDiagnostico = (motivoDominante && isMensal && motivoDominante !== 'sem_estoque' && dados.diagnosticoPorTurno)
+            ? (dados.diagnosticoPorTurno[motivoDominante] || null)
+            : null;
 
         // Bloco tendência — compara com o envio automático anterior
+        let tendencia = null;
         if (adesaoEstado.percentual_ultimo_envio !== null && adesaoEstado.percentual_ultimo_envio !== undefined) {
             const diff = dados.percentual - adesaoEstado.percentual_ultimo_envio;
-            const tipoTendencia = diff > 5 ? 'subiu' : diff < -5 ? 'caiu' : 'estavel';
-            texto += `\n\n${montarBlocoTendencia(tipoTendencia, {
+            tendencia = {
+                tipo: diff > 5 ? 'subiu' : diff < -5 ? 'caiu' : 'estavel',
                 taxaAnterior: adesaoEstado.percentual_ultimo_envio,
                 taxaAtual: dados.percentual
-            })}`;
+            };
         }
 
         // Bloco marco — primeira vez alcançando 100%
         const melhorAnterior = adesaoEstado.melhor_faixa_atingida;
-        if (faixaNova === '100' && melhorAnterior !== '100') {
-            texto += `\n\n${montarBlocoMarco()}`;
-        }
+        const marco = faixaNova === '100' && melhorAnterior !== '100';
+
+        const texto = renderizarCanonico('resumo_semanal', {
+            nome: firstName, taxa: dados.percentual, faixa: faixaNova, semana: semanaNova,
+            isMensal, motivoDominante, turnoDiagnostico, tendencia, marco
+        });
 
         await enviarAoUsuario({
             phone: user.phone,

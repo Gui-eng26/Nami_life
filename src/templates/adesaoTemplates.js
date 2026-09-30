@@ -227,3 +227,34 @@ export function montarResumoCompacto(progressos) {
     return `Aqui está o progresso dos seus tratamentos: 💊\n\n${linhas}\n\nQuer detalhes de algum específico? É só me dizer o nome! 😊`;
 }
 
+
+// ============================================================
+// v47 ONDA 2 (MH-100 C) — MONTAGEM DO RESUMO SEMANAL/MENSAL
+// Ex-concatenação inline de relatorios.enviarResumoSemanal, movida POR
+// EQUIVALÊNCIA ESTRITA: mesmos blocos, mesma ordem, mesmos separadores.
+// A DECISÃO de quais blocos entram (motivo dominante, tendência, marco)
+// continua no chamador — aqui vive só o texto.
+// ============================================================
+export function montarResumoAdesao({ nome, taxa, faixa, semana, isMensal,
+                                     motivoDominante = null, turnoDiagnostico = null,
+                                     tendencia = null, marco = false }) {
+    let texto = isMensal
+        ? montarMensagemMensal({ nome, taxa, faixa })
+        : montarMensagemSemanal({ nome, taxa, faixa, semana });
+
+    if (motivoDominante) {
+        texto += `\n\n${montarBlocoMotivo(motivoDominante)}`;
+        if (turnoDiagnostico) texto += `\n\n${montarBlocoTurno(turnoDiagnostico)}`;
+    }
+
+    if (tendencia) {
+        texto += `\n\n${montarBlocoTendencia(tendencia.tipo, {
+            taxaAnterior: tendencia.taxaAnterior,
+            taxaAtual: tendencia.taxaAtual
+        })}`;
+    }
+
+    if (marco) texto += `\n\n${montarBlocoMarco()}`;
+
+    return texto;
+}

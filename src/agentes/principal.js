@@ -26,8 +26,9 @@ import {
     formatarHistoricoConversa
 } from '../database.js';
 // v44 §5.7: nenhum template de estoque vive aqui — autor único é
-// src/templates/estoqueTemplates.js (P30), montado de leitura pós-escrita.
-import { buildAlertaEstoquePosAjuste, buildEstoqueAtualizadoMessage } from '../templates/estoqueTemplates.js';
+// src/templates/ (P30), montado de leitura pós-escrita. v47 Onda 2: o lookup
+// fato → texto passa pelo catálogo (renderização canônica única).
+import { renderizarCanonico } from '../templates/catalogo.js';
 
 export const MODELO_PRINCIPAL = process.env.PRINCIPAL_MODEL || 'claude-sonnet-4-6';
 
@@ -325,7 +326,7 @@ async function executarAcao(action, user) {
                 if (!statusInfo) return '';
                 // Informativo determinístico (nunca o número que o LLM escreveu).
                 return {
-                    linha: buildEstoqueAtualizadoMessage({
+                    linha: renderizarCanonico('estoque_atualizado', {
                         medNome: statusInfo.medNome,
                         estoqueAnterior,
                         estoqueNovo,
@@ -334,7 +335,7 @@ async function executarAcao(action, user) {
                         unidadeEstoque: statusInfo.unidadeEstoque,
                         medForma: statusInfo.medForma
                     }),
-                    alerta: buildAlertaEstoquePosAjuste(statusInfo),
+                    alerta: renderizarCanonico('alerta_estoque', { contexto: 'pos_ajuste', statusInfo }),
                     // v47 Onda 1 (compositor): dados prontos do fato de estoque.
                     dados: { medNome: statusInfo.medNome, medicationId: action.medicationId, estoqueNovo, nivel: statusInfo.status }
                 };

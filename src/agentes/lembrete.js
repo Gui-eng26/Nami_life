@@ -10,45 +10,11 @@ import {
     calcularAlertaEstoque,
     registrarEventoProativo
 } from '../database.js';
-import { buildCobrancaEncerrada } from '../templates/estoqueTemplates.js';
-import { verboDoMedicamento } from '../templates/verbos.js';
+// v47 Onda 2 (MH-100 C): este agente produz o FATO e pede a renderização ao
+// catálogo — nenhum texto ao usuário vive aqui (grep-guard A68).
+import { renderizarCanonico } from '../templates/catalogo.js';
 import { linhaQuantidadeDose } from '../templates/dose.js';
 import { degradar } from '../observabilidade.js';
-
-// ============================================================
-// MENSAGENS DE FOLLOW-UP
-// ============================================================
-
-function buildFollowUpMessage(tentativa, reminder, quantidade = '') {
-    const nome = reminder.user_name
-        ? reminder.user_name.split(' ')[0]
-        : 'você';
-    const remedio = reminder.med_nome || 'seu remédio';
-    const verbo = verboDoMedicamento(reminder.med_forma);
-
-    if (tentativa === 2) {
-        return (
-            `⏰ ${nome}, só passando para lembrar!\n\n` +
-            `Ainda não vi sua confirmação do *${remedio}*.${quantidade}\n` +
-            `${verbo.imperativoPergunta} Responda *SIM* ou *NÃO* 💊`
-        );
-    }
-
-    if (tentativa === 3) {
-        return (
-            `💊 ${nome}, último aviso de hoje!\n\n` +
-            `Seu *${remedio}* ainda está aguardando confirmação.${quantidade}\n` +
-            `${capitalize(verbo.passado)}? É só responder *SIM* ou *NÃO* 🌿`
-        );
-    }
-
-    // Fallback seguro (não deveria ser chamado fora de tentativa 2 ou 3)
-    return `💊 ${nome}, lembrete do *${remedio}*.${quantidade} ${verbo.imperativoPergunta} Responda *SIM* ou *NÃO*`;
-}
-
-function capitalize(texto) {
-    return texto.charAt(0).toUpperCase() + texto.slice(1);
-}
 
 // ============================================================
 // NOTIFICAÇÃO DE CUIDADORES
@@ -72,11 +38,7 @@ async function notificarCuidadores(doseLog, reminder) {
               })
             : 'horário agendado';
 
-        const message =
-            `⚠️ Atenção!\n\n` +
-            `*${nomePaciente}* não confirmou a dose do *${remedio}* ` +
-            `que estava agendada para ${horario}.\n\n` +
-            `Esta foi a 3ª tentativa sem resposta.`;
+        const message = renderizarCanonico('cuidador_follow_up_esgotado', { nomePaciente, remedio, horario });
 
         for (const entry of cuidadores) {
             const phoneCaregiver = entry.caregiver?.phone;
@@ -139,7 +101,7 @@ export async function handleFollowUp({ doseLog, reminder }) {
                 });
             }
 
-            const message = buildFollowUpMessage(tentativa, reminder, quantidade);
+            const message = renderizarCanonico('follow_up', { tentativa, reminder, quantidade });
             // v44 §5.5: envio pelo funil. T0 CONCLUÍDO (19/09): a citação referencia o
             // messageId, nunca o zaapId — o legado zapi_message_id prefere messageId.
             const { envioId, zaapId, messageId } = await enviarAoUsuario({
@@ -190,7 +152,7 @@ export async function handleFollowUp({ doseLog, reminder }) {
                     });
                     if (deveAlertar) {
                         const firstName = reminder.user_name?.split(' ')[0] || 'você';
-                        const msg = buildCobrancaEncerrada(firstName, estoqueInfo);
+                        const msg = renderizarCanonico('cobranca_encerrada', { firstName, estoqueInfo });
                         const { zaapId, messageId } = await enviarAoUsuario({
                             phone: reminder.phone,
                             userId: reminder.user_id ?? null,

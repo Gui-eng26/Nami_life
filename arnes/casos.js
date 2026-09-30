@@ -414,7 +414,8 @@ export const CASOS = [
                 detalhe: blocoP1.split('\n').filter(l => l.includes('[D')).join(' | ')
             });
             // ---- Guardas do v45 P1-copy (textos, sem LLM) ----
-            const { buildEstoqueZeradoMessage } = await import('../src/scheduler.js');
+            // v47 Onda 2: builders proativos moram em templates/ (movidos por equivalência).
+            const { buildEstoqueZeradoMessage } = await import('../src/templates/lembreteTemplates.js');
             const zerado = buildEstoqueZeradoMessage('Eloísa', { med_nome: 'Desogestrel' });
             checks.push({
                 marco: 'M4',
@@ -422,7 +423,8 @@ export const CASOS = [
                 ok: !/não foi possível registrar/i.test(zerado) && /responder SIM que eu registro/.test(zerado),
                 detalhe: zerado.replace(/\n/g, ' / ')
             });
-            const { textoDeConfirmacao, escolherAbertura, aberturaUsada, linhaNaoTomada, ABERTURAS_CONFIRMACAO } = await import('../src/dosesDoTurno.js');
+            const { escolherAbertura, aberturaUsada, ABERTURAS_CONFIRMACAO } = await import('../src/dosesDoTurno.js');
+            const { textoDeConfirmacao, linhaNaoTomada } = await import('../src/templates/dose.js');
             const agoraP1 = new Date();
             const doseHoje = { scheduled_at: new Date(agoraP1.getTime() - 60_000).toISOString(), horario_agendado: '06:28', medications: { nome: 'Roacutan' } };
             const doseOntem = { scheduled_at: new Date(agoraP1.getTime() - 24 * 60 * 60 * 1000).toISOString(), horario_agendado: '06:28', medications: { nome: 'Roacutan' } };
@@ -3246,7 +3248,8 @@ export const CASOS = [
         titulo: 'v47 compositor §6.1 caso-ouro 17:24 — fatos tipados pós-escrita, natureza correcao, âncora aprova/reprova, fallback canônico = montagem atual',
         async executar({ ctx, seeds }) {
             const checks = [];
-            const { executarFatosDeDose, textoDeConfirmacao } = await import('../src/dosesDoTurno.js');
+            const { executarFatosDeDose } = await import('../src/dosesDoTurno.js');
+            const { textoDeConfirmacao } = await import('../src/templates/dose.js');
             const { verificarComposicao, derivarNatureza } = await import('../src/compositor.js');
 
             const user = await seeds.criarUsuario({ nome: 'Guilherme', onboarded: true, estado: 'idle' });
@@ -3366,6 +3369,179 @@ export const CASOS = [
                 ok: /GUIA_COMPOSICAO, GUIA_COMPOSICAO_TURNO.*templates\/composicao\.js/s.test(compositor) && !/COMPOSIÇÃO DA MENSAGEM — vale para toda mensagem/.test(compositor),
                 detalhe: 'fonte única'
             });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    // v47 ONDA 2 (proativas por equivalência, MH-100 C) — 100% determinístico.
+    // --------------------------------------------------------
+    {
+        id: 'A67',
+        marco: 'M4',
+        titulo: 'v47 Onda 2 §2 — equivalência estrita: cada builder movido reproduz byte a byte a fotografia de 30/09 pela rota do catálogo',
+        async executar() {
+            const checks = [];
+            const { renderizarCanonico } = await import('../src/templates/catalogo.js');
+            const { linhaQuantidadeDose } = await import('../src/templates/dose.js');
+
+            // Fotografias capturadas ANTES da movimentação (30/09/2026, builders
+            // originais de scheduler.js/agentes/lembrete.js com entradas fixas).
+            const remComp = { user_name: 'Fran Silva', med_nome: 'Puran T4', med_dosagem: '75mcg', quantidade_por_dose: 1, unidade_dose: 'unidade', forma_farmaceutica: 'comprimido', horario: '06:30:00' };
+            const remGota = { user_name: 'Ana', med_nome: 'Dramin', med_dosagem: null, quantidade_por_dose: 20, unidade_dose: 'gota', forma_farmaceutica: 'gotas', horario: '20:00:00' };
+            const g2 = [
+                { med_nome: 'Creatina', med_dosagem: null, quantidade_por_dose: 2, unidade_dose: 'unidade', forma_farmaceutica: 'capsula' },
+                { med_nome: 'Ômega 3', med_dosagem: '1000mg', quantidade_por_dose: 1, unidade_dose: 'unidade', forma_farmaceutica: 'capsula' }
+            ];
+            const g3 = [...g2, { med_nome: 'Dramin', med_dosagem: '30ml', quantidade_por_dose: 20, unidade_dose: 'gota', forma_farmaceutica: 'gotas' }];
+            const remF = { user_name: 'Fran Silva', med_nome: 'Puran T4', med_forma: 'comprimido' };
+            const qF = linhaQuantidadeDose({ quantidade: 1, unidade_dose: 'unidade', forma_farmaceutica: 'comprimido' });
+            const fg2 = [{ id: 'a', med_nome: 'Creatina', med_forma: 'capsula' }, { id: 'b', med_nome: 'Ômega 3', med_forma: 'capsula' }];
+            const fg3 = [...fg2, { id: 'c', med_nome: 'Dramin', med_forma: 'gotas' }];
+            const qtdParcial = new Map([
+                ['a', linhaQuantidadeDose({ quantidade: 2, unidade_dose: 'unidade', forma_farmaceutica: 'capsula' }, { indentacao: '  ' })],
+                ['c', linhaQuantidadeDose({ quantidade: 20, unidade_dose: 'gota', forma_farmaceutica: 'gotas' }, { indentacao: '  ' })]
+            ]);
+
+            const fixtures = [
+                ['lembrete individual (comprimido, com dosagem)', 'lembrete', { firstName: 'Fran', reminder: remComp },
+                    '⏰ Olá, Fran!\n\nHora do seu *Puran T4* — 75mcg.\nQuantidade: 1 comprimido\n\nJá tomou? Responda *SIM* ou *NÃO* 💊'],
+                ['lembrete individual (gotas, sem dosagem)', 'lembrete', { firstName: 'Ana', reminder: remGota },
+                    '⏰ Olá, Ana!\n\nHora do seu *Dramin*.\nQuantidade: 20 gotas\n\nJá tomou? Responda *SIM* ou *NÃO* 💊'],
+                ['lembrete agrupado (2 itens)', 'lembrete', { firstName: 'Gui', horario: '08:30', grupo: g2 },
+                    '⏰ Gui, hora dos seus remédios das *08:30*! 💊\n\n• *Creatina*\n  Quantidade: 2 cápsulas\n• *Ômega 3* — 1000mg\n  Quantidade: 1 cápsula\n\n✅ Já tomou ou usou todos? Responda *SIM*\n💬 Tomou ou usou só alguns? Me diga quais (ex: "só o Creatina")'],
+                ['lembrete agrupado (3 itens, formas mistas)', 'lembrete', { firstName: 'Gui', horario: '08:30', grupo: g3 },
+                    '⏰ Gui, hora dos seus remédios das *08:30*! 💊\n\n• *Creatina*\n  Quantidade: 2 cápsulas\n• *Ômega 3* — 1000mg\n  Quantidade: 1 cápsula\n• *Dramin* — 30ml\n  Quantidade: 20 gotas\n\n✅ Já tomou ou usou todos? Responda *SIM*\n💬 Tomou ou usou só alguns? Me diga quais (ex: "só o Creatina")'],
+                ['follow-up individual t2 (com quantidade)', 'follow_up', { tentativa: 2, reminder: remF, quantidade: qF },
+                    '⏰ Fran, só passando para lembrar!\n\nAinda não vi sua confirmação do *Puran T4*.\nQuantidade: 1 comprimido\nJá tomou? Responda *SIM* ou *NÃO* 💊'],
+                ['follow-up individual t3 (com quantidade)', 'follow_up', { tentativa: 3, reminder: remF, quantidade: qF },
+                    '💊 Fran, último aviso de hoje!\n\nSeu *Puran T4* ainda está aguardando confirmação.\nQuantidade: 1 comprimido\nTomou? É só responder *SIM* ou *NÃO* 🌿'],
+                ['follow-up individual t2 (sem nome, sem remédio, sem quantidade)', 'follow_up', { tentativa: 2, reminder: { user_name: null, med_nome: null, med_forma: 'gotas' }, quantidade: '' },
+                    '⏰ você, só passando para lembrar!\n\nAinda não vi sua confirmação do *seu remédio*.\nJá tomou? Responda *SIM* ou *NÃO* 💊'],
+                ['follow-up individual fallback (tentativa fora de 2/3)', 'follow_up', { tentativa: 4, reminder: remF, quantidade: qF },
+                    '💊 Fran, lembrete do *Puran T4*.\nQuantidade: 1 comprimido Já tomou? Responda *SIM* ou *NÃO*'],
+                ['follow-up agrupado t2 (2 itens, sem quantidade)', 'follow_up', { tentativa: 2, firstName: 'Gui', horario: '08:30', grupo: fg2, quantidadePorItem: new Map() },
+                    '⏰ Gui, só passando para lembrar!\n\nAinda não vi sua confirmação dos remédios das *08:30*:\n• *Creatina*\n• *Ômega 3*\n\n✅ Já tomou ou usou todos? Responda *SIM*\n💬 Tomou ou usou só alguns? Me diga quais 🌿'],
+                ['follow-up agrupado t3 (3 itens, quantidade parcial)', 'follow_up', { tentativa: 3, firstName: 'Gui', horario: '08:30', grupo: fg3, quantidadePorItem: qtdParcial },
+                    '💊 Gui, último aviso de hoje!\n\nAinda não vi sua confirmação dos remédios das *08:30*:\n• *Creatina*\n  Quantidade: 2 cápsulas\n• *Ômega 3*\n• *Dramin*\n  Quantidade: 20 gotas\n\n✅ Já tomou ou usou todos? Responda *SIM*\n💬 Tomou ou usou só alguns? Me diga quais 🌿'],
+                ['alerta de estoque zerado', 'alerta_estoque_zerado', { firstName: 'Eloísa', reminder: { med_nome: 'Desogestrel' } },
+                    '⏰ Eloísa, está na hora do seu *Desogestrel*!\n\nPelas minhas contas o estoque acabou — mas se você ainda tem e já tomou, é só responder SIM que eu registro. 💊\n\nSe comprou mais, me conta quantos: *"Comprei 30 comprimidos de Desogestrel"*'],
+                ['conclusão de tratamento (1 dia)', 'conclusao_tratamento', { firstName: 'Isaque', med: { nome: 'Amoxicilina', tratamento_dias: 1 } },
+                    '🎉 Isaque, o tratamento com *Amoxicilina* chegou ao fim — 1 dia completinhos!\n\nJá desliguei os lembretes dele pra você.\n\nSe o médico estender o tratamento, é só me pedir pra cadastrar de novo. 🌿'],
+                ['conclusão de tratamento (7 dias)', 'conclusao_tratamento', { firstName: 'Isaque', med: { nome: 'Amoxicilina', tratamento_dias: 7 } },
+                    '🎉 Isaque, o tratamento com *Amoxicilina* chegou ao fim — 7 dias completinhos!\n\nJá desliguei os lembretes dele pra você.\n\nSe o médico estender o tratamento, é só me pedir pra cadastrar de novo. 🌿'],
+                ['conclusão de tratamento (sem duração)', 'conclusao_tratamento', { firstName: 'Isaque', med: { nome: 'Amoxicilina', tratamento_dias: null } },
+                    '🎉 Isaque, o tratamento com *Amoxicilina* chegou ao fim!\n\nJá desliguei os lembretes dele pra você.\n\nSe o médico estender o tratamento, é só me pedir pra cadastrar de novo. 🌿'],
+                ['aviso ao cuidador (follow-up esgotado)', 'cuidador_follow_up_esgotado', { nomePaciente: 'Fran Silva', remedio: 'Puran T4', horario: '06:30' },
+                    '⚠️ Atenção!\n\n*Fran Silva* não confirmou a dose do *Puran T4* que estava agendada para 06:30.\n\nEsta foi a 3ª tentativa sem resposta.'],
+                ['cobrança encerrada (ramo estoque desconhecido) — mesma fotografia do A63', 'cobranca_encerrada', { firstName: 'Guilherme', estoqueInfo: { medNome: 'Creatina', medForma: 'comprimido', estoqueDesconhecido: true } },
+                    '⚠️ Guilherme, não recebi confirmação da sua dose do *Creatina*.\n\nQuando puder, me avise se tomou! 💊'],
+                ['mensagem direcionada (pass-through — o catálogo não redige)', 'mensagem_direcionada', { texto: 'Oi! Texto pronto do Guilherme 🌿' },
+                    'Oi! Texto pronto do Guilherme 🌿']
+            ];
+            for (const [rotulo, tipo, fato, esperado] of fixtures) {
+                const saida = renderizarCanonico(tipo, fato);
+                checks.push({ nome: `byte-idêntico: ${rotulo}`, ok: saida === esperado, detalhe: saida === esperado ? 'igual' : `diferente — atual: ${JSON.stringify(saida)}` });
+            }
+
+            // Resumo semanal/mensal: os blocos usam sorteio — a equivalência da
+            // MONTAGEM é provada com Math.random controlado: primitivas na ordem
+            // atual vs montarResumoAdesao, mesma sequência → mesmo byte.
+            const adesao = await import('../src/templates/adesaoTemplates.js');
+            const sequencia = [0.11, 0.37, 0.53, 0.71, 0.89, 0.23, 0.47, 0.61, 0.79, 0.97, 0.05, 0.31];
+            const comRandomControlado = (fn) => {
+                const original = Math.random;
+                let i = 0;
+                Math.random = () => sequencia[i++ % sequencia.length];
+                try { return fn(); } finally { Math.random = original; }
+            };
+            const cenarios = [
+                ['semanal simples', { nome: 'Fran', taxa: 85, faixa: '80_99', semana: 2, isMensal: false },
+                    () => adesao.montarMensagemSemanal({ nome: 'Fran', taxa: 85, faixa: '80_99', semana: 2 })],
+                ['semanal + motivo + tendência (subiu) + marco', { nome: 'Fran', taxa: 100, faixa: '100', semana: 1, isMensal: false, motivoDominante: 'nao_tomado', tendencia: { tipo: 'subiu', taxaAnterior: 80, taxaAtual: 100 }, marco: true },
+                    () => adesao.montarMensagemSemanal({ nome: 'Fran', taxa: 100, faixa: '100', semana: 1 })
+                        + `\n\n${adesao.montarBlocoMotivo('nao_tomado')}`
+                        + `\n\n${adesao.montarBlocoTendencia('subiu', { taxaAnterior: 80, taxaAtual: 100 })}`
+                        + `\n\n${adesao.montarBlocoMarco()}`],
+                ['mensal + motivo + diagnóstico por turno', { nome: 'Gui', taxa: 60, faixa: '50_79', semana: 3, isMensal: true, motivoDominante: 'nao_informado', turnoDiagnostico: 'manha' },
+                    () => adesao.montarMensagemMensal({ nome: 'Gui', taxa: 60, faixa: '50_79' })
+                        + `\n\n${adesao.montarBlocoMotivo('nao_informado')}`
+                        + `\n\n${adesao.montarBlocoTurno('manha')}`],
+                ['mensal + motivo sem_estoque (sem turno) + tendência (caiu)', { nome: 'Gui', taxa: 40, faixa: 'abaixo_50', semana: 1, isMensal: true, motivoDominante: 'sem_estoque', tendencia: { tipo: 'caiu', taxaAnterior: 70, taxaAtual: 40 } },
+                    () => adesao.montarMensagemMensal({ nome: 'Gui', taxa: 40, faixa: 'abaixo_50' })
+                        + `\n\n${adesao.montarBlocoMotivo('sem_estoque')}`
+                        + `\n\n${adesao.montarBlocoTendencia('caiu', { taxaAnterior: 70, taxaAtual: 40 })}`],
+                ['semanal + tendência estável, sem motivo', { nome: 'Ana', taxa: 90, faixa: '80_99', semana: 4, isMensal: false, tendencia: { tipo: 'estavel', taxaAnterior: 88, taxaAtual: 90 } },
+                    () => adesao.montarMensagemSemanal({ nome: 'Ana', taxa: 90, faixa: '80_99', semana: 4 })
+                        + `\n\n${adesao.montarBlocoTendencia('estavel', { taxaAnterior: 88, taxaAtual: 90 })}`]
+            ];
+            for (const [rotulo, fato, montarEsperado] of cenarios) {
+                const esperado = comRandomControlado(montarEsperado);
+                const saida = comRandomControlado(() => renderizarCanonico('resumo_semanal', fato));
+                checks.push({ nome: `resumo (montagem) byte-idêntico: ${rotulo}`, ok: saida === esperado, detalhe: saida === esperado ? 'igual' : `esperado: ${JSON.stringify(esperado)} — atual: ${JSON.stringify(saida)}` });
+            }
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A68',
+        marco: 'M4',
+        titulo: 'v47 Onda 2 §3 — grep-guards: nenhum texto proativo fora de templates/; lookup canônico só pelo catálogo',
+        async executar() {
+            const checks = [];
+            const fs = await import('node:fs');
+            const path = await import('node:path');
+            const url = await import('node:url');
+            const raizSrc = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../src');
+            const ler = (rel) => fs.readFileSync(path.join(raizSrc, rel), 'utf8');
+
+            // §3.1 — nenhum template literal de mensagem ao usuário nas casas de
+            // orquestração: fora de comentário e de console.*, nenhuma string com
+            // emoji de mensagem sobrevive em scheduler/lembrete (e no caminho
+            // proativo de relatorios — o resumo semanal).
+            const EMOJI_MENSAGEM = /[⏰💊✅⚠️📦🎉🔔🌿😊❌📣🚨]/u;
+            const codigoSemLogsEComentarios = (c) => c.split('\n')
+                .filter(l => !/^\s*\/\//.test(l) && !/console\.(log|error|warn)/.test(l) && !/^\s*\*/.test(l))
+                .join('\n');
+            for (const arquivo of ['scheduler.js', path.join('agentes', 'lembrete.js')]) {
+                const resto = codigoSemLogsEComentarios(ler(arquivo));
+                const m = resto.match(EMOJI_MENSAGEM);
+                checks.push({ nome: `grep (§3.1): nenhum texto de mensagem em ${arquivo}`, ok: !m, detalhe: m ? `emoji "${m[0]}" fora de log/comentário` : 'limpo' });
+            }
+            const relatorios = ler(path.join('agentes', 'relatorios.js'));
+            const idxResumo = relatorios.indexOf('async function enviarResumoSemanal');
+            const corpoResumo = idxResumo >= 0 ? relatorios.slice(idxResumo) : '';
+            const mResumo = codigoSemLogsEComentarios(corpoResumo).match(EMOJI_MENSAGEM);
+            checks.push({ nome: 'grep (§3.1): caminho proativo de relatorios (enviarResumoSemanal) sem texto de mensagem', ok: idxResumo >= 0 && !mResumo, detalhe: mResumo ? `emoji "${mResumo[0]}"` : 'limpo' });
+            const montadoresDeResumo = /montarMensagemSemanal|montarMensagemMensal|montarBlocoMotivo|montarBlocoTurno|montarBlocoTendencia|montarBlocoMarco|montarResumoAdesao/;
+            checks.push({ nome: 'grep (§3.1): relatorios não monta o resumo peça a peça (só o fato + catálogo)', ok: !montadoresDeResumo.test(relatorios), detalhe: 'montagem no catálogo' });
+
+            // §3.2 — o lookup fato → texto acontece só via templates/catalogo.js:
+            // fora de templates/, nenhum módulo referencia os renderizadores
+            // canônicos diretamente (atalho, âncora e proativas inclusos).
+            const RENDERIZADORES = /buildReminderMessage|buildGroupedReminderMessage|buildFollowUpMessage|buildGroupedFollowUpMessage|buildEstoqueZeradoMessage|buildConclusaoTratamentoMessage|buildCuidadorFollowUpEsgotado|buildCobrancaEncerrada|buildConviteEstoqueNaoCadastrado|buildConviteEstoqueContestado|buildAlertaEstoquePosConfirmacao|buildAlertaEstoquePosAjuste|buildEstoqueAtualizadoMessage|textoDeConfirmacao|linhaNaoTomada|linhaDosesRevertidas|montarResumoAdesao/;
+            const arquivos = [];
+            (function varrer(dir) {
+                for (const nome of fs.readdirSync(dir)) {
+                    const p = path.join(dir, nome);
+                    if (fs.statSync(p).isDirectory()) { if (path.basename(p) !== 'templates') varrer(p); }
+                    else if (p.endsWith('.js') && !p.includes(`${path.sep}templates${path.sep}`)) arquivos.push(p);
+                }
+            })(raizSrc);
+            const violadores = arquivos
+                .filter(p => RENDERIZADORES.test(fs.readFileSync(p, 'utf8')))
+                .map(p => path.relative(raizSrc, p));
+            checks.push({ nome: 'grep (§3.2): nenhuma renderização canônica fora do catálogo (src/ fora de templates/)', ok: violadores.length === 0, detalhe: violadores.join(', ') || 'limpo' });
+
+            // O catálogo cobre todas as entradas da onda (§1).
+            const { FATOS_CATALOGADOS } = await import('../src/templates/catalogo.js');
+            const exigidos = ['lembrete', 'follow_up', 'cobranca_encerrada', 'alerta_estoque_zerado', 'conclusao_tratamento',
+                'resumo_semanal', 'mensagem_direcionada', 'cuidador_follow_up_esgotado',
+                'dose_confirmada', 'dose_nao_tomada', 'dose_revertida', 'estoque_atualizado', 'alerta_estoque', 'convite_estoque'];
+            const faltando = exigidos.filter(t => !FATOS_CATALOGADOS.includes(t));
+            checks.push({ nome: 'catálogo cobre as entradas do §1 (proativas + fatos do turno da Onda 1)', ok: faltando.length === 0, detalhe: faltando.join(', ') || `${FATOS_CATALOGADOS.length} entradas` });
             return checks;
         }
     }

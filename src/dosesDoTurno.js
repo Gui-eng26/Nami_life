@@ -21,45 +21,18 @@ import {
     getEstoqueInfoParaAlerta, contarConfirmacoesHoje, calcularAlertaEstoque,
     classificarNivelEstoquePorDias, getUltimasRespostasDaNami
 } from './database.js';
-import { buildAlertaEstoquePosConfirmacao, buildConviteEstoqueNaoCadastrado, buildConviteEstoqueContestado } from './templates/estoqueTemplates.js';
+// v47 Onda 2 (MH-100 C): rótulos de tempo e fragmentos canônicos de dose
+// moram em templates/dose.js (por equivalência estrita); a renderização
+// canônica sai SÓ do catálogo — este módulo produz fatos e estrutura.
+import { dataISOBRT, horaBRT, ddmm, calcularRotuloDia, horaDaDose, quandoDaDose, descreverDose } from './templates/dose.js';
+import { renderizarCanonico } from './templates/catalogo.js';
 import { degradar } from './observabilidade.js';
 
-const FUSO = 'America/Sao_Paulo';
 const DIAS_SEMANA_CURTO = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
-
-// ------------------------------------------------------------
-// Rótulos de tempo — sempre calculados aqui, nunca pelo LLM (BUG-059).
-// ------------------------------------------------------------
-
-function dataISOBRT(data) {
-    return new Date(data).toLocaleDateString('en-CA', { timeZone: FUSO });
-}
-
-function horaBRT(data) {
-    return new Date(data).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: FUSO });
-}
-
-function ddmm(dataISO) {
-    const [, m, d] = dataISO.split('-');
-    return `${d}/${m}`;
-}
 
 function diaSemanaCurto(dataISO) {
     const [a, m, d] = dataISO.split('-').map(Number);
     return DIAS_SEMANA_CURTO[new Date(Date.UTC(a, m - 1, d)).getUTCDay()];
-}
-
-// 'hoje' | 'ontem' | 'anteontem' | null (fora da janela).
-export function calcularRotuloDia(scheduledAt, agora = new Date()) {
-    const alvo = dataISOBRT(scheduledAt);
-    for (const [rotulo, dias] of [['hoje', 0], ['ontem', 1], ['anteontem', 2]]) {
-        if (alvo === dataISOBRT(new Date(agora.getTime() - dias * 24 * 60 * 60 * 1000))) return rotulo;
-    }
-    return null;
-}
-
-function horaDaDose(dose) {
-    return dose.horario_agendado ? String(dose.horario_agendado).slice(0, 5) : horaBRT(dose.scheduled_at);
 }
 
 function momentoDoLembrete(dose) {
@@ -363,7 +336,7 @@ async function alertaEstoquePosConfirmacao(medicationId) {
         if (estoqueInfo.estoqueDesconhecido) {
             // Estoque nunca informado (ou contestado): CONVITE, só na 1ª do dia.
             return confirmacoesDoDia <= 1
-                ? { texto: buildConviteEstoqueNaoCadastrado(estoqueInfo), convite: true, nivel: null }
+                ? { texto: renderizarCanonico('convite_estoque', { estoqueInfo }), convite: true, nivel: null }
                 : { texto: '', convite: false, nivel: null };
         }
         const deveAlertar = calcularAlertaEstoque({
@@ -375,7 +348,7 @@ async function alertaEstoquePosConfirmacao(medicationId) {
         });
         if (!deveAlertar) return { texto: '', convite: false, nivel: null };
         return {
-            texto: buildAlertaEstoquePosConfirmacao(estoqueInfo),
+            texto: renderizarCanonico('alerta_estoque', { contexto: 'pos_confirmacao', estoqueInfo }),
             convite: false,
             nivel: classificarNivelEstoquePorDias({ novoEstoque: estoqueInfo.novoEstoque, diasRestantes: estoqueInfo.diasRestantes })
         };
@@ -432,23 +405,6 @@ function primeiroNome(user) {
     return user?.name ? user.name.split(' ')[0] : null;
 }
 
-// P1-copy §2 — regra da data: dose de hoje leva só a hora; de outro dia leva
-// rótulo, data e hora. "de hoje (06:28)", "de ontem (25/09, 06:28)".
-function quandoDaDose(dose, agora = new Date()) {
-    const rotulo = calcularRotuloDia(dose.scheduled_at, agora);
-    const data = ddmm(dataISOBRT(dose.scheduled_at));
-    const hora = horaDaDose(dose);
-    if (rotulo === 'hoje') return { rotulo, entreParenteses: hora };
-    return { rotulo: rotulo || data, entreParenteses: `${data}, ${hora}` };
-}
-
-// "*Roacutan* de ontem (25/09, 06:28)"
-function descreverDose(dose, { negrito = true } = {}) {
-    const nome = dose.medications?.nome || 'seu remédio';
-    const { rotulo, entreParenteses } = quandoDaDose(dose);
-    return `${negrito ? `*${nome}*` : nome} de ${rotulo} (${entreParenteses})`;
-}
-
 // P1-copy §2.1 — abertura variável (lista fechada, aprovada em 26/09). O
 // código escolhe uma DIFERENTE da última confirmação daquela pessoa; o fato
 // que vem depois dela é fixo. Nenhuma chamada de LLM.
@@ -477,31 +433,6 @@ export async function ultimaAberturaDoUsuario(userId) {
         console.error('⚠️ Erro ao ler a última abertura de confirmação:', e.message);
     }
     return null;
-}
-
-// Monta o texto de confirmação (puro — testável sem banco). `confirmadas` e
-// `jaRegistradas` são doses lidas do banco.
-export function textoDeConfirmacao({ abertura, confirmadas, jaRegistradas = [] }) {
-    if (confirmadas.length === 0) return '';
-    if (jaRegistradas.length > 0) {
-        // §4 — confirmação parcial.
-        const agora = confirmadas.map(d => `• ${descreverDose(d, { negrito: false })}`).join('\n');
-        const antes = jaRegistradas.map(d => {
-            const nome = d.medications?.nome || 'seu remédio';
-            return `${nome} (${quandoDaDose(d).entreParenteses})`;
-        }).join(', ');
-        return `${abertura} ✅ Confirmei agora:\n${agora}\n\nJá estavam registradas: ${antes}.`;
-    }
-    if (confirmadas.length === 1) {
-        return `${abertura} ✅ ${descreverDose(confirmadas[0])} confirmada 💊`;
-    }
-    return `${abertura} ✅ Doses confirmadas:\n${confirmadas.map(d => `• ${descreverDose(d)}`).join('\n')}`;
-}
-
-// §2.2 — linha fixa de fato para a dose FECHADA como não tomada (vem depois
-// do acolhimento que o principal escreve).
-export function linhaNaoTomada(dose) {
-    return `O ${descreverDose(dose)} ficou registrado como não tomado.`;
 }
 
 // §6.3: o texto sai de uma leitura do banco DEPOIS da gravação e diz qual
@@ -548,7 +479,7 @@ async function montarTextoPosEscrita({ executados, jaRegistradas = [], user, sem
         fatos.push(fatoDeDose(p, { tipo: 'dose_revertida', statusDevolvido: porId.get(p.id)?.status }));
     }
     for (const p of naoTomadas) {
-        fatos.push(fatoDeDose(p, { tipo: 'dose_nao_tomada', canonico: linhaNaoTomada(porId.get(p.id)) }));
+        fatos.push(fatoDeDose(p, { tipo: 'dose_nao_tomada', canonico: renderizarCanonico('dose_nao_tomada', { dose: porId.get(p.id) }) }));
     }
     for (const p of jaRegistradas.filter(x => x.fato === 'tomou')) {
         if (porId.get(p.id)) fatos.push(fatoDeDose(p, { tipo: 'dose_ja_registrada' }));
@@ -558,16 +489,16 @@ async function montarTextoPosEscrita({ executados, jaRegistradas = [], user, sem
     const abriu = confirmadas.length > 0;
     if (confirmadas.length) {
         const abertura = escolherAbertura({ nome, ultima: await ultimaAberturaDoUsuario(user.id) });
-        antes.push(textoDeConfirmacao({
+        antes.push(renderizarCanonico('dose_confirmada', {
             abertura,
             confirmadas: confirmadas.map(p => porId.get(p.id)),
             jaRegistradas: jaConfirmadas
         }));
     }
     if (desfeitas.length) {
-        antes.push(`Desfiz a confirmação: ${desfeitas.map(p => descreverDose(porId.get(p.id))).join(', ')}. 🌿`);
+        antes.push(renderizarCanonico('dose_revertida', { doses: desfeitas.map(p => porId.get(p.id)) }));
     }
-    const depois = naoTomadas.map(p => linhaNaoTomada(porId.get(p.id)));
+    const depois = naoTomadas.map(p => renderizarCanonico('dose_nao_tomada', { dose: porId.get(p.id) }));
 
     // Estoque: alerta/convite de template, uma vez por medicamento confirmado —
     // exceto o que tem ação de estoque no MESMO turno (a recompra escreve o
@@ -580,7 +511,7 @@ async function montarTextoPosEscrita({ executados, jaRegistradas = [], user, sem
         const dose = porId.get(confirmadas.find(p => p.medicationId === medId).id);
         const medNome = dose?.medications?.nome || 'seu remédio';
         if (contestados.has(medId)) {
-            const fragmento = buildConviteEstoqueContestado({ medNome });
+            const fragmento = renderizarCanonico('convite_estoque', { motivo: 'estoque_contestado', medNome });
             alertas += fragmento;
             convitesEstoque.add(medId);
             fatos.push({ tipo: 'convite_estoque', motivo: 'estoque_contestado', sujeito: 'usuario', medicamento: medNome, medicationId: medId, canonico: fragmento.trim() });

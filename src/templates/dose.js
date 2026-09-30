@@ -143,3 +143,85 @@ const PRONOME_QUANTOS = {
 export function quantosDoRotulo(rotuloPlural) {
     return `${PRONOME_QUANTOS[rotuloPlural] || 'quantos'} ${rotuloPlural}`;
 }
+
+// ============================================================
+// v47 ONDA 2 (MH-100 C) — RÓTULOS DE TEMPO E FRAGMENTOS CANÔNICOS DE DOSE
+// Movidos POR EQUIVALÊNCIA ESTRITA de dosesDoTurno.js (que os importa de
+// volta): os fragmentos viram entradas do catálogo (templates/catalogo.js).
+// Rótulos de tempo sempre calculados em código, nunca pelo LLM (BUG-059).
+// ============================================================
+
+const FUSO = 'America/Sao_Paulo';
+
+export function dataISOBRT(data) {
+    return new Date(data).toLocaleDateString('en-CA', { timeZone: FUSO });
+}
+
+export function horaBRT(data) {
+    return new Date(data).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: FUSO });
+}
+
+export function ddmm(dataISO) {
+    const [, m, d] = dataISO.split('-');
+    return `${d}/${m}`;
+}
+
+// 'hoje' | 'ontem' | 'anteontem' | null (fora da janela).
+export function calcularRotuloDia(scheduledAt, agora = new Date()) {
+    const alvo = dataISOBRT(scheduledAt);
+    for (const [rotulo, dias] of [['hoje', 0], ['ontem', 1], ['anteontem', 2]]) {
+        if (alvo === dataISOBRT(new Date(agora.getTime() - dias * 24 * 60 * 60 * 1000))) return rotulo;
+    }
+    return null;
+}
+
+export function horaDaDose(dose) {
+    return dose.horario_agendado ? String(dose.horario_agendado).slice(0, 5) : horaBRT(dose.scheduled_at);
+}
+
+// P1-copy §2 — regra da data: dose de hoje leva só a hora; de outro dia leva
+// rótulo, data e hora. "de hoje (06:28)", "de ontem (25/09, 06:28)".
+export function quandoDaDose(dose, agora = new Date()) {
+    const rotulo = calcularRotuloDia(dose.scheduled_at, agora);
+    const data = ddmm(dataISOBRT(dose.scheduled_at));
+    const hora = horaDaDose(dose);
+    if (rotulo === 'hoje') return { rotulo, entreParenteses: hora };
+    return { rotulo: rotulo || data, entreParenteses: `${data}, ${hora}` };
+}
+
+// "*Roacutan* de ontem (25/09, 06:28)"
+export function descreverDose(dose, { negrito = true } = {}) {
+    const nome = dose.medications?.nome || 'seu remédio';
+    const { rotulo, entreParenteses } = quandoDaDose(dose);
+    return `${negrito ? `*${nome}*` : nome} de ${rotulo} (${entreParenteses})`;
+}
+
+// Monta o texto de confirmação (puro — testável sem banco). `confirmadas` e
+// `jaRegistradas` são doses lidas do banco.
+export function textoDeConfirmacao({ abertura, confirmadas, jaRegistradas = [] }) {
+    if (confirmadas.length === 0) return '';
+    if (jaRegistradas.length > 0) {
+        // §4 — confirmação parcial.
+        const agora = confirmadas.map(d => `• ${descreverDose(d, { negrito: false })}`).join('\n');
+        const antes = jaRegistradas.map(d => {
+            const nome = d.medications?.nome || 'seu remédio';
+            return `${nome} (${quandoDaDose(d).entreParenteses})`;
+        }).join(', ');
+        return `${abertura} ✅ Confirmei agora:\n${agora}\n\nJá estavam registradas: ${antes}.`;
+    }
+    if (confirmadas.length === 1) {
+        return `${abertura} ✅ ${descreverDose(confirmadas[0])} confirmada 💊`;
+    }
+    return `${abertura} ✅ Doses confirmadas:\n${confirmadas.map(d => `• ${descreverDose(d)}`).join('\n')}`;
+}
+
+// §2.2 — linha fixa de fato para a dose FECHADA como não tomada (vem depois
+// do acolhimento que o principal escreve).
+export function linhaNaoTomada(dose) {
+    return `O ${descreverDose(dose)} ficou registrado como não tomado.`;
+}
+
+// v47 Onda 2: a linha do desfazer (ex-literal de dosesDoTurno.montarTextoPosEscrita).
+export function linhaDosesRevertidas({ doses }) {
+    return `Desfiz a confirmação: ${doses.map(d => descreverDose(d)).join(', ')}. 🌿`;
+}
