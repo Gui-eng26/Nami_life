@@ -843,7 +843,9 @@ export async function confirmDoseByLogId(doseLogId) {
         .update({
             confirmed: true,
             taken_at: new Date().toISOString(),
-            status: 'confirmado'
+            status: 'confirmado',
+            // v47 §4 (BUG-115): o desfazer devolve a dose a este status.
+            status_pre_confirmacao: log.status
         })
         .eq('id', doseLogId);
 
@@ -1027,6 +1029,8 @@ export async function confirmarDoseRetroativa(doseLogId, motivo, { statusPermiti
             status: 'confirmado',
             confirmed: true,
             taken_at: agora,
+            // v47 §4 (BUG-115): o desfazer devolve a dose a este status.
+            status_pre_confirmacao: log.status,
             revertido: true,
             revertido_at: agora,
             revertido_de: log.status,
@@ -1058,14 +1062,19 @@ export async function confirmarDoseRetroativa(doseLogId, motivo, { statusPermiti
 export async function reverterConfirmacao(doseLogId, motivo) {
     const { data: log, error: fetchError } = await supabase
         .from('dose_logs')
-        .select('*, medications(id, nome, estoque_atual)')
+        .select('*, medications(id, nome, estoque_atual, user_id)')
         .eq('id', doseLogId)
         .single();
 
     if (fetchError || !log) throw new Error(`Dose log não encontrado: ${doseLogId}`);
     if (log.status !== 'confirmado') throw new Error(`Dose não está confirmada: ${log.status}`);
 
-    const novoStatus = (log.tentativas < 3) ? 'pendente' : 'nao_tomado';
+    // v47 §4 (BUG-115): desfazer devolve a dose ao status ANTERIOR à confirmação
+    // errada. A heurística só existe para confirmações anteriores à coluna — e
+    // nunca mais devolve 'nao_tomado' (afirmação que a pessoa não fez): sem
+    // resposta às cobranças esgotadas é 'nao_informado'.
+    const novoStatus = log.status_pre_confirmacao
+        || ((log.tentativas < 3) ? 'pendente' : 'nao_informado');
     const agora = new Date().toISOString();
 
     const { error: updateError } = await supabase
@@ -1074,6 +1083,7 @@ export async function reverterConfirmacao(doseLogId, motivo) {
             status: novoStatus,
             confirmed: false,
             taken_at: null,
+            status_pre_confirmacao: null,
             revertido: true,
             revertido_at: agora,
             revertido_de: 'confirmado',
@@ -1083,6 +1093,26 @@ export async function reverterConfirmacao(doseLogId, motivo) {
 
     if (updateError) throw new Error(`Erro ao reverter confirmação: ${updateError.message}`);
     console.log(`↩️ Confirmação revertida — log id: ${doseLogId}, novo status: ${novoStatus}`);
+
+    // §4.4: revertido_* é slot único — a trilha completa da transição vive em
+    // evento de observabilidade (auditoria, não triagem).
+    await registrarEvento({
+        tipo: 'trilha_auditoria',
+        severidade: 'baixa',
+        statusTriagem: 'arquivado',
+        userId: log.medications?.user_id ?? null,
+        agent: 'database',
+        origem: 'outro',
+        titulo: 'Confirmação de dose revertida — transição registrada',
+        payload: {
+            dose_log_id: doseLogId,
+            medication_id: log.medication_id,
+            status_anterior: log.status_pre_confirmacao,
+            status_devolvido: novoStatus,
+            fonte: log.status_pre_confirmacao ? 'status_pre_confirmacao' : 'heuristica',
+            motivo: motivo || 'reversão solicitada pelo usuário'
+        }
+    });
 
     // v43 Bloco C Adendo 1 (P49): estoque NULL ("não informado") nunca é incrementado
     // de volta — se nunca foi decrementado (guarda em confirmDoseByLogId), não há o
@@ -1215,6 +1245,9 @@ export async function confirmarDoseSemEstoque(doseLogId, motivo) {
             status: 'confirmado',
             confirmed: true,
             taken_at: agora,
+            // v47 §4 (BUG-115): desfazer devolve a 'sem_estoque'; a guarda de
+            // estoque (P49) segue intocada — nada foi decrementado aqui.
+            status_pre_confirmacao: log.status,
             revertido: true,
             revertido_at: agora,
             revertido_de: 'sem_estoque',
@@ -2400,7 +2433,7 @@ export function formatarHistoricoConversa(historicoConversa) {
 // usuário, por isso nunca lança exceção — mesmo padrão de registrarEvento/
 // registrarFeedback (observabilidade.js).
 // ============================================================
-export async function registrarEventoProativo({ userId, tipo, medicationId = null, doseLogId = null, tentativa = null, horarioAgendado = null }) {
+export async function registrarEventoProativo({ userId, tipo, medicationId = null, doseLogId = null, tentativa = null, horarioAgendado = null, resumo = null }) {
     try {
         const { error } = await supabase.from('eventos_proativos').insert({
             user_id: userId,
@@ -2408,7 +2441,9 @@ export async function registrarEventoProativo({ userId, tipo, medicationId = nul
             medication_id: medicationId,
             dose_log_id: doseLogId,
             tentativa,
-            horario_agendado: horarioAgendado
+            horario_agendado: horarioAgendado,
+            // v47 §5: resumo curto do conteúdo (hoje só 'mensagem_direcionada').
+            resumo
         });
         if (error) console.error(`[eventos_proativos] Falha ao registrar evento proativo: ${error.message}`);
     } catch (e) {
@@ -2451,7 +2486,7 @@ export async function getContextoProativoRecente(userId, ultimoTurnoAt) {
 
         const { data, error } = await supabase
             .from('eventos_proativos')
-            .select('tipo, tentativa, horario_agendado, enviado_at, medications(nome)')
+            .select('tipo, tentativa, horario_agendado, enviado_at, resumo, medications(nome)')
             .eq('user_id', userId)
             .gt('enviado_at', corteMinimo)
             .order('enviado_at', { ascending: true })
@@ -2473,7 +2508,8 @@ export async function getContextoProativoRecente(userId, ultimoTurnoAt) {
             medicamento: e.medications?.nome || null,
             tentativa: e.tentativa,
             horarioAgendado: e.horario_agendado ? String(e.horario_agendado).substring(0, 5) : null,
-            enviadoAt: e.enviado_at
+            enviadoAt: e.enviado_at,
+            resumo: e.resumo || null
         }));
 
     } catch (e) {
@@ -2577,7 +2613,70 @@ export async function getEnvioFunilPorProviderId(referenceMessageId) {
     return data?.[0] ?? null;
 }
 
+// ============================================================
+// v47 ONDA 1 (§1) — ASSUNTO DO ENVIO (N:N envio ↔ fatos/doses/meds)
+// Registrado no ATO do envio; a resolução de citação passa a ler daqui.
+// ============================================================
+
+// Defensiva como registrarEventoProativo: uma falha no registro do assunto
+// nunca pode impedir (nem desfazer) a mensagem já entregue — registra evento
+// de degradação e segue.
+export async function registrarAssuntosDoEnvio(envioId, assuntos) {
+    if (!envioId || !assuntos?.length) return;
+    try {
+        const linhas = assuntos.map(a => ({
+            envio_id: envioId,
+            fato: a.fato,
+            dose_log_id: a.doseLogId ?? null,
+            medication_id: a.medicationId ?? null
+        }));
+        const { error } = await supabase.from('funil_envio_assuntos').insert(linhas);
+        if (error) throw new Error(error.message);
+    } catch (e) {
+        console.error(`⚠️ [FUNIL] Falha ao registrar assunto do envio ${envioId}: ${e.message}`);
+        await registrarEvento({
+            tipo: 'erro_tecnico',
+            severidade: 'media',
+            agent: 'funil',
+            origem: 'outro',
+            titulo: 'Falha ao registrar assunto do envio no funil',
+            payload: { envio_id: envioId, fatos: (assuntos || []).map(a => a.fato), message: e.message }
+        });
+    }
+}
+
+// Resolução da citação (§1): o assunto do envio → doses/meds. Devolve null
+// quando o envio não tem NENHUMA linha de assunto (envio anterior à migração)
+// — o chamador cai no fallback legado getDosesDoEnvio (funil_envio_id).
+export async function getAssuntoDoEnvio(envioId) {
+    if (!envioId) return null;
+    const { data: assuntos, error } = await supabase
+        .from('funil_envio_assuntos')
+        .select('fato, dose_log_id, medication_id')
+        .eq('envio_id', envioId)
+        .order('created_at', { ascending: true });
+    if (error) {
+        console.error(`⚠️ Erro ao buscar assunto do envio: ${error.message}`);
+        return null;
+    }
+    if (!assuntos?.length) return null;
+
+    const doseIds = [...new Set(assuntos.map(a => a.dose_log_id).filter(Boolean))];
+    let doses = [];
+    if (doseIds.length) {
+        const { data, error: eDoses } = await supabase
+            .from('dose_logs')
+            .select('*, medications(id, nome, user_id)')
+            .in('id', doseIds);
+        if (eDoses) console.error(`⚠️ Erro ao buscar doses do assunto: ${eDoses.message}`);
+        doses = data || [];
+    }
+    return { assuntos, doses };
+}
+
 // Doses vinculadas a um envio do funil (grupo de um lembrete agrupado).
+// v47 §1: fallback LEGADO da citação — envios anteriores à migração não têm
+// linhas de assunto; este caminho por funil_envio_id permanece até a onda 3.
 export async function getDosesDoEnvio(envioId) {
     const { data, error } = await supabase
         .from('dose_logs')

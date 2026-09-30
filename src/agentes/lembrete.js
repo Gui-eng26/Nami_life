@@ -10,7 +10,7 @@ import {
     calcularAlertaEstoque,
     registrarEventoProativo
 } from '../database.js';
-import { buildAlertaEstoqueNaoInformado } from '../templates/estoqueTemplates.js';
+import { buildCobrancaEncerrada } from '../templates/estoqueTemplates.js';
 import { verboDoMedicamento } from '../templates/verbos.js';
 import { linhaQuantidadeDose } from '../templates/dose.js';
 import { degradar } from '../observabilidade.js';
@@ -146,7 +146,9 @@ export async function handleFollowUp({ doseLog, reminder }) {
                 phone: reminder.phone,
                 userId: reminder.user_id ?? null,
                 texto: message,
-                origem: 'proativo:follow_up'
+                origem: 'proativo:follow_up',
+                // v47 §1: assunto registrado no ato do envio.
+                assuntos: [{ fato: 'follow_up', doseLogId: doseLog.id, medicationId: doseLog.medication_id }]
             });
             const zapiMessageId = messageId || zaapId || null;
 
@@ -174,6 +176,9 @@ export async function handleFollowUp({ doseLog, reminder }) {
             await notificarCuidadores(doseLog, reminder);
 
             // MH-026: verificar alerta de estoque (sem verificar 1ª do dia — urgência prevalece)
+            // v47 §2 (BUG-114 camadas a+b): este envio é a COBRANÇA ENCERRADA da dose
+            // (identidade nova), e ganha as duas amarras que o follow-up já tinha e ele
+            // não: zapi_message_id atualizado e assunto registrado no ato do envio.
             try {
                 const estoqueInfo = await getEstoqueInfoParaAlerta(doseLog.medication_id);
                 if (estoqueInfo) {
@@ -185,24 +190,29 @@ export async function handleFollowUp({ doseLog, reminder }) {
                     });
                     if (deveAlertar) {
                         const firstName = reminder.user_name?.split(' ')[0] || 'você';
-                        const msg = buildAlertaEstoqueNaoInformado(firstName, estoqueInfo);
-                        await enviarAoUsuario({
+                        const msg = buildCobrancaEncerrada(firstName, estoqueInfo);
+                        const { zaapId, messageId } = await enviarAoUsuario({
                             phone: reminder.phone,
                             userId: reminder.user_id ?? null,
                             texto: msg,
-                            origem: 'proativo:alerta_estoque_nao_informado'
+                            origem: 'proativo:cobranca_encerrada',
+                            assuntos: [{ fato: 'cobranca_encerrada', doseLogId: doseLog.id, medicationId: doseLog.medication_id }]
                         });
+                        const zapiMessageId = messageId || zaapId || null;
+                        if (zapiMessageId) {
+                            await updateDoseLogZapiMessageId(doseLog.id, zapiMessageId);
+                        }
                         await registrarEventoProativo({
                             userId: reminder.user_id,
-                            tipo: 'alerta_estoque_nao_informado',
+                            tipo: 'cobranca_encerrada',
                             medicationId: doseLog.medication_id,
                             doseLogId: doseLog.id
                         });
-                        console.log(`📦 Alerta de estoque (nao_informado) enviado para ${reminder.phone} — ${estoqueInfo.medNome}`);
+                        console.log(`📦 Cobrança encerrada enviada para ${reminder.phone} — ${estoqueInfo.medNome}`);
                     }
                 }
             } catch (e) {
-                console.error('⚠️ Erro ao enviar alerta estoque (nao_informado):', e.message);
+                console.error('⚠️ Erro ao enviar cobrança encerrada:', e.message);
             }
         }
     } catch (error) {

@@ -39,7 +39,12 @@ export function buildAlertaEstoquePosConfirmacao(info) {
     );
 }
 
-export function buildAlertaEstoqueNaoInformado(firstName, info) {
+// v47 Onda 1 §2 (BUG-114 camada b): renomeada — este envio é a COBRANÇA
+// ENCERRADA da dose (as 3 tentativas se esgotaram), não um alerta de estoque;
+// o rótulo antigo ("alerta de estoque não informado") dava o quadro
+// interpretativo errado. Texto byte-idêntico ao anterior (equivalência
+// estrita, guardada pelo A63 — mover o template de casa é onda 3).
+export function buildCobrancaEncerrada(firstName, info) {
     const { medNome, medForma, novoEstoque, diasRestantes, estoqueDesconhecido } = info;
     const verbo = verboDoMedicamento(medForma);
 

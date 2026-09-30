@@ -2992,5 +2992,246 @@ export const CASOS = [
             checks.push({ nome: 'nenhum Decadron duplicado', ok: meds.length === 1, detalhe: `${meds.length} registro(s)` });
             return checks;
         }
+    },
+
+    // --------------------------------------------------------
+    // v47 ONDA 1 — casos SEM LLM (decisão de 29/09: o portão da onda roda sem
+    // custo; nenhum destes casos chama routeMessage — só funções puras e
+    // escritas diretas pelas funções de produção).
+    // --------------------------------------------------------
+    {
+        id: 'A61',
+        marco: 'M4',
+        titulo: 'v47 §6.1 caso-ouro 29/09 — "tomei" citando a cobrança encerrada: o ASSUNTO devolve a dose citada como candidata única; envio legado cai no fallback',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const { getAssuntoDoEnvio, getDosesDoEnvio, registrarAssuntosDoEnvio, getDosesJanelaPrincipal }
+                = await import('../src/database.js');
+            const { avaliarAtalhoExato, executarAtalho } = await import('../src/dosesDoTurno.js');
+
+            const user = await seeds.criarUsuario({ nome: 'Guilherme', onboarded: true, estado: 'idle' });
+            const { med: creatina, schedules: sC } = await seeds.criarMedicamento({ userId: user.id, nome: 'Creatina', estoque: null, horarios: ['08:30'] });
+            const { med: omega, schedules: sO } = await seeds.criarMedicamento({ userId: user.id, nome: 'Ômega 3', estoque: 30, horarios: ['09:00'] });
+
+            // Cobrança encerrada da Creatina (as 3 tentativas se esgotaram) — envio COM assunto.
+            const { envio } = await seeds.criarEnvioFunil({
+                user, minutosAtras: 60, origem: 'proativo:cobranca_encerrada',
+                texto: '⚠️ Guilherme, não recebi confirmação da sua dose do *Creatina*.\n\nQuando puder, me avise se tomou! 💊'
+            });
+            const doseCreatina = await seeds.criarDose({ medicationId: creatina.id, scheduleId: sC[0].id, horario: '08:30', minutosAtras: 90, status: 'nao_informado', tentativas: 3 });
+            await registrarAssuntosDoEnvio(envio.id, [{ fato: 'cobranca_encerrada', doseLogId: doseCreatina.id, medicationId: creatina.id }]);
+
+            // A dose aberta MAIS RECENTE é de outro remédio — sem a citação, a pista seria ela (o BUG-114).
+            const doseOmega = await seeds.criarDose({ medicationId: omega.id, scheduleId: sO[0].id, horario: '09:00', minutosAtras: 10 });
+
+            const assunto = await getAssuntoDoEnvio(envio.id);
+            checks.push({
+                nome: 'assunto resolvido: fato cobranca_encerrada + a dose da Creatina',
+                ok: assunto?.assuntos?.length === 1 && assunto.assuntos[0].fato === 'cobranca_encerrada'
+                    && assunto?.doses?.length === 1 && assunto.doses[0].id === doseCreatina.id,
+                detalhe: JSON.stringify(assunto?.assuntos || null)
+            });
+
+            const doses = await getDosesJanelaPrincipal(user.id);
+            const atalho = avaliarAtalhoExato({ message: 'tomei', state: { state: 'idle' }, doses, dosesCitadas: assunto?.doses || [] });
+            checks.push({
+                nome: 'avaliarAtalhoExato: candidata ÚNICA = a dose do assunto (Creatina), não a mais recente',
+                ok: !!atalho.doses && atalho.doses.length === 1 && atalho.doses[0].id === doseCreatina.id,
+                detalhe: atalho.doses ? atalho.doses.map(d => d.medications?.nome).join(',') : `motivo: ${atalho.motivo}`
+            });
+
+            // Execução do atalho (sem LLM): retroativa confirmada + status_pre_confirmacao gravado.
+            const exec = await executarAtalho({ user, doses: atalho.doses || [] });
+            const dCreatinaDepois = (await doseLogs(ctx.db, creatina.id)).find(d => d.id === doseCreatina.id);
+            checks.push({
+                nome: 'atalho confirma a dose citada (retroativa) e grava status_pre_confirmacao',
+                ok: exec.ok && dCreatinaDepois?.status === 'confirmado' && dCreatinaDepois?.status_pre_confirmacao === 'nao_informado',
+                detalhe: `status: ${dCreatinaDepois?.status}, pre: ${dCreatinaDepois?.status_pre_confirmacao}`
+            });
+            const dOmegaDepois = (await doseLogs(ctx.db, omega.id)).find(d => d.id === doseOmega.id);
+            checks.push({ nome: 'a dose do Ômega 3 (não citada) segue pendente', ok: dOmegaDepois?.status === 'pendente', detalhe: `status: ${dOmegaDepois?.status}` });
+
+            // LEGADO: envio SEM linhas de assunto → getAssuntoDoEnvio nulo, fallback
+            // por funil_envio_id preserva o comportamento atual.
+            const { envio: envioLegado } = await seeds.criarEnvioFunil({
+                user, minutosAtras: 5, origem: 'proativo:lembrete',
+                texto: '⏰ Olá, Guilherme!\n\nHora do seu *Ômega 3*.\n\nJá tomou? Responda *SIM* ou *NÃO* 💊'
+            });
+            await ctx.db.from('dose_logs').update({ funil_envio_id: envioLegado.id }).eq('id', doseOmega.id);
+            const assuntoLegado = await getAssuntoDoEnvio(envioLegado.id);
+            checks.push({ nome: 'envio legado (sem assunto): getAssuntoDoEnvio devolve nulo', ok: assuntoLegado === null, detalhe: JSON.stringify(assuntoLegado) });
+            const dosesLegado = await getDosesDoEnvio(envioLegado.id);
+            const atalhoLegado = avaliarAtalhoExato({ message: 'tomei', state: { state: 'idle' }, doses: await getDosesJanelaPrincipal(user.id), dosesCitadas: dosesLegado });
+            checks.push({
+                nome: 'fallback legado: a citação resolve pelo funil_envio_id como hoje',
+                ok: dosesLegado.length === 1 && dosesLegado[0].id === doseOmega.id
+                    && !!atalhoLegado.doses && atalhoLegado.doses.length === 1 && atalhoLegado.doses[0].id === doseOmega.id,
+                detalhe: `dosesLegado: ${dosesLegado.length}, atalho: ${atalhoLegado.doses ? 'candidata única' : atalhoLegado.motivo}`
+            });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A62',
+        marco: 'M4',
+        titulo: 'v47 §6.2 (BUG-115) — desfazer devolve a dose ao status ANTERIOR à confirmação; heurística legada nunca mais devolve nao_tomado; trilha presente',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const { confirmDoseByLogId, confirmarDoseRetroativa, confirmarDoseSemEstoque, reverterConfirmacao }
+                = await import('../src/database.js');
+
+            const user = await seeds.criarUsuario({ nome: 'Fran', onboarded: true, estado: 'idle' });
+            // Estoque nulo de propósito: nenhum movimento de estoque entra no caso (P49 intocado).
+            const { med, schedules } = await seeds.criarMedicamento({ userId: user.id, nome: 'Puran T4', estoque: null, horarios: ['08:00'] });
+            const doseDepois = async (id) => (await doseLogs(ctx.db, med.id)).find(d => d.id === id);
+
+            // 1. pendente → confirmada → desfeita → PENDENTE (cobranças ainda valiam).
+            const d1 = await seeds.criarDose({ medicationId: med.id, scheduleId: schedules[0].id, horario: '08:00', minutosAtras: 30, status: 'pendente', tentativas: 1 });
+            await confirmDoseByLogId(d1.id);
+            checks.push({ nome: 'confirmDoseByLogId grava status_pre_confirmacao=pendente', ok: (await doseDepois(d1.id))?.status_pre_confirmacao === 'pendente', detalhe: `pre: ${(await doseDepois(d1.id))?.status_pre_confirmacao}` });
+            const r1 = await reverterConfirmacao(d1.id, 'teste do arnês (§6.2)');
+            checks.push({ nome: 'desfazer devolve pendente', ok: r1.novoStatus === 'pendente' && (await doseDepois(d1.id))?.status === 'pendente', detalhe: `novoStatus: ${r1.novoStatus}` });
+
+            // 2. nao_informado (cobranças esgotadas) → retroativa → desfeita → NAO_INFORMADO.
+            const d2 = await seeds.criarDose({ medicationId: med.id, scheduleId: schedules[0].id, horario: '08:00', minutosAtras: 200, status: 'nao_informado', tentativas: 3 });
+            await confirmarDoseRetroativa(d2.id, 'teste do arnês');
+            checks.push({ nome: 'confirmarDoseRetroativa grava status_pre_confirmacao=nao_informado', ok: (await doseDepois(d2.id))?.status_pre_confirmacao === 'nao_informado', detalhe: `pre: ${(await doseDepois(d2.id))?.status_pre_confirmacao}` });
+            const r2 = await reverterConfirmacao(d2.id, 'teste do arnês (§6.2)');
+            checks.push({ nome: 'desfazer devolve nao_informado', ok: r2.novoStatus === 'nao_informado' && (await doseDepois(d2.id))?.status === 'nao_informado', detalhe: `novoStatus: ${r2.novoStatus}` });
+
+            // 3. sem_estoque → confirmada → desfeita → SEM_ESTOQUE (P49: nada re-incrementa).
+            const d3 = await seeds.criarDose({ medicationId: med.id, scheduleId: schedules[0].id, horario: '08:00', minutosAtras: 100, status: 'sem_estoque', tentativas: 1 });
+            await confirmarDoseSemEstoque(d3.id);
+            checks.push({ nome: 'confirmarDoseSemEstoque grava status_pre_confirmacao=sem_estoque', ok: (await doseDepois(d3.id))?.status_pre_confirmacao === 'sem_estoque', detalhe: `pre: ${(await doseDepois(d3.id))?.status_pre_confirmacao}` });
+            const r3 = await reverterConfirmacao(d3.id, 'teste do arnês (§6.2)');
+            checks.push({ nome: 'desfazer devolve sem_estoque', ok: r3.novoStatus === 'sem_estoque' && (await doseDepois(d3.id))?.status === 'sem_estoque', detalhe: `novoStatus: ${r3.novoStatus}` });
+            const { data: movs } = await ctx.db.from('stock_movements').select('tipo').eq('medication_id', med.id);
+            checks.push({ nome: 'nenhum movimento de estoque no caso inteiro (estoque nulo, P49)', ok: (movs || []).length === 0, detalhe: JSON.stringify(movs) });
+
+            // 4. LEGADO: confirmada ANTES da coluna (nula) + tentativas esgotadas →
+            // heurística corrigida devolve NAO_INFORMADO (nunca mais nao_tomado).
+            const d4 = await seeds.criarDose({ medicationId: med.id, scheduleId: schedules[0].id, horario: '08:00', minutosAtras: 300, status: 'confirmado', tentativas: 3 });
+            const r4 = await reverterConfirmacao(d4.id, 'teste do arnês (§6.2 legado)');
+            checks.push({ nome: 'coluna nula + tentativas esgotadas → nao_informado (não nao_tomado)', ok: r4.novoStatus === 'nao_informado' && (await doseDepois(d4.id))?.status === 'nao_informado', detalhe: `novoStatus: ${r4.novoStatus}` });
+
+            // 5. Trilha (§4.4): cada reversão registrou a transição completa em
+            // evento de observabilidade (tipo trilha_auditoria, arquivado).
+            const { data: eventos } = await ctx.db.from('system_events')
+                .select('payload, status_triagem')
+                .eq('tipo', 'trilha_auditoria')
+                .eq('user_id', user.id);
+            const porDose = new Map((eventos || []).map(e => [e.payload?.dose_log_id, e]));
+            const trilhaOk = [
+                [d1.id, 'pendente', 'status_pre_confirmacao'],
+                [d2.id, 'nao_informado', 'status_pre_confirmacao'],
+                [d3.id, 'sem_estoque', 'status_pre_confirmacao'],
+                [d4.id, 'nao_informado', 'heuristica']
+            ].every(([id, devolvido, fonte]) => {
+                const ev = porDose.get(id);
+                return ev && ev.payload?.status_devolvido === devolvido && ev.payload?.fonte === fonte
+                    && typeof ev.payload?.motivo === 'string' && ev.status_triagem === 'arquivado';
+            });
+            checks.push({ nome: 'trilha de observabilidade: 4 transições completas (status devolvido + fonte + motivo)', ok: trilhaOk, detalhe: `${(eventos || []).length} evento(s)` });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A63',
+        marco: 'M4',
+        titulo: 'v47 §6.3 — equivalência estrita: texto da cobrança encerrada byte-idêntico ao anterior nos dois ramos',
+        async executar() {
+            const checks = [];
+            const { buildCobrancaEncerrada } = await import('../src/templates/estoqueTemplates.js');
+
+            // Snapshots capturados de buildAlertaEstoqueNaoInformado ANTES do rename
+            // (30/09/2026, staging) — a saída da função renomeada tem que sair
+            // byte-idêntica. Mover/alterar o template é onda 3, nunca esta.
+            const esperados = [
+                {
+                    rotulo: 'ramo estoqueDesconhecido',
+                    entrada: ['Guilherme', { medNome: 'Creatina', medForma: 'comprimido', estoqueDesconhecido: true }],
+                    texto: '⚠️ Guilherme, não recebi confirmação da sua dose do *Creatina*.\n\nQuando puder, me avise se tomou! 💊'
+                },
+                {
+                    rotulo: 'ramo com estoque (nível ok)',
+                    entrada: ['Guilherme', { medNome: 'Creatina', medForma: 'comprimido', novoEstoque: 12, diasRestantes: 12, estoqueDesconhecido: false }],
+                    texto: '⚠️ Guilherme, não recebi confirmação da sua dose do *Creatina*.\n\nSeu estoque atual é de *12* unidades — dura mais 12 dias.\nQuando puder, me avise se tomou, e não esqueça de providenciar a recompra! 💊'
+                },
+                {
+                    rotulo: 'ramo com estoque (1 unidade, 1 dia, forma gota)',
+                    entrada: ['Ana', { medNome: 'Gotas X', medForma: 'gota', novoEstoque: 1, diasRestantes: 1, estoqueDesconhecido: false }],
+                    texto: '⚠️ Ana, não recebi confirmação da sua dose do *Gotas X*.\n\nSeu estoque atual é de *1* unidade — dura mais 1 dia.\nQuando puder, me avise se tomou ou usou, e não esqueça de providenciar a recompra! 💊'
+                },
+                {
+                    rotulo: 'ramo com estoque (zerado)',
+                    entrada: ['Ana', { medNome: 'Gotas X', medForma: 'gota', novoEstoque: 0, diasRestantes: 0, estoqueDesconhecido: false }],
+                    texto: '⚠️ Ana, não recebi confirmação da sua dose do *Gotas X*.\n\nSeu estoque atual é de *0* unidades — está esgotado.\nQuando puder, me avise se tomou ou usou, e não esqueça de providenciar a recompra! 💊'
+                }
+            ];
+            for (const { rotulo, entrada, texto } of esperados) {
+                const saida = buildCobrancaEncerrada(...entrada);
+                checks.push({
+                    nome: `byte-idêntico: ${rotulo}`,
+                    ok: saida === texto,
+                    detalhe: saida === texto ? 'igual' : `diferente — atual: ${JSON.stringify(saida)}`
+                });
+            }
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A64',
+        marco: 'M4',
+        titulo: 'v47 §6.4 (grep-guard §8.2 estendido) — todo envio proativo registra assunto; rótulo antigo morto por construção',
+        async executar() {
+            const checks = [];
+            const fs = await import('node:fs');
+            const path = await import('node:path');
+            const url = await import('node:url');
+            const raizSrc = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../src');
+
+            const arquivos = [];
+            (function varrer(dir) {
+                for (const nome of fs.readdirSync(dir)) {
+                    const p = path.join(dir, nome);
+                    if (fs.statSync(p).isDirectory()) varrer(p);
+                    else if (p.endsWith('.js')) arquivos.push(p);
+                }
+            })(raizSrc);
+            const conteudo = new Map(arquivos.map(p => [path.relative(raizSrc, p), fs.readFileSync(p, 'utf8')]));
+
+            // Todo envio com origem 'proativo:*' registra assunto: ou o funil o
+            // recebe no ato (`assuntos:` na chamada), ou o chamador registra logo
+            // depois de criar as doses (registrarAssuntosDoEnvio na vizinhança).
+            const JANELA = 30;
+            const violadores = [];
+            for (const [arquivo, c] of conteudo.entries()) {
+                const linhas = c.split('\n');
+                linhas.forEach((linha, i) => {
+                    if (!/origem: 'proativo:/.test(linha)) return;
+                    const vizinhanca = linhas.slice(Math.max(0, i - JANELA), i + JANELA + 1).join('\n');
+                    if (!/assuntos|registrarAssuntosDoEnvio/.test(vizinhanca)) {
+                        violadores.push(`${arquivo}:${i + 1} (${linha.trim().slice(0, 60)})`);
+                    }
+                });
+            }
+            checks.push({ nome: 'grep: todo envio proativo tem assunto na vizinhança do envio', ok: violadores.length === 0, detalhe: violadores.join(' | ') || 'limpo' });
+
+            // §2.4: o rótulo antigo não nasce mais — nem como origem, nem como
+            // evento proativo novo, nem como nome de builder (rename completo).
+            const origemVelha = [...conteudo.entries()].filter(([, c]) => /proativo:alerta_estoque_nao_informado/.test(c)).map(([f]) => f);
+            checks.push({ nome: "grep: origem 'proativo:alerta_estoque_nao_informado' morta", ok: origemVelha.length === 0, detalhe: origemVelha.join(', ') || 'limpo' });
+            const tipoVelho = [...conteudo.entries()].filter(([, c]) => /tipo: 'alerta_estoque_nao_informado'/.test(c)).map(([f]) => f);
+            checks.push({ nome: 'grep: nenhum evento proativo NOVO com o tipo antigo', ok: tipoVelho.length === 0, detalhe: tipoVelho.join(', ') || 'limpo' });
+            const builderVelho = [...conteudo.entries()].filter(([, c]) => /buildAlertaEstoqueNaoInformado/.test(c)).map(([f]) => f);
+            checks.push({ nome: 'grep: buildAlertaEstoqueNaoInformado não existe mais (rename → buildCobrancaEncerrada)', ok: builderVelho.length === 0, detalhe: builderVelho.join(', ') || 'limpo' });
+            return checks;
+        }
     }
 ];

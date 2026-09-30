@@ -13,7 +13,7 @@
 // ============================================================
 
 import { sendTextMessage } from './whatsapp.js';
-import { registrarEnvioFunil } from './database.js';
+import { registrarEnvioFunil, registrarAssuntosDoEnvio } from './database.js';
 import { registrarEvento } from './observabilidade.js';
 
 let transporte = sendTextMessage;
@@ -27,7 +27,11 @@ export function configurarTransporteParaTestes(fn) {
 // não engole a mensagem já entregue: registra evento de degradação e segue.
 //
 // origem: 'agente:<nome>' | 'proativo:<tipo>' | 'cuidador:<tipo>'
-export async function enviarAoUsuario({ phone, userId = null, texto, origem, agentLogId = null }) {
+// assuntos (v47 §1): [{ fato, doseLogId?, medicationId? }] — o funil registra o
+// ASSUNTO do envio no mesmo ato (fonte de verdade da resolução de citação).
+// Chamador que só conhece as doses DEPOIS do envio (lembretes que criam o
+// dose_log na sequência) registra via registrarAssuntosDoEnvio com o envioId.
+export async function enviarAoUsuario({ phone, userId = null, texto, origem, agentLogId = null, assuntos = null }) {
     const resultado = await transporte(phone, texto);
 
     // T0 CONCLUÍDO (19/09/2026, teste real no staging): o referenceMessageId do
@@ -51,6 +55,10 @@ export async function enviarAoUsuario({ phone, userId = null, texto, origem, age
             titulo: 'Falha ao registrar envio no funil',
             payload: { origem_envio: origem, message: e.message }
         });
+    }
+
+    if (envioId && assuntos?.length) {
+        await registrarAssuntosDoEnvio(envioId, assuntos);
     }
 
     return { envioId, zaapId, messageId };

@@ -858,7 +858,9 @@ export async function enviarResumoSemanal(user) {
             phone: user.phone,
             userId: user.id,
             texto,
-            origem: 'proativo:resumo_semanal'
+            origem: 'proativo:resumo_semanal',
+            // v47 §1: uma linha de assunto por medicamento do período (dose_log_id nulo).
+            assuntos: Object.keys(dados.porMedicamento || {}).map(medId => ({ fato: 'resumo_semanal', medicationId: medId }))
         });
         await registrarEventoProativo({
             userId: user.id,

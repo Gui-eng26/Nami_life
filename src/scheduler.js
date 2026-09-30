@@ -2,7 +2,8 @@ import cron from 'node-cron';
 import 'dotenv/config';
 import { getPendingReminders, getPendingFollowUps, createDoseLog,
     getUsuariosAtivos, updateDoseLogTentativa, registrarEventoProativo,
-    vincularDosesAoEnvio, getTratamentosVencidos, concluirTratamento } from './database.js';
+    vincularDosesAoEnvio, registrarAssuntosDoEnvio,
+    getTratamentosVencidos, concluirTratamento } from './database.js';
 import { enviarAoUsuario } from './funil.js';
 import { handleFollowUp } from './agentes/lembrete.js';
 import { enviarResumoSemanal } from './agentes/relatorios.js';
@@ -90,7 +91,9 @@ export async function concluirTratamentosVencidos() {
                     phone: usuario.phone,
                     userId: usuario.id ?? null,
                     texto: message,
-                    origem: 'proativo:conclusao_tratamento'
+                    origem: 'proativo:conclusao_tratamento',
+                    // v47 §1: assunto registrado no ato do envio.
+                    assuntos: [{ fato: 'conclusao_tratamento', medicationId: med.id }]
                 });
                 await registrarEventoProativo({
                     userId: usuario.id,
@@ -297,6 +300,7 @@ async function sendGroupedReminder(grupo) {
             origem: 'proativo:lembrete'
         });
 
+        const assuntos = [];
         for (const reminder of grupo) {
             const horarioAgendado = String(reminder.horario).substring(0, 5);
             const doseLog = await createDoseLog({
@@ -316,7 +320,11 @@ async function sendGroupedReminder(grupo) {
                 doseLogId: doseLog.id,
                 horarioAgendado
             });
+            assuntos.push({ fato: 'lembrete', doseLogId: doseLog.id, medicationId: reminder.medication_id });
         }
+        // v47 §1: uma linha de assunto por dose do grupo. As doses nascem DEPOIS
+        // do envio, por isso o registro é aqui e não no ato (mesma verdade).
+        await registrarAssuntosDoEnvio(envioId, assuntos);
 
         const nomes = grupo.map(r => r.med_nome).join(', ');
         console.log(`✅ Lembrete agrupado (${grupo.length} doses: ${nomes}) enviado para ${primeiro.phone} — horário ${horario}`);
@@ -400,7 +408,9 @@ async function handleGroupedFollowUp(grupo) {
             phone: primeiro.phone,
             userId: primeiro.user_id ?? null,
             texto: message,
-            origem: 'proativo:follow_up'
+            origem: 'proativo:follow_up',
+            // v47 §1: assunto registrado no ato do envio, uma linha por dose.
+            assuntos: grupo.map(i => ({ fato: 'follow_up', doseLogId: i.id, medicationId: i.medication_id }))
         });
         await vincularDosesAoEnvio(grupo.map(i => i.id), envioId);
 
@@ -487,6 +497,8 @@ async function sendReminder(reminder) {
                 doseLogId: doseLog.id,
                 horarioAgendado
             });
+            // v47 §1: assunto do envio (a dose nasce depois do envio).
+            await registrarAssuntosDoEnvio(envioId, [{ fato: 'alerta_estoque_zerado', doseLogId: doseLog.id, medicationId: reminder.medication_id }]);
 
             console.log(`📦 Aviso de estoque zerado enviado para ${reminder.phone} — ${reminder.med_nome}`);
             return;
@@ -527,6 +539,8 @@ async function sendReminder(reminder) {
             doseLogId: doseLog.id,
             horarioAgendado
         });
+        // v47 §1: assunto do envio (a dose nasce depois do envio).
+        await registrarAssuntosDoEnvio(envioId, [{ fato: 'lembrete', doseLogId: doseLog.id, medicationId: reminder.medication_id }]);
 
         console.log(`✅ Lembrete enviado para ${reminder.phone} — ${reminder.med_nome}`);
 

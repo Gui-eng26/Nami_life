@@ -1,7 +1,7 @@
 import { getConversationState, logAgentInteraction, saveConversationState,
     getHistoricoRecente, getContextoProativoRecente, getUserMedications,
-    getEnvioFunilPorProviderId, getDosesDoEnvio, getDosesJanelaPrincipal,
-    getUltimoTurnoUsuario } from './database.js';
+    getEnvioFunilPorProviderId, getDosesDoEnvio, getAssuntoDoEnvio,
+    getDosesJanelaPrincipal, getUltimoTurnoUsuario } from './database.js';
 import { registrarEvento, registrarFeedback, executarComContagemLLM } from './observabilidade.js';
 import { montarContextoPrincipal, interpretarComPrincipal, executarAcoesDoPrincipal } from './agentes/principal.js';
 import { montarDosesDoTurno, renderizarBlocoDoses, avaliarAtalhoExato, executarAtalho, executarFatosDeDose,
@@ -97,6 +97,16 @@ function montarRetomadaColeta(state, convitesEstoque = new Set()) {
 
 function juntar(...partes) {
     return partes.flat().filter(p => typeof p === 'string' && p.trim()).map(p => p.trim()).join('\n\n');
+}
+
+// v47 §1: os fatos de dose EXECUTADOS no turno viram o assunto do envio da
+// resposta (registrado pelo funil no ato do envio, em agent.js).
+const FATO_ASSUNTO_DO_TURNO = { tomou: 'dose_confirmada', nao_tomou: 'dose_nao_tomada', desfazer: 'dose_desfeita' };
+
+function assuntosDosFatos(executados = []) {
+    return executados
+        .map(p => ({ fato: FATO_ASSUNTO_DO_TURNO[p.fato], doseLogId: p.id, medicationId: p.medicationId }))
+        .filter(a => a.fato);
 }
 
 // ============================================================
@@ -314,7 +324,7 @@ function textoAindaNao({ user, decisao, pedidoAnterior }) {
 async function turnoDoPrincipal({ user, message, image, state, historicoConversa, contextoProativo,
                                   envioCitado, dosesCitadas, doses, especialistaDevolveu = null,
                                   especialistaNaoExecuta = null, pedidoAnterior = null,
-                                  textosAnteriores = [] }) {
+                                  textosAnteriores = [], assuntosAnteriores = [] }) {
     const estado = state?.state || 'idle';
     const { estrutura, mapa } = await montarDosesDoTurno({ userId: user.id, envioCitado, dosesCitadas, doses });
     const pendencia = montarPendencia({ state, historicoConversa, ultimoLembrete: estrutura.ultimoLembrete });
@@ -340,6 +350,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
             agentName: 'principal',
             response: juntar(textosAnteriores, textoAindaNao({ user, decisao: d, pedidoAnterior })),
             feedback: decisao?.feedback ?? null,
+            assuntos: assuntosAnteriores,
             naoSuportado: {
                 pedido: d?.delegar?.pedido || pedidoAnterior || null,
                 especialista: especialistaNaoExecuta,
@@ -351,7 +362,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
     }
 
     if (!decisao) {
-        return { agentName: 'principal_degradado', response: juntar(textosAnteriores, reperguntaSegura(user)), feedback: null };
+        return { agentName: 'principal_degradado', response: juntar(textosAnteriores, reperguntaSegura(user)), feedback: null, assuntos: assuntosAnteriores };
     }
     console.log(`🚪 [PRINCIPAL] tipo: ${decisao.tipo}${decisao.doses.length ? ` · doses: ${decisao.doses.map(d => `${d.ref}:${d.fato}`).join(',')}` : ''}${decisao.delegar ? ` · delegar: ${decisao.delegar.especialista}/${decisao.delegar.relacao_pendencia}` : ''}${decisao.actions.length ? ` · ações: ${decisao.actions.map(a => a.type).join(',')}` : ''} — ${user.phone}`);
 
@@ -372,6 +383,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
     let convitesEstoque = new Set();
     let textoDepoisDaMensagem = '';
     let naoSuportado = null;
+    let assuntosDoTurno = [...assuntosAnteriores];
 
     // Na volta de uma devolução, doses e ações já foram executadas na 1ª rodada.
     const primeiraRodada = !especialistaDevolveu;
@@ -383,8 +395,9 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
         const r = await executarFatosDeDose({ user, fatos: decisao.doses, mapa, semAlertaPara: medsComAcaoDeEstoque });
         if (!r.ok) {
             // §6.1: ref inválida → o turno vira pergunta segura (degradar já registrado).
-            return { agentName: 'principal_degradado', response: juntar(partes, reperguntaSegura(user)), feedback: decisao.feedback };
+            return { agentName: 'principal_degradado', response: juntar(partes, reperguntaSegura(user)), feedback: decisao.feedback, assuntos: assuntosDoTurno };
         }
+        assuntosDoTurno.push(...assuntosDosFatos(r.executados));
         if (r.soJaRegistradas) {
             if (!decisao.message) partes.push('Tudo certo — isso já estava registrado aqui ✅');
         } else if (!r.soAindaNao) {
@@ -448,7 +461,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
                     user, message, image, state: estadoAtual, historicoConversa, contextoProativo,
                     envioCitado, dosesCitadas, doses: await getDosesJanelaPrincipal(user.id),
                     especialistaNaoExecuta: r.especialista, pedidoAnterior: decisao.delegar.pedido,
-                    textosAnteriores: partes
+                    textosAnteriores: partes, assuntosAnteriores: assuntosDoTurno
                 }).then(volta => ({ ...volta, feedback: volta.feedback ?? decisao.feedback }));
             }
             if (r.devolveu) {
@@ -458,7 +471,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
                     if (['configurando', 'aguardando_escolha_tratamento'].includes(estado)) {
                         await saveConversationState(user.id, { state: 'idle', context: {} });
                     }
-                    return { agentName: 'principal_degradado', response: juntar(partes, reperguntaSegura(user)), feedback: decisao.feedback };
+                    return { agentName: 'principal_degradado', response: juntar(partes, reperguntaSegura(user)), feedback: decisao.feedback, assuntos: assuntosDoTurno };
                 }
                 console.log(`🔁 [PRINCIPAL] ${decisao.delegar.especialista} devolveu o turno — uma volta ao principal — ${user.phone}`);
                 const estadoAtual = await getConversationState(user.id);
@@ -466,7 +479,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
                     user, message, image, state: estadoAtual, historicoConversa, contextoProativo,
                     envioCitado, dosesCitadas, doses: await getDosesJanelaPrincipal(user.id),
                     especialistaDevolveu: decisao.delegar.especialista, pedidoAnterior: decisao.delegar.pedido,
-                    textosAnteriores: partes
+                    textosAnteriores: partes, assuntosAnteriores: assuntosDoTurno
                 });
                 return { ...volta, feedback: volta.feedback ?? decisao.feedback, escalouPara: volta.agentName };
             }
@@ -510,6 +523,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
         response: response || reperguntaSegura(user),
         feedback: decisao.feedback,
         naoSuportado,
+        assuntos: assuntosDoTurno,
         escalouPara: especialistaDevolveu ? agentName : null
     };
 }
@@ -541,8 +555,12 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
     if (referenceMessageId) {
         envioCitado = await getEnvioFunilPorProviderId(referenceMessageId);
         if (envioCitado) {
-            dosesCitadas = await getDosesDoEnvio(envioCitado.id);
-            console.log(`💬 [CITAÇÃO] referenceMessageId resolvido no funil (${envioCitado.origem}, ${dosesCitadas.length} dose(s)) — ${user.phone}`);
+            // v47 §1: a fonte de verdade da citação é o ASSUNTO do envio; o
+            // vínculo legado por funil_envio_id fica como fallback para envios
+            // anteriores à migração (sem linhas de assunto).
+            const assunto = await getAssuntoDoEnvio(envioCitado.id);
+            dosesCitadas = assunto ? assunto.doses : await getDosesDoEnvio(envioCitado.id);
+            console.log(`💬 [CITAÇÃO] referenceMessageId resolvido no funil (${envioCitado.origem}, ${dosesCitadas.length} dose(s), via ${assunto ? 'assunto' : 'fallback legado'}) — ${user.phone}`);
         } else {
             console.log(`💬 [CITAÇÃO] referenceMessageId ${referenceMessageId} sem correspondência no funil — ${user.phone}`);
         }
@@ -561,6 +579,7 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
     let feedbackDetectado = null;
     let naoSuportadoDetectado = null; // P1-ajustes §5.5
     let escalouParaDetectado = null; // MH-48: sinal de escalada consultável em agent_logs
+    let assuntosDetectados = []; // v47 §1: fatos de dose do turno → assunto do envio da resposta
 
     const irAoPrincipal = async (extras = {}) => {
         const r = await turnoDoPrincipal({
@@ -572,6 +591,7 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
         feedbackDetectado = r.feedback ?? feedbackDetectado;
         escalouParaDetectado = r.escalouPara ?? escalouParaDetectado;
         if (r.naoSuportado) naoSuportadoDetectado = r.naoSuportado;
+        if (r.assuntos?.length) assuntosDetectados = r.assuntos;
     };
 
     // ---- 3. Onboarding no RUNNER (v44 M4) — sem mudança (P5).
@@ -593,6 +613,7 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
             feedbackDetectado = r.feedback ?? feedbackDetectado;
             escalouParaDetectado = r.agentName;
             if (r.naoSuportado) naoSuportadoDetectado = r.naoSuportado;
+            if (r.assuntos?.length) assuntosDetectados = r.assuntos;
         } else {
             response = resultadoOnboarding;
         }
@@ -621,6 +642,7 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
             if (r.ok) {
                 agentName = 'atalho_dose_exato';
                 response = r.texto;
+                assuntosDetectados = assuntosDosFatos(r.executados);
                 console.log(`⚡ [ATALHO] ${atalho.doses.length} dose(s) confirmada(s) sem LLM — ${user.phone}`);
             }
         } else {
@@ -671,5 +693,6 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
     }
 
     // v44 §5.5: o roteador devolve texto + vínculo — quem ENVIA é só o funil.
-    return { texto: response, agente: agentName, agentLogId };
+    // v47 §1: e devolve os fatos de dose executados, que viram o assunto do envio.
+    return { texto: response, agente: agentName, agentLogId, assuntos: assuntosDetectados };
 }

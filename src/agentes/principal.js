@@ -94,9 +94,14 @@ const ROTULOS_EVENTO_PROATIVO = {
     lembrete: 'lembrete de dose',
     follow_up: 'cobrança de dose',
     alerta_estoque_zerado: 'aviso de estoque zerado (lembrete da dose)',
+    // v47 §2 (BUG-114): identidade nova do envio pós-esgotamento.
+    cobranca_encerrada: 'cobrança encerrada (as cobranças da dose se esgotaram sem resposta)',
+    // Legado: eventos anteriores à v47 ainda existem na tabela.
     alerta_estoque_nao_informado: 'aviso de dose sem confirmação',
     resumo_semanal: 'resumo semanal de adesão',
-    conclusao_tratamento: 'aviso de conclusão de tratamento'
+    conclusao_tratamento: 'aviso de conclusão de tratamento',
+    // v47 §5: mensagem individual escrita/aprovada pela equipe, enviada pela Nami.
+    mensagem_direcionada: 'mensagem individual que você enviou à pessoa'
 };
 
 function textoEventosProativos(eventos) {
@@ -105,10 +110,11 @@ function textoEventosProativos(eventos) {
         const rotulo = ROTULOS_EVENTO_PROATIVO[ev.tipo] || 'mensagem automática';
         const tentativa = ev.tipo === 'follow_up' && ev.tentativa ? ` (cobrança ${ev.tentativa})` : '';
         const med = ev.medicamento ? ` — ${ev.medicamento}${ev.horarioAgendado ? ` (dose das ${ev.horarioAgendado})` : ''}` : '';
+        const resumo = ev.tipo === 'mensagem_direcionada' && ev.resumo ? ` — sobre: "${ev.resumo}"` : '';
         const quando = ev.enviadoAt
             ? ` — ${new Date(ev.enviadoAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' })}`
             : '';
-        return `- ${rotulo}${tentativa}${med}${quando}`;
+        return `- ${rotulo}${tentativa}${med}${resumo}${quando}`;
     }).join('\n');
 }
 

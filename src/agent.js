@@ -48,7 +48,9 @@ export async function handleIncomingMessage({ phone, text, audio, image, message
             userId: user.id,
             texto: resultado.texto,
             origem: `agente:${resultado.agente}`,
-            agentLogId: resultado.agentLogId ?? null
+            agentLogId: resultado.agentLogId ?? null,
+            // v47 §1: os fatos de dose do turno viram o assunto do envio da resposta.
+            assuntos: resultado.assuntos?.length ? resultado.assuntos : null
         });
 
     } catch (error) {
