@@ -1,8 +1,10 @@
 // ============================================================
 // TEMPLATES DE LEMBRETE / FOLLOW-UP / CONCLUSÃO — v47 Onda 2 (MH-100 C)
 //
-// Movidos POR EQUIVALÊNCIA ESTRITA de scheduler.js e agentes/lembrete.js:
-// nenhum caractere de saída mudou (fixtures do A67 provam byte a byte).
+// Movidos POR EQUIVALÊNCIA ESTRITA de scheduler.js e agentes/lembrete.js
+// (fixtures do A67 provam byte a byte). Em seguida, com aprovação do
+// Guilherme (30/09), entraram as 5 melhorias de copy anotadas no relatório
+// da Onda 2 — cada uma marcada "Copy 30/09" no ponto exato.
 // scheduler/lembrete produzem o FATO e pedem a renderização pelo catálogo
 // (templates/catalogo.js) — nunca mais montam string.
 // ============================================================
@@ -54,7 +56,9 @@ export function buildGroupedReminderMessage(firstName, horario, grupo) {
         `⏰ ${firstName}, hora dos seus remédios das *${horario}*! 💊\n\n` +
         `${lista}\n\n` +
         `✅ Já ${verbo.passado} todos? Responda *SIM*\n` +
-        `💬 ${capitalize(verbo.passado)} só alguns? Me diga quais (ex: "só o ${grupo[0].med_nome}")`
+        // Copy 30/09 (Onda 2, nota 4): sem artigo no exemplo — "só o Creatina"
+        // errava o gênero; "só Creatina" vale para qualquer nome.
+        `💬 ${capitalize(verbo.passado)} só alguns? Me diga quais (ex: "só ${grupo[0].med_nome}")`
     );
 }
 
@@ -65,13 +69,15 @@ export function buildFollowUpMessage(tentativa, reminder, quantidade = '') {
     const nome = reminder.user_name
         ? reminder.user_name.split(' ')[0]
         : 'você';
-    const remedio = reminder.med_nome || 'seu remédio';
+    // Copy 30/09 (Onda 2, nota 3): negrito só quando há NOME de remédio —
+    // o genérico "seu remédio" não é um dado para destacar.
+    const remedio = reminder.med_nome ? `*${reminder.med_nome}*` : null;
     const verbo = verboDoMedicamento(reminder.med_forma);
 
     if (tentativa === 2) {
         return (
             `⏰ ${nome}, só passando para lembrar!\n\n` +
-            `Ainda não vi sua confirmação do *${remedio}*.${quantidade}\n` +
+            `Ainda não vi sua confirmação do ${remedio || 'seu remédio'}.${quantidade}\n` +
             `${verbo.imperativoPergunta} Responda *SIM* ou *NÃO* 💊`
         );
     }
@@ -79,13 +85,15 @@ export function buildFollowUpMessage(tentativa, reminder, quantidade = '') {
     if (tentativa === 3) {
         return (
             `💊 ${nome}, último aviso de hoje!\n\n` +
-            `Seu *${remedio}* ainda está aguardando confirmação.${quantidade}\n` +
+            `${remedio ? `Seu ${remedio}` : 'Seu remédio'} ainda está aguardando confirmação.${quantidade}\n` +
             `${capitalize(verbo.passado)}? É só responder *SIM* ou *NÃO* 🌿`
         );
     }
 
-    // Fallback seguro (não deveria ser chamado fora de tentativa 2 ou 3)
-    return `💊 ${nome}, lembrete do *${remedio}*.${quantidade} ${verbo.imperativoPergunta} Responda *SIM* ou *NÃO*`;
+    // Fallback seguro (não deveria ser chamado fora de tentativa 2 ou 3).
+    // Copy 30/09 (Onda 2, nota 2): quebra de linha antes da pergunta — antes a
+    // quantidade emendava na pergunta ("…1 comprimido Já tomou?").
+    return `💊 ${nome}, lembrete do ${remedio || 'seu remédio'}.${quantidade}\n${verbo.imperativoPergunta} Responda *SIM* ou *NÃO*`;
 }
 
 // ------------------------------------------------------------
@@ -125,8 +133,10 @@ export function buildEstoqueZeradoMessage(firstName, reminder) {
 // Template determinístico (regra 2: fato pós-escrita; tom de celebração leve).
 // ------------------------------------------------------------
 export function buildConclusaoTratamentoMessage(firstName, med) {
+    // Copy 30/09 (Onda 2, nota 1): concordância — "1 dia completinho",
+    // "7 dias completinhos" (antes: "1 dia completinhos").
     const duracao = med.tratamento_dias
-        ? ` — ${med.tratamento_dias} ${Number(med.tratamento_dias) === 1 ? 'dia' : 'dias'} completinhos`
+        ? ` — ${med.tratamento_dias} ${Number(med.tratamento_dias) === 1 ? 'dia completinho' : 'dias completinhos'}`
         : '';
     return (
         `🎉 ${firstName}, o tratamento com *${med.nome}* chegou ao fim${duracao}!\n\n` +
@@ -139,10 +149,12 @@ export function buildConclusaoTratamentoMessage(firstName, med) {
 // AVISO AO CUIDADOR (follow-up esgotado) — ex-literal de lembrete.notificarCuidadores
 // ------------------------------------------------------------
 export function buildCuidadorFollowUpEsgotado({ nomePaciente, remedio, horario }) {
+    // Copy 30/09 (Onda 2, nota 5): sem número de tentativa cravado no texto —
+    // o fato é que as cobranças do dia se esgotaram sem resposta.
     return (
         `⚠️ Atenção!\n\n` +
         `*${nomePaciente}* não confirmou a dose do *${remedio}* ` +
         `que estava agendada para ${horario}.\n\n` +
-        `Esta foi a 3ª tentativa sem resposta.`
+        `As tentativas de hoje se esgotaram sem resposta.`
     );
 }

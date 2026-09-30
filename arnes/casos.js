@@ -3386,7 +3386,10 @@ export const CASOS = [
             const { linhaQuantidadeDose } = await import('../src/templates/dose.js');
 
             // Fotografias capturadas ANTES da movimentação (30/09/2026, builders
-            // originais de scheduler.js/agentes/lembrete.js com entradas fixas).
+            // originais de scheduler.js/agentes/lembrete.js com entradas fixas),
+            // ATUALIZADAS em 30/09 para as 5 melhorias de copy aprovadas pelo
+            // Guilherme (relatório da Onda 2, item 3) — estas fixtures congelam
+            // o texto NOVO; qualquer mudança futura é decisão, nunca acidente.
             const remComp = { user_name: 'Fran Silva', med_nome: 'Puran T4', med_dosagem: '75mcg', quantidade_por_dose: 1, unidade_dose: 'unidade', forma_farmaceutica: 'comprimido', horario: '06:30:00' };
             const remGota = { user_name: 'Ana', med_nome: 'Dramin', med_dosagem: null, quantidade_por_dose: 20, unidade_dose: 'gota', forma_farmaceutica: 'gotas', horario: '20:00:00' };
             const g2 = [
@@ -3409,17 +3412,19 @@ export const CASOS = [
                 ['lembrete individual (gotas, sem dosagem)', 'lembrete', { firstName: 'Ana', reminder: remGota },
                     '⏰ Olá, Ana!\n\nHora do seu *Dramin*.\nQuantidade: 20 gotas\n\nJá tomou? Responda *SIM* ou *NÃO* 💊'],
                 ['lembrete agrupado (2 itens)', 'lembrete', { firstName: 'Gui', horario: '08:30', grupo: g2 },
-                    '⏰ Gui, hora dos seus remédios das *08:30*! 💊\n\n• *Creatina*\n  Quantidade: 2 cápsulas\n• *Ômega 3* — 1000mg\n  Quantidade: 1 cápsula\n\n✅ Já tomou ou usou todos? Responda *SIM*\n💬 Tomou ou usou só alguns? Me diga quais (ex: "só o Creatina")'],
+                    '⏰ Gui, hora dos seus remédios das *08:30*! 💊\n\n• *Creatina*\n  Quantidade: 2 cápsulas\n• *Ômega 3* — 1000mg\n  Quantidade: 1 cápsula\n\n✅ Já tomou ou usou todos? Responda *SIM*\n💬 Tomou ou usou só alguns? Me diga quais (ex: "só Creatina")'],
                 ['lembrete agrupado (3 itens, formas mistas)', 'lembrete', { firstName: 'Gui', horario: '08:30', grupo: g3 },
-                    '⏰ Gui, hora dos seus remédios das *08:30*! 💊\n\n• *Creatina*\n  Quantidade: 2 cápsulas\n• *Ômega 3* — 1000mg\n  Quantidade: 1 cápsula\n• *Dramin* — 30ml\n  Quantidade: 20 gotas\n\n✅ Já tomou ou usou todos? Responda *SIM*\n💬 Tomou ou usou só alguns? Me diga quais (ex: "só o Creatina")'],
+                    '⏰ Gui, hora dos seus remédios das *08:30*! 💊\n\n• *Creatina*\n  Quantidade: 2 cápsulas\n• *Ômega 3* — 1000mg\n  Quantidade: 1 cápsula\n• *Dramin* — 30ml\n  Quantidade: 20 gotas\n\n✅ Já tomou ou usou todos? Responda *SIM*\n💬 Tomou ou usou só alguns? Me diga quais (ex: "só Creatina")'],
                 ['follow-up individual t2 (com quantidade)', 'follow_up', { tentativa: 2, reminder: remF, quantidade: qF },
                     '⏰ Fran, só passando para lembrar!\n\nAinda não vi sua confirmação do *Puran T4*.\nQuantidade: 1 comprimido\nJá tomou? Responda *SIM* ou *NÃO* 💊'],
                 ['follow-up individual t3 (com quantidade)', 'follow_up', { tentativa: 3, reminder: remF, quantidade: qF },
                     '💊 Fran, último aviso de hoje!\n\nSeu *Puran T4* ainda está aguardando confirmação.\nQuantidade: 1 comprimido\nTomou? É só responder *SIM* ou *NÃO* 🌿'],
                 ['follow-up individual t2 (sem nome, sem remédio, sem quantidade)', 'follow_up', { tentativa: 2, reminder: { user_name: null, med_nome: null, med_forma: 'gotas' }, quantidade: '' },
-                    '⏰ você, só passando para lembrar!\n\nAinda não vi sua confirmação do *seu remédio*.\nJá tomou? Responda *SIM* ou *NÃO* 💊'],
+                    '⏰ você, só passando para lembrar!\n\nAinda não vi sua confirmação do seu remédio.\nJá tomou? Responda *SIM* ou *NÃO* 💊'],
+                ['follow-up individual t3 (sem nome de remédio)', 'follow_up', { tentativa: 3, reminder: { user_name: null, med_nome: null, med_forma: 'comprimido' }, quantidade: '' },
+                    '💊 você, último aviso de hoje!\n\nSeu remédio ainda está aguardando confirmação.\nTomou? É só responder *SIM* ou *NÃO* 🌿'],
                 ['follow-up individual fallback (tentativa fora de 2/3)', 'follow_up', { tentativa: 4, reminder: remF, quantidade: qF },
-                    '💊 Fran, lembrete do *Puran T4*.\nQuantidade: 1 comprimido Já tomou? Responda *SIM* ou *NÃO*'],
+                    '💊 Fran, lembrete do *Puran T4*.\nQuantidade: 1 comprimido\nJá tomou? Responda *SIM* ou *NÃO*'],
                 ['follow-up agrupado t2 (2 itens, sem quantidade)', 'follow_up', { tentativa: 2, firstName: 'Gui', horario: '08:30', grupo: fg2, quantidadePorItem: new Map() },
                     '⏰ Gui, só passando para lembrar!\n\nAinda não vi sua confirmação dos remédios das *08:30*:\n• *Creatina*\n• *Ômega 3*\n\n✅ Já tomou ou usou todos? Responda *SIM*\n💬 Tomou ou usou só alguns? Me diga quais 🌿'],
                 ['follow-up agrupado t3 (3 itens, quantidade parcial)', 'follow_up', { tentativa: 3, firstName: 'Gui', horario: '08:30', grupo: fg3, quantidadePorItem: qtdParcial },
@@ -3427,13 +3432,13 @@ export const CASOS = [
                 ['alerta de estoque zerado', 'alerta_estoque_zerado', { firstName: 'Eloísa', reminder: { med_nome: 'Desogestrel' } },
                     '⏰ Eloísa, está na hora do seu *Desogestrel*!\n\nPelas minhas contas o estoque acabou — mas se você ainda tem e já tomou, é só responder SIM que eu registro. 💊\n\nSe comprou mais, me conta quantos: *"Comprei 30 comprimidos de Desogestrel"*'],
                 ['conclusão de tratamento (1 dia)', 'conclusao_tratamento', { firstName: 'Isaque', med: { nome: 'Amoxicilina', tratamento_dias: 1 } },
-                    '🎉 Isaque, o tratamento com *Amoxicilina* chegou ao fim — 1 dia completinhos!\n\nJá desliguei os lembretes dele pra você.\n\nSe o médico estender o tratamento, é só me pedir pra cadastrar de novo. 🌿'],
+                    '🎉 Isaque, o tratamento com *Amoxicilina* chegou ao fim — 1 dia completinho!\n\nJá desliguei os lembretes dele pra você.\n\nSe o médico estender o tratamento, é só me pedir pra cadastrar de novo. 🌿'],
                 ['conclusão de tratamento (7 dias)', 'conclusao_tratamento', { firstName: 'Isaque', med: { nome: 'Amoxicilina', tratamento_dias: 7 } },
                     '🎉 Isaque, o tratamento com *Amoxicilina* chegou ao fim — 7 dias completinhos!\n\nJá desliguei os lembretes dele pra você.\n\nSe o médico estender o tratamento, é só me pedir pra cadastrar de novo. 🌿'],
                 ['conclusão de tratamento (sem duração)', 'conclusao_tratamento', { firstName: 'Isaque', med: { nome: 'Amoxicilina', tratamento_dias: null } },
                     '🎉 Isaque, o tratamento com *Amoxicilina* chegou ao fim!\n\nJá desliguei os lembretes dele pra você.\n\nSe o médico estender o tratamento, é só me pedir pra cadastrar de novo. 🌿'],
                 ['aviso ao cuidador (follow-up esgotado)', 'cuidador_follow_up_esgotado', { nomePaciente: 'Fran Silva', remedio: 'Puran T4', horario: '06:30' },
-                    '⚠️ Atenção!\n\n*Fran Silva* não confirmou a dose do *Puran T4* que estava agendada para 06:30.\n\nEsta foi a 3ª tentativa sem resposta.'],
+                    '⚠️ Atenção!\n\n*Fran Silva* não confirmou a dose do *Puran T4* que estava agendada para 06:30.\n\nAs tentativas de hoje se esgotaram sem resposta.'],
                 ['cobrança encerrada (ramo estoque desconhecido) — mesma fotografia do A63', 'cobranca_encerrada', { firstName: 'Guilherme', estoqueInfo: { medNome: 'Creatina', medForma: 'comprimido', estoqueDesconhecido: true } },
                     '⚠️ Guilherme, não recebi confirmação da sua dose do *Creatina*.\n\nQuando puder, me avise se tomou! 💊'],
                 ['mensagem direcionada (pass-through — o catálogo não redige)', 'mensagem_direcionada', { texto: 'Oi! Texto pronto do Guilherme 🌿' },
