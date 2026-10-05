@@ -39,41 +39,10 @@ export function buildAlertaEstoquePosConfirmacao(info) {
     );
 }
 
-// v47 Onda 1 §2 (BUG-114 camada b): renomeada — este envio é a COBRANÇA
-// ENCERRADA da dose (as 3 tentativas se esgotaram), não um alerta de estoque;
-// o rótulo antigo ("alerta de estoque não informado") dava o quadro
-// interpretativo errado. Texto byte-idêntico ao anterior (equivalência
-// estrita, guardada pelo A63 — mover o template de casa é onda 3).
-export function buildCobrancaEncerrada(firstName, info) {
-    const { medNome, medForma, novoEstoque, diasRestantes, estoqueDesconhecido } = info;
-    const verbo = verboDoMedicamento(medForma);
-
-    // v43 Bloco C Adendo 1 (P49, seção 4): estoque nunca informado — a mensagem de
-    // dose não confirmada continua, mas SEM citar quantidade nenhuma (nem "null", nem
-    // um número inventado). O convite para informar o estoque não entra aqui — ele
-    // vive só no caminho da confirmação de dose (buildConviteEstoqueNaoCadastrado).
-    if (estoqueDesconhecido) {
-        return (
-            `⚠️ ${firstName}, não recebi confirmação da sua dose do *${medNome}*.\n\n` +
-            `Quando puder, me avise se ${verbo.passado}! 💊`
-        );
-    }
-
-    const nivel = classificarNivelEstoquePorDias({ novoEstoque, diasRestantes });
-    const unidade = novoEstoque === 1 ? 'unidade' : 'unidades';
-
-    const prazo = nivel === 'zerado'
-        ? 'está esgotado'
-        : nivel === 'urgente'
-            ? 'não é suficiente para fechar mais um dia de tratamento'
-            : (diasRestantes === 1 ? 'dura mais 1 dia' : `dura mais ${diasRestantes} dias`);
-
-    return (
-        `⚠️ ${firstName}, não recebi confirmação da sua dose do *${medNome}*.\n\n` +
-        `Seu estoque atual é de *${novoEstoque}* ${unidade} — ${prazo}.\n` +
-        `Quando puder, me avise se ${verbo.passado}, e não esqueça de providenciar a recompra! 💊`
-    );
-}
+// v47 ajuste-referente §7 (BUG-117): a cobrança encerrada foi REMOVIDA —
+// "último aviso" é último, nenhuma 4ª mensagem depois dele (o silêncio é o
+// MH-104). O builder saiu junto; grep-guard no arnês garante que o fato
+// está morto por construção em src/.
 
 // v44 §5.7 — movidos de principal.js para cá: autor único de texto de estoque é
 // este módulo (P30). Alerta de limiar pós-ajuste manual (MH-042) — mesmo

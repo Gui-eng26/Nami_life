@@ -99,8 +99,6 @@ const ROTULOS_EVENTO_PROATIVO = {
     lembrete: 'lembrete de dose',
     follow_up: 'cobrança de dose',
     alerta_estoque_zerado: 'aviso de estoque zerado (lembrete da dose)',
-    // v47 §2 (BUG-114): identidade nova do envio pós-esgotamento.
-    cobranca_encerrada: 'cobrança encerrada (as cobranças da dose se esgotaram sem resposta)',
     // Legado: eventos anteriores à v47 ainda existem na tabela.
     alerta_estoque_nao_informado: 'aviso de dose sem confirmação',
     resumo_semanal: 'resumo semanal de adesão',
@@ -123,10 +121,23 @@ function textoEventosProativos(eventos) {
     }).join('\n');
 }
 
+// v47 ajuste-referente §1 (C1 do BUG-117): a mensagem direcionada enviada
+// depois do último turno da pessoa entra na CONVERSA RECENTE como FALA da
+// Nami, com texto INTEGRAL — e a ordem é afirmada por código (extensão do
+// mecanismo `maisRecente` de montarPendencia): o modelo não estima tempo.
+function textoFalaDirecionada(falaDirecionada) {
+    if (!falaDirecionada?.texto) return '';
+    const hora = new Date(falaDirecionada.enviadoAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+    return `
+Nami (mensagem individual, ${hora}): "${String(falaDirecionada.texto).replace(/\s+/g, ' ')}"
+A ordem é um fato: a fala mais recente da Nami é esta mensagem individual (${hora}) — a pessoa está respondendo a uma conversa em que esta foi a última coisa dita.`;
+}
+
 export function montarContextoPrincipal({
     user = null, agora = new Date(), estado = 'idle', blocoDoses, pendencia = null,
     eventosProativos = [], medicamentos = [], historicoConversa = [],
-    especialistaDevolveu = null, especialistaNaoExecuta = null, mensagem, temImagem = false
+    especialistaDevolveu = null, especialistaNaoExecuta = null, mensagem, temImagem = false,
+    falaDirecionada = null
 }) {
     return `
 === CONTEXTO ===
@@ -147,7 +158,7 @@ ${textoEventosProativos(eventosProativos)}
 ${textoMedicamentos(medicamentos)}
 
 === CONVERSA RECENTE (para resolver referências como "ele", "esse", "ok") ===
-${formatarHistoricoConversa(historicoConversa)}
+${formatarHistoricoConversa(historicoConversa)}${textoFalaDirecionada(falaDirecionada)}
 ${especialistaDevolveu ? `
 === ATENÇÃO: O ESPECIALISTA "${especialistaDevolveu}" DEVOLVEU ESTE TURNO ===
 Ele concluiu que a mensagem não é dele. As doses e ações deste turno JÁ foram executadas — não as

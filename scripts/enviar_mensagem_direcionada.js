@@ -94,7 +94,9 @@ for (const nomeMed of args.meds) {
 const assuntos = medsReferidos.length
     ? medsReferidos.map(m => ({ fato: 'mensagem_direcionada', medicationId: m.id }))
     : [{ fato: 'mensagem_direcionada' }];
-const resumo = texto.replace(/\s+/g, ' ').trim().slice(0, 120);
+// v47 ajuste-referente §5 (C3, higiene): corte 120 → 200. Com o §1 a
+// direcionada chega INTEGRAL como fala; o resumo serve a logs e listas.
+const resumo = texto.replace(/\s+/g, ' ').trim().slice(0, 200);
 
 // ------------------------------------------------------------
 // Preview completo (§5.2) — nada foi enviado até aqui.

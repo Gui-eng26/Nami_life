@@ -17,7 +17,7 @@ import {
     buildCuidadorFollowUpEsgotado
 } from './lembreteTemplates.js';
 import {
-    buildCobrancaEncerrada, buildAlertaEstoquePosConfirmacao, buildAlertaEstoquePosAjuste,
+    buildAlertaEstoquePosConfirmacao, buildAlertaEstoquePosAjuste,
     buildConviteEstoqueNaoCadastrado, buildConviteEstoqueContestado, buildEstoqueAtualizadoMessage
 } from './estoqueTemplates.js';
 import { textoDeConfirmacao, linhaNaoTomada, linhaDosesRevertidas } from './dose.js';
@@ -39,7 +39,6 @@ const CATALOGO = {
     follow_up: (f) => f.grupo
         ? buildGroupedFollowUpMessage(f.tentativa, f.firstName, f.horario, f.grupo, f.quantidadePorItem)
         : buildFollowUpMessage(f.tentativa, f.reminder, f.quantidade),
-    cobranca_encerrada: (f) => buildCobrancaEncerrada(f.firstName, f.estoqueInfo),
     alerta_estoque_zerado: (f) => buildEstoqueZeradoMessage(f.firstName, f.reminder),
     conclusao_tratamento: (f) => buildConclusaoTratamentoMessage(f.firstName, f.med),
     resumo_semanal: (f) => montarResumoAdesao(f),

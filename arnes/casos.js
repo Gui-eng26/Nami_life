@@ -3004,7 +3004,7 @@ export const CASOS = [
     {
         id: 'A61',
         marco: 'M4',
-        titulo: 'v47 §6.1 caso-ouro 29/09 — "tomei" citando a cobrança encerrada: o ASSUNTO devolve a dose citada como candidata única; envio legado cai no fallback',
+        titulo: 'v47 §6.1 caso-ouro 29/09 — "tomei" citando o último aviso (follow-up 3): o ASSUNTO devolve a dose citada como candidata única; envio legado cai no fallback',
         async executar({ ctx, seeds }) {
             const checks = [];
             const { getAssuntoDoEnvio, getDosesDoEnvio, registrarAssuntosDoEnvio, getDosesJanelaPrincipal }
@@ -3015,21 +3015,24 @@ export const CASOS = [
             const { med: creatina, schedules: sC } = await seeds.criarMedicamento({ userId: user.id, nome: 'Creatina', estoque: null, horarios: ['08:30'] });
             const { med: omega, schedules: sO } = await seeds.criarMedicamento({ userId: user.id, nome: 'Ômega 3', estoque: 30, horarios: ['09:00'] });
 
-            // Cobrança encerrada da Creatina (as 3 tentativas se esgotaram) — envio COM assunto.
+            // Último aviso (follow-up 3) da Creatina — envio COM assunto; as
+            // cobranças depois se esgotaram (dose nao_informado). O ajuste-
+            // referente §7 matou a cobrança encerrada; o vínculo por assunto é
+            // o mesmo mecanismo, agora com o último envio que existe de fato.
             const { envio } = await seeds.criarEnvioFunil({
-                user, minutosAtras: 60, origem: 'proativo:cobranca_encerrada',
-                texto: '⚠️ Guilherme, não recebi confirmação da sua dose do *Creatina*.\n\nQuando puder, me avise se tomou! 💊'
+                user, minutosAtras: 60, origem: 'proativo:follow_up',
+                texto: '💊 Guilherme, último aviso de hoje!\n\nSeu *Creatina* ainda está aguardando confirmação.\nTomou? É só responder *SIM* ou *NÃO* 🌿'
             });
             const doseCreatina = await seeds.criarDose({ medicationId: creatina.id, scheduleId: sC[0].id, horario: '08:30', minutosAtras: 90, status: 'nao_informado', tentativas: 3 });
-            await registrarAssuntosDoEnvio(envio.id, [{ fato: 'cobranca_encerrada', doseLogId: doseCreatina.id, medicationId: creatina.id }]);
+            await registrarAssuntosDoEnvio(envio.id, [{ fato: 'follow_up', doseLogId: doseCreatina.id, medicationId: creatina.id }]);
 
             // A dose aberta MAIS RECENTE é de outro remédio — sem a citação, a pista seria ela (o BUG-114).
             const doseOmega = await seeds.criarDose({ medicationId: omega.id, scheduleId: sO[0].id, horario: '09:00', minutosAtras: 10 });
 
             const assunto = await getAssuntoDoEnvio(envio.id);
             checks.push({
-                nome: 'assunto resolvido: fato cobranca_encerrada + a dose da Creatina',
-                ok: assunto?.assuntos?.length === 1 && assunto.assuntos[0].fato === 'cobranca_encerrada'
+                nome: 'assunto resolvido: fato follow_up + a dose da Creatina',
+                ok: assunto?.assuntos?.length === 1 && assunto.assuntos[0].fato === 'follow_up'
                     && assunto?.doses?.length === 1 && assunto.doses[0].id === doseCreatina.id,
                 detalhe: JSON.stringify(assunto?.assuntos || null)
             });
@@ -3141,51 +3144,9 @@ export const CASOS = [
     },
 
     // --------------------------------------------------------
-    {
-        id: 'A63',
-        marco: 'M4',
-        titulo: 'v47 §6.3 — equivalência estrita: texto da cobrança encerrada byte-idêntico ao anterior nos dois ramos',
-        async executar() {
-            const checks = [];
-            const { buildCobrancaEncerrada } = await import('../src/templates/estoqueTemplates.js');
-
-            // Snapshots capturados de buildAlertaEstoqueNaoInformado ANTES do rename
-            // (30/09/2026, staging) — a saída da função renomeada tem que sair
-            // byte-idêntica. Mover/alterar o template é onda 3, nunca esta.
-            const esperados = [
-                {
-                    rotulo: 'ramo estoqueDesconhecido',
-                    entrada: ['Guilherme', { medNome: 'Creatina', medForma: 'comprimido', estoqueDesconhecido: true }],
-                    texto: '⚠️ Guilherme, não recebi confirmação da sua dose do *Creatina*.\n\nQuando puder, me avise se tomou! 💊'
-                },
-                {
-                    rotulo: 'ramo com estoque (nível ok)',
-                    entrada: ['Guilherme', { medNome: 'Creatina', medForma: 'comprimido', novoEstoque: 12, diasRestantes: 12, estoqueDesconhecido: false }],
-                    texto: '⚠️ Guilherme, não recebi confirmação da sua dose do *Creatina*.\n\nSeu estoque atual é de *12* unidades — dura mais 12 dias.\nQuando puder, me avise se tomou, e não esqueça de providenciar a recompra! 💊'
-                },
-                {
-                    rotulo: 'ramo com estoque (1 unidade, 1 dia, forma gota)',
-                    entrada: ['Ana', { medNome: 'Gotas X', medForma: 'gota', novoEstoque: 1, diasRestantes: 1, estoqueDesconhecido: false }],
-                    texto: '⚠️ Ana, não recebi confirmação da sua dose do *Gotas X*.\n\nSeu estoque atual é de *1* unidade — dura mais 1 dia.\nQuando puder, me avise se tomou ou usou, e não esqueça de providenciar a recompra! 💊'
-                },
-                {
-                    rotulo: 'ramo com estoque (zerado)',
-                    entrada: ['Ana', { medNome: 'Gotas X', medForma: 'gota', novoEstoque: 0, diasRestantes: 0, estoqueDesconhecido: false }],
-                    texto: '⚠️ Ana, não recebi confirmação da sua dose do *Gotas X*.\n\nSeu estoque atual é de *0* unidades — está esgotado.\nQuando puder, me avise se tomou ou usou, e não esqueça de providenciar a recompra! 💊'
-                }
-            ];
-            for (const { rotulo, entrada, texto } of esperados) {
-                const saida = buildCobrancaEncerrada(...entrada);
-                checks.push({
-                    nome: `byte-idêntico: ${rotulo}`,
-                    ok: saida === texto,
-                    detalhe: saida === texto ? 'igual' : `diferente — atual: ${JSON.stringify(saida)}`
-                });
-            }
-            return checks;
-        }
-    },
-
+    // A63 (equivalência estrita da cobrança encerrada) SAIU no v47 ajuste-
+    // referente §7: o envio foi removido — "último aviso" é último. O guard
+    // de construção vive no A71 (cobranca_encerrada morta em src/).
     // --------------------------------------------------------
     {
         id: 'A64',
@@ -3439,8 +3400,6 @@ export const CASOS = [
                     '🎉 Isaque, o tratamento com *Amoxicilina* chegou ao fim!\n\nJá desliguei os lembretes dele pra você.\n\nSe o médico estender o tratamento, é só me pedir pra cadastrar de novo. 🌿'],
                 ['aviso ao cuidador (follow-up esgotado)', 'cuidador_follow_up_esgotado', { nomePaciente: 'Fran Silva', remedio: 'Puran T4', horario: '06:30' },
                     '⚠️ Atenção!\n\n*Fran Silva* não confirmou a dose do *Puran T4* que estava agendada para 06:30.\n\nAs tentativas de hoje se esgotaram sem resposta.'],
-                ['cobrança encerrada (ramo estoque desconhecido) — mesma fotografia do A63', 'cobranca_encerrada', { firstName: 'Guilherme', estoqueInfo: { medNome: 'Creatina', medForma: 'comprimido', estoqueDesconhecido: true } },
-                    '⚠️ Guilherme, não recebi confirmação da sua dose do *Creatina*.\n\nQuando puder, me avise se tomou! 💊'],
                 ['mensagem direcionada (pass-through — o catálogo não redige)', 'mensagem_direcionada', { texto: 'Oi! Texto pronto do Guilherme 🌿' },
                     'Oi! Texto pronto do Guilherme 🌿']
             ];
@@ -3526,7 +3485,7 @@ export const CASOS = [
             // §3.2 — o lookup fato → texto acontece só via templates/catalogo.js:
             // fora de templates/, nenhum módulo referencia os renderizadores
             // canônicos diretamente (atalho, âncora e proativas inclusos).
-            const RENDERIZADORES = /buildReminderMessage|buildGroupedReminderMessage|buildFollowUpMessage|buildGroupedFollowUpMessage|buildEstoqueZeradoMessage|buildConclusaoTratamentoMessage|buildCuidadorFollowUpEsgotado|buildCobrancaEncerrada|buildConviteEstoqueNaoCadastrado|buildConviteEstoqueContestado|buildAlertaEstoquePosConfirmacao|buildAlertaEstoquePosAjuste|buildEstoqueAtualizadoMessage|textoDeConfirmacao|linhaNaoTomada|linhaDosesRevertidas|montarResumoAdesao/;
+            const RENDERIZADORES = /buildReminderMessage|buildGroupedReminderMessage|buildFollowUpMessage|buildGroupedFollowUpMessage|buildEstoqueZeradoMessage|buildConclusaoTratamentoMessage|buildCuidadorFollowUpEsgotado|buildConviteEstoqueNaoCadastrado|buildConviteEstoqueContestado|buildAlertaEstoquePosConfirmacao|buildAlertaEstoquePosAjuste|buildEstoqueAtualizadoMessage|textoDeConfirmacao|linhaNaoTomada|linhaDosesRevertidas|montarResumoAdesao/;
             const arquivos = [];
             (function varrer(dir) {
                 for (const nome of fs.readdirSync(dir)) {
@@ -3542,7 +3501,8 @@ export const CASOS = [
 
             // O catálogo cobre todas as entradas da onda (§1).
             const { FATOS_CATALOGADOS } = await import('../src/templates/catalogo.js');
-            const exigidos = ['lembrete', 'follow_up', 'cobranca_encerrada', 'alerta_estoque_zerado', 'conclusao_tratamento',
+            // v47 ajuste-referente §7: cobranca_encerrada saiu do catálogo.
+            const exigidos = ['lembrete', 'follow_up', 'alerta_estoque_zerado', 'conclusao_tratamento',
                 'resumo_semanal', 'mensagem_direcionada', 'cuidador_follow_up_esgotado',
                 'dose_confirmada', 'dose_nao_tomada', 'dose_revertida', 'estoque_atualizado', 'alerta_estoque', 'convite_estoque'];
             const faltando = exigidos.filter(t => !FATOS_CATALOGADOS.includes(t));
@@ -3724,6 +3684,149 @@ export const CASOS = [
                 nome: 'estoque neutralizado (dose em aberto) instrui: pedido de estoque → delegar relatorios/estoque',
                 ok: /não cite um número de memória[\s\S]{0,80}delegue a relatorios com subtipo "estoque"/.test(principal),
                 detalhe: 'instrução acionável no contexto'
+            });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A71',
+        marco: 'M4',
+        titulo: 'v47 ajuste-referente (BUG-117) — §1 fala direcionada no contexto; §3 citação SEM dose afirmada por código; §7 cobranca_encerrada morta por construção',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const fs = await import('node:fs');
+            const path = await import('node:path');
+            const url = await import('node:url');
+            const raizSrc = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../src');
+
+            // ---- §1 (guard 1): existindo fala direcionada, o contexto montado
+            // contém a FALA com texto integral e a ordem afirmada por código.
+            const { montarContextoPrincipal } = await import('../src/agentes/principal.js');
+            const enviadoAt = new Date(Date.now() - 3 * 60_000).toISOString();
+            const hora = new Date(enviadoAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+            const textoDirecionada = 'Oi, Guilherme! Vi aqui que você acompanha a Creatina comigo. Quer que eu cadastre também o Ômega 3? É só me responder que sim 🌿';
+            const contexto = montarContextoPrincipal({
+                user: { name: 'Guilherme' }, estado: 'idle', blocoDoses: 'Agora: —',
+                historicoConversa: [], mensagem: 'Quero',
+                falaDirecionada: { texto: textoDirecionada, enviadoAt }
+            });
+            checks.push({
+                nome: '§1: a fala direcionada entra na CONVERSA RECENTE com texto INTEGRAL',
+                ok: contexto.includes(`Nami (mensagem individual, ${hora}): "${textoDirecionada}"`),
+                detalhe: contexto.includes('Nami (mensagem individual') ? 'linha presente' : 'linha ausente'
+            });
+            checks.push({
+                nome: '§1: a ordem é afirmada por código (fala mais recente = a mensagem individual)',
+                ok: contexto.includes(`a fala mais recente da Nami é esta mensagem individual (${hora}) — a pessoa está respondendo a uma conversa em que esta foi a última coisa dita`),
+                detalhe: 'frase de ordem'
+            });
+            const contextoSem = montarContextoPrincipal({
+                user: { name: 'Guilherme' }, estado: 'idle', blocoDoses: 'Agora: —',
+                historicoConversa: [], mensagem: 'Quero'
+            });
+            checks.push({
+                nome: '§1: sem direcionada, nenhuma linha de mensagem individual aparece',
+                ok: !contextoSem.includes('Nami (mensagem individual'),
+                detalhe: 'contexto limpo'
+            });
+
+            // ---- §1 (banco): a leitura respeita a janela "desde o último turno"
+            // e devolve o texto integral de funil_envios.
+            const { getFalaDirecionadaRecente } = await import('../src/database.js');
+            const user = await seeds.criarUsuario({ nome: 'Guilherme', onboarded: true, estado: 'idle' });
+            await seeds.criarEnvioFunil({ user, minutosAtras: 5, origem: 'proativo:mensagem_direcionada', texto: textoDirecionada });
+            const dentroDaJanela = await getFalaDirecionadaRecente(user.id, new Date(Date.now() - 10 * 60_000).toISOString());
+            checks.push({
+                nome: '§1: envio DEPOIS do último turno → fala com texto integral',
+                ok: dentroDaJanela?.texto === textoDirecionada && !!dentroDaJanela?.enviadoAt,
+                detalhe: JSON.stringify(dentroDaJanela?.texto?.slice(0, 40) ?? null)
+            });
+            const foraDaJanela = await getFalaDirecionadaRecente(user.id, new Date(Date.now() - 2 * 60_000).toISOString());
+            checks.push({
+                nome: '§1: envio ANTES do último turno → nada (janela desde o último turno)',
+                ok: foraDaJanela === null,
+                detalhe: JSON.stringify(foraDaJanela)
+            });
+
+            // ---- §3 (guard 3): citação resolvida SEM dose gera a linha "SEM dose
+            // associada" com texto integral — função de montagem pura, fixtures.
+            const { estruturarDoses, renderizarBlocoDoses } = await import('../src/dosesDoTurno.js');
+            const textoLongo = `Oi! ${'Essa oferta tem bastante texto de propósito. '.repeat(8)}Quer que eu cadastre? É só responder que sim 🌿`;
+            const agora = new Date();
+            const blocoSemDose = renderizarBlocoDoses(estruturarDoses({
+                doses: [],
+                agora,
+                dosesCitadas: [],
+                envioCitado: { origem: 'proativo:mensagem_direcionada', created_at: agora.toISOString(), texto: textoLongo },
+                citacaoSemDose: true
+            }).estrutura);
+            const textoIntegralColapsado = textoLongo.replace(/\s+/g, ' ');
+            checks.push({
+                nome: '§3: envio sem dose → "mensagem individual/oferta (…) — SEM dose associada — texto integral"',
+                ok: /Mensagem citada: mensagem individual\/oferta \(.+\) — SEM dose associada — texto integral: "/.test(blocoSemDose)
+                    && blocoSemDose.includes(textoIntegralColapsado),
+                detalhe: blocoSemDose.split('\n').find(l => l.startsWith('Mensagem citada'))?.slice(0, 120) || 'linha ausente'
+            });
+            checks.push({
+                nome: '§3: o texto integral NÃO é truncado (mais longo que o corte de 240 do ramo com dose)',
+                ok: textoIntegralColapsado.length > 240 && blocoSemDose.includes(textoIntegralColapsado),
+                detalhe: `${textoIntegralColapsado.length} caracteres presentes`
+            });
+            // Contra-prova: envio COM dose segue como hoje (grupo Dn, texto 240).
+            const doseFixture = {
+                id: 'dose-a71', medication_id: 'med-a71', scheduled_at: hojeHaMinutos(60),
+                status: 'pendente', confirmed: false, tentativas: 1, horario_agendado: '08:30',
+                quantidade_por_dose: 1, medications: { nome: 'Creatina', forma_farmaceutica: 'comprimido', unidade_dose: 'unidade' }
+            };
+            const blocoComDose = renderizarBlocoDoses(estruturarDoses({
+                doses: [doseFixture],
+                agora,
+                dosesCitadas: [doseFixture],
+                envioCitado: { origem: 'proativo:follow_up', created_at: agora.toISOString(), texto: 'Último aviso…' },
+                citacaoSemDose: false
+            }).estrutura);
+            checks.push({
+                nome: '§3: envio COM dose permanece como hoje (→ grupo D1, sem "SEM dose associada")',
+                ok: /Mensagem citada: follow_up de .+ → grupo D1/.test(blocoComDose) && !blocoComDose.includes('SEM dose associada'),
+                detalhe: blocoComDose.split('\n').find(l => l.startsWith('Mensagem citada')) || 'linha ausente'
+            });
+
+            // ---- §7 (guard 2): cobranca_encerrada morta por construção —
+            // nenhuma ocorrência do identificador em src/ (padrão BUG-102).
+            const arquivos = [];
+            (function varrer(dir) {
+                for (const nome of fs.readdirSync(dir)) {
+                    const p = path.join(dir, nome);
+                    if (fs.statSync(p).isDirectory()) varrer(p);
+                    else if (p.endsWith('.js')) arquivos.push(p);
+                }
+            })(raizSrc);
+            const violadores = arquivos
+                .filter(p => /cobranca_encerrada/.test(fs.readFileSync(p, 'utf8')))
+                .map(p => path.relative(raizSrc, p));
+            checks.push({ nome: 'grep (§7, padrão BUG-102): cobranca_encerrada morta por construção em src/', ok: violadores.length === 0, detalhe: violadores.join(', ') || 'limpo' });
+            const ramoEsgotado = fs.readFileSync(path.join(raizSrc, 'agentes', 'lembrete.js'), 'utf8');
+            checks.push({
+                nome: '§7: o ramo pós-esgotamento MANTÉM markAsNaoInformado e notificarCuidadores',
+                ok: /markAsNaoInformado\(doseLog\.id\)/.test(ramoEsgotado) && /notificarCuidadores\(doseLog, reminder\)/.test(ramoEsgotado),
+                detalhe: 'ramo intacto'
+            });
+
+            // ---- §2/§8 (construção, não comportamento): as regras novas estão
+            // no contrato do principal — o comportamento é validação manual.
+            const { NAMI_SYSTEM_PROMPT } = await import('../src/prompts.js');
+            checks.push({
+                nome: '§2: REGRA DO REFERENTE presente no contrato, acima do quadro QUAL DOSE',
+                ok: NAMI_SYSTEM_PROMPT.indexOf('REGRA DO REFERENTE') >= 0
+                    && NAMI_SYSTEM_PROMPT.indexOf('REGRA DO REFERENTE') < NAMI_SYSTEM_PROMPT.indexOf('QUAL DOSE: use o último lembrete'),
+                detalhe: 'posição no prompt'
+            });
+            checks.push({
+                nome: '§8: contenção da re-cobrança presente no contrato (cobrar dose é do funil proativo)',
+                ok: /COBRAR DOSE É PAPEL DO FUNIL PROATIVO/.test(NAMI_SYSTEM_PROMPT),
+                detalhe: 'regra presente'
             });
             return checks;
         }

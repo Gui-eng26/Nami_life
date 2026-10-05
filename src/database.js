@@ -2486,7 +2486,9 @@ export async function getContextoProativoRecente(userId, ultimoTurnoAt) {
 
         const { data, error } = await supabase
             .from('eventos_proativos')
-            .select('tipo, tentativa, horario_agendado, enviado_at, resumo, medications(nome)')
+            // v47 ajuste-referente §6: o id entra para a observabilidade do
+            // contexto (contexto_conversa registra quais eventos foram ao prompt).
+            .select('id, tipo, tentativa, horario_agendado, enviado_at, resumo, medications(nome)')
             .eq('user_id', userId)
             .gt('enviado_at', corteMinimo)
             .order('enviado_at', { ascending: true })
@@ -2504,6 +2506,7 @@ export async function getContextoProativoRecente(userId, ultimoTurnoAt) {
         }
 
         return (data || []).map(e => ({
+            id: e.id,
             tipo: e.tipo,
             medicamento: e.medications?.nome || null,
             tentativa: e.tentativa,
@@ -2520,6 +2523,41 @@ export async function getContextoProativoRecente(userId, ultimoTurnoAt) {
             userId,
             detalhe: { excecao: true },
             fallback: []
+        });
+    }
+}
+
+// ============================================================
+// FALA DIRECIONADA — v47 ajuste-referente §1 (C1 do BUG-117)
+// A mensagem direcionada mais recente enviada DEPOIS do último turno da
+// pessoa, com o TEXTO INTEGRAL (funil_envios.texto): o contexto do principal
+// a apresenta como a fala mais recente da Nami na conversa — a pessoa está
+// respondendo a uma conversa em que esta foi a última coisa dita. Escopo:
+// só a mais recente, janela desde o último turno (peso de contexto).
+// ============================================================
+export async function getFalaDirecionadaRecente(userId, ultimoTurnoAt) {
+    try {
+        const { inicio: inicioDiaBRT } = janelaDiaBRT(hojeBRT());
+        const corte = ultimoTurnoAt || inicioDiaBRT;
+        const { data, error } = await supabase
+            .from('funil_envios')
+            .select('texto, created_at')
+            .eq('user_id', userId)
+            .eq('origem', 'proativo:mensagem_direcionada')
+            .gt('created_at', corte)
+            .order('created_at', { ascending: false })
+            .limit(1);
+        if (error) throw new Error(error.message);
+        const envio = data?.[0];
+        return envio ? { texto: envio.texto, enviadoAt: envio.created_at } : null;
+    } catch (e) {
+        return await degradar({
+            origem: 'contexto_proativo',
+            motivo: 'fala_direcionada_query_falhou',
+            agent: 'principal',
+            userId,
+            detalhe: { message: e.message },
+            fallback: null
         });
     }
 }

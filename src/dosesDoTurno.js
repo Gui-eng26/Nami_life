@@ -71,7 +71,7 @@ function quantidadeTexto(dose) {
 
 // Monta a estrutura e o mapa ref → dose a partir das doses do banco.
 // Refs em ordem cronológica (dia, horário, nome), como no briefing §3.2.
-export function estruturarDoses({ doses, agora = new Date(), dosesCitadas = [], envioCitado = null }) {
+export function estruturarDoses({ doses, agora = new Date(), dosesCitadas = [], envioCitado = null, citacaoSemDose = false }) {
     const janela = (doses || [])
         .map(d => ({ d, rotulo: calcularRotuloDia(d.scheduled_at, agora) }))
         .filter(x => x.rotulo)
@@ -128,7 +128,10 @@ export function estruturarDoses({ doses, agora = new Date(), dosesCitadas = [], 
             origem: String(envioCitado.origem || '').replace(/^proativo:/, ''),
             quando: `${calcularRotuloDia(envioCitado.created_at, agora) || ddmm(dataISOBRT(envioCitado.created_at))} ${horaBRT(envioCitado.created_at)}`,
             texto: envioCitado.texto,
-            grupo: refsCitadas.join(',') || null
+            grupo: refsCitadas.join(',') || null,
+            // v47 ajuste-referente §3: SEM dose associada é dado LIDO da tabela
+            // de assuntos (Onda 0) — nunca inferido do texto do envio.
+            semDose: citacaoSemDose === true
         };
     }
 
@@ -174,8 +177,16 @@ export function renderizarBlocoDoses(estrutura) {
     const { agora, ultimoLembrete, mensagemCitada, doses } = estrutura;
     const linhas = [agora ? `Agora: ${agora.diaSemana ? `${agora.diaSemana} ` : ''}${agora.data}, ${agora.hora}` : 'Agora: —'];
     if (mensagemCitada) {
-        linhas.push(`Mensagem citada: ${mensagemCitada.origem} de ${mensagemCitada.quando}${mensagemCitada.grupo ? ` → grupo ${mensagemCitada.grupo}` : ''}`);
-        linhas.push(`  texto citado: "${String(mensagemCitada.texto || '').replace(/\s+/g, ' ').slice(0, 240)}"`);
+        if (mensagemCitada.semDose) {
+            // v47 ajuste-referente §3: o assunto do envio (tabela da Onda 0) diz
+            // que NÃO há dose associada — afirmado por código, texto INTEGRAL.
+            const rotulo = mensagemCitada.origem === 'mensagem_direcionada'
+                ? 'mensagem individual/oferta' : mensagemCitada.origem;
+            linhas.push(`Mensagem citada: ${rotulo} (${mensagemCitada.quando}) — SEM dose associada — texto integral: "${String(mensagemCitada.texto || '').replace(/\s+/g, ' ')}"`);
+        } else {
+            linhas.push(`Mensagem citada: ${mensagemCitada.origem} de ${mensagemCitada.quando}${mensagemCitada.grupo ? ` → grupo ${mensagemCitada.grupo}` : ''}`);
+            linhas.push(`  texto citado: "${String(mensagemCitada.texto || '').replace(/\s+/g, ' ').slice(0, 240)}"`);
+        }
     }
     if (ultimoLembrete) {
         const tent = ultimoLembrete.tentativa ? ` (${ultimoLembrete.tentativa}ª tentativa)` : '';
@@ -214,9 +225,9 @@ export function renderizarBlocoDoses(estrutura) {
 }
 
 // Leitura do banco + estrutura, para o turno real.
-export async function montarDosesDoTurno({ userId, envioCitado = null, dosesCitadas = [], doses = null }) {
+export async function montarDosesDoTurno({ userId, envioCitado = null, dosesCitadas = [], doses = null, citacaoSemDose = false }) {
     const lista = doses ?? await getDosesJanelaPrincipal(userId);
-    return { ...estruturarDoses({ doses: lista, dosesCitadas, envioCitado }), doses: lista };
+    return { ...estruturarDoses({ doses: lista, dosesCitadas, envioCitado, citacaoSemDose }), doses: lista };
 }
 
 // ------------------------------------------------------------

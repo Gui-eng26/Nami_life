@@ -247,8 +247,6 @@ const ROTULOS_EVENTO_PROATIVO = {
     lembrete: 'lembrete de dose',
     follow_up: 'follow-up de dose',
     alerta_estoque_zerado: 'aviso de estoque zerado',
-    // v47 §2 (BUG-114): identidade nova do envio pós-esgotamento.
-    cobranca_encerrada: 'cobrança encerrada (dose sem resposta)',
     // Legado: eventos anteriores à v47 ainda existem na tabela.
     alerta_estoque_nao_informado: 'aviso de estoque (dose não confirmada)',
     resumo_semanal: 'resumo semanal de adesão',

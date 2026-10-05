@@ -1,5 +1,5 @@
 import { getConversationState, logAgentInteraction, saveConversationState,
-    getHistoricoRecente, getContextoProativoRecente, getUserMedications,
+    getHistoricoRecente, getContextoProativoRecente, getFalaDirecionadaRecente, getUserMedications,
     getEnvioFunilPorProviderId, getDosesDoEnvio, getAssuntoDoEnvio,
     getDosesJanelaPrincipal, getUltimoTurnoUsuario } from './database.js';
 import { registrarEvento, registrarFeedback, executarComContagemLLM } from './observabilidade.js';
@@ -351,18 +351,20 @@ function textoAindaNao({ user, decisao, pedidoAnterior }) {
 }
 
 async function turnoDoPrincipal({ user, message, image, state, historicoConversa, contextoProativo,
-                                  envioCitado, dosesCitadas, doses, especialistaDevolveu = null,
+                                  envioCitado, dosesCitadas, citacaoSemDose = false, falaDirecionada = null,
+                                  doses, especialistaDevolveu = null,
                                   especialistaNaoExecuta = null, pedidoAnterior = null,
                                   textosAnteriores = [], assuntosAnteriores = [], composicaoAnterior = null }) {
     const estado = state?.state || 'idle';
-    const { estrutura, mapa } = await montarDosesDoTurno({ userId: user.id, envioCitado, dosesCitadas, doses });
+    const { estrutura, mapa } = await montarDosesDoTurno({ userId: user.id, envioCitado, dosesCitadas, doses, citacaoSemDose });
     const pendencia = montarPendencia({ state, historicoConversa, ultimoLembrete: estrutura.ultimoLembrete });
     const medicamentos = await carregarMedicamentos(user.id, doses);
 
     const contexto = montarContextoPrincipal({
         user, estado, blocoDoses: renderizarBlocoDoses(estrutura), pendencia,
         eventosProativos: contextoProativo, medicamentos, historicoConversa,
-        especialistaDevolveu, especialistaNaoExecuta, mensagem: message, temImagem: !!image
+        especialistaDevolveu, especialistaNaoExecuta, mensagem: message, temImagem: !!image,
+        falaDirecionada
     });
 
     if (process.env.NAMI_DEBUG_PRINCIPAL) console.log(`🔎 [PRINCIPAL] contexto:\n${contexto}`);
@@ -510,7 +512,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
                 const estadoAtual = await getConversationState(user.id);
                 return turnoDoPrincipal({
                     user, message, image, state: estadoAtual, historicoConversa, contextoProativo,
-                    envioCitado, dosesCitadas, doses: await getDosesJanelaPrincipal(user.id),
+                    envioCitado, dosesCitadas, citacaoSemDose, falaDirecionada, doses: await getDosesJanelaPrincipal(user.id),
                     especialistaNaoExecuta: r.especialista, pedidoAnterior: decisao.delegar.pedido,
                     textosAnteriores: partes, assuntosAnteriores: assuntosDoTurno, composicaoAnterior: composicaoDoTurno
                 }).then(volta => ({ ...volta, feedback: volta.feedback ?? decisao.feedback }));
@@ -528,7 +530,7 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
                 const estadoAtual = await getConversationState(user.id);
                 const volta = await turnoDoPrincipal({
                     user, message, image, state: estadoAtual, historicoConversa, contextoProativo,
-                    envioCitado, dosesCitadas, doses: await getDosesJanelaPrincipal(user.id),
+                    envioCitado, dosesCitadas, citacaoSemDose, falaDirecionada, doses: await getDosesJanelaPrincipal(user.id),
                     especialistaDevolveu: decisao.delegar.especialista, pedidoAnterior: decisao.delegar.pedido,
                     textosAnteriores: partes, assuntosAnteriores: assuntosDoTurno, composicaoAnterior: composicaoDoTurno
                 });
@@ -604,6 +606,7 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
     // lembrete, qual grupo de doses. Nunca decide nada.
     let envioCitado = null;
     let dosesCitadas = [];
+    let citacaoSemDose = false;
     if (referenceMessageId) {
         envioCitado = await getEnvioFunilPorProviderId(referenceMessageId);
         if (envioCitado) {
@@ -612,6 +615,9 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
             // anteriores à migração (sem linhas de assunto).
             const assunto = await getAssuntoDoEnvio(envioCitado.id);
             dosesCitadas = assunto ? assunto.doses : await getDosesDoEnvio(envioCitado.id);
+            // v47 ajuste-referente §3: "SEM dose associada" só quando o assunto
+            // EXISTE e não tem dose — dado lido da tabela, nunca inferido.
+            citacaoSemDose = !!assunto && assunto.doses.length === 0;
             console.log(`💬 [CITAÇÃO] referenceMessageId resolvido no funil (${envioCitado.origem}, ${dosesCitadas.length} dose(s), via ${assunto ? 'assunto' : 'fallback legado'}) — ${user.phone}`);
         } else {
             console.log(`💬 [CITAÇÃO] referenceMessageId ${referenceMessageId} sem correspondência no funil — ${user.phone}`);
@@ -625,6 +631,11 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
     const historicoConversa = await getHistoricoRecente(user.id, 3);
     const ultimoTurnoAt = historicoConversa.at(-1)?.created_at ?? null;
     const contextoProativo = await getContextoProativoRecente(user.id, ultimoTurnoAt);
+    // v47 ajuste-referente §1: existindo direcionada DEPOIS do último turno, a
+    // fala chega ao principal com texto integral (só a mais recente).
+    const falaDirecionada = contextoProativo.some(e => e.tipo === 'mensagem_direcionada')
+        ? await getFalaDirecionadaRecente(user.id, ultimoTurnoAt)
+        : null;
 
     let response;
     let agentName;
@@ -633,11 +644,14 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
     let escalouParaDetectado = null; // MH-48: sinal de escalada consultável em agent_logs
     let assuntosDetectados = []; // v47 §1: fatos de dose do turno → assunto do envio da resposta
     let composicaoDetectada = null; // v47 Onda 1 §3.4: composto | fallback_* | canonico_direto
+    let passouPeloPrincipal = false; // v47 ajuste-referente §6: eventos no prompt só quando o principal rodou
 
     const irAoPrincipal = async (extras = {}) => {
+        passouPeloPrincipal = true;
         const r = await turnoDoPrincipal({
             user, message, image, state, historicoConversa, contextoProativo,
-            envioCitado, dosesCitadas, doses: await getDosesJanelaPrincipal(user.id), ...extras
+            envioCitado, dosesCitadas, citacaoSemDose, falaDirecionada,
+            doses: await getDosesJanelaPrincipal(user.id), ...extras
         });
         agentName = r.agentName;
         response = r.response;
@@ -657,9 +671,11 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
             // O onboarding devolveu o turno (pessoa já onboarded, nova intenção
             // na pergunta opcional): quem interpreta é o principal.
             const estadoDepois = await getConversationState(user.id);
+            passouPeloPrincipal = true;
             const r = await turnoDoPrincipal({
                 user, message, image, state: estadoDepois, historicoConversa, contextoProativo,
-                envioCitado, dosesCitadas, doses: await getDosesJanelaPrincipal(user.id),
+                envioCitado, dosesCitadas, citacaoSemDose, falaDirecionada,
+                doses: await getDosesJanelaPrincipal(user.id),
                 especialistaDevolveu: 'onboarding'
             });
             agentName = r.agentName;
@@ -722,6 +738,15 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
     const extrasLog = {};
     if (escalouParaDetectado) extrasLog.escalada = { para: escalouParaDetectado };
     if (composicaoDetectada) extrasLog.composicao = composicaoDetectada;
+    // v47 ajuste-referente §6: o que de proativo FOI ao prompt do principal fica
+    // consultável no log do turno (mesmo espírito do campo `composicao`) —
+    // perguntas de causalidade se respondem por consulta, não por experimento.
+    if (passouPeloPrincipal && (contextoProativo.length || falaDirecionada)) {
+        extrasLog.contexto_proativo = {
+            eventos: contextoProativo.map(e => ({ id: e.id, tipo: e.tipo })),
+            fala_direcionada: !!falaDirecionada
+        };
+    }
     const agentLogId = await logAgentInteraction({
         userId: user.id,
         agent: agentName,
