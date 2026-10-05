@@ -14,6 +14,7 @@ import { handleRelatorios } from './agentes/relatorios.js';
 import { handleConfiguracao } from './agentes/configuracao.js';
 import { handleExclusaoConta, confirmarIntencaoExclusaoConta } from './agentes/exclusaoConta.js';
 import { respostaHonestaAindaNao, respostaAindaNaoPadrao } from './inventario.js';
+import { nomeEscritoNaMensagem } from './nlp_helpers.js';
 
 // ============================================================
 // ROTEADOR — v45 P1: o principal é a PORTA ÚNICA.
@@ -253,6 +254,17 @@ async function delegarCadastro({ user, message, image, state, historicoConversa,
         contexto = { etapa: 'cad_nome', ...(emColeta ? {} : (state?.context?.rascunho_cadastro || {})) };
         if (emColeta) await saveConversationState(user.id, { state: 'idle', context: {} });
 
+        // v47 ajuste-referente §2 (aceite de OFERTA): os nomes propostos vieram
+        // da fala referida — NENHUM está escrito na mensagem da pessoa. A
+        // mensagem entregue ao runner se reduz à linha dos nomes (o mesmo
+        // mecanismo da fila multi-med): a coleta abre já carregando o remédio
+        // que a própria Nami ofereceu, e segue pedindo o resto.
+        const nomesPorta = camposPorta?.medicamentos || [];
+        if (nomesPorta.length && !nomesPorta.some(m => nomeEscritoNaMensagem(m, message))) {
+            console.log(`💊 [CADASTRO] Aceite de oferta: coleta aberta com ${nomesPorta.join(' e ')} (nome vindo da fala referida) — ${user.phone}`);
+            mensagem = nomesPorta.join(' e ');
+        }
+
         // Pedido de cadastro SEM remédio nomeado ("Quero cadastrar mais um!"): o
         // principal já decidiu que é cadastro novo — abre a coleta pela pergunta
         // do schema, sem pedir ao runner que reinterprete o pedido.
@@ -368,7 +380,13 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
     });
 
     if (process.env.NAMI_DEBUG_PRINCIPAL) console.log(`🔎 [PRINCIPAL] contexto:\n${contexto}`);
-    const decisao = await interpretarComPrincipal({ contexto, mensagem: message, image });
+    // v47 ajuste-referente §2: as falas da Nami a que a pessoa responde são
+    // fonte legítima de nome de medicamento (aceite de oferta) — a porta as
+    // confere por código (normalizarDecisao).
+    const decisao = await interpretarComPrincipal({
+        contexto, mensagem: message, image,
+        textosReferentes: [falaDirecionada?.texto, envioCitado?.texto].filter(Boolean)
+    });
 
     // §5.2: o especialista entendeu e não executa — a volta ao principal é
     // ÚNICA e termina no "ainda não", nunca em outra delegação nem em "não

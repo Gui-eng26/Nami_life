@@ -238,10 +238,18 @@ export function decisaoValida(input) {
 export const DECISAO_DEGRADADA = { tipo: 'degradado', message: '', doses: [], actions: [], delegar: null, feedback: 'nenhum' };
 
 // Normaliza a proposta: o que o código vai de fato olhar, sem campo solto.
-export function normalizarDecisao(input, mensagem = null) {
+// v47 ajuste-referente §2: `textosReferentes` são as falas da Nami a que a
+// pessoa está respondendo (mensagem citada, mensagem individual) — um nome de
+// medicamento é aceito quando está ESCRITO na mensagem da pessoa OU numa
+// dessas falas (aceite de oferta: "a Nami mesmo ofereceu o remédio"). Fato
+// afirmado por código, nunca nome inventado pelo modelo.
+export function normalizarDecisao(input, mensagem = null, textosReferentes = []) {
     const d = input?.delegar && ESPECIALISTAS.includes(input.delegar.especialista) ? input.delegar : null;
     const campos = d?.campos || {};
     const texto = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+    const nomeEscritoNoTurno = (m) => mensagem === null
+        || nomeEscritoNaMensagem(m, mensagem)
+        || textosReferentes.some(t => nomeEscritoNaMensagem(m, t));
     return {
         tipo: input.tipo,
         message: (input.message || '').trim(),
@@ -258,7 +266,7 @@ export function normalizarDecisao(input, mensagem = null) {
                 // mesmo ponto único da porta (replay 21/09, "Predsin 2mg 2mg").
                 medicamentos: Array.isArray(campos.medicamentos)
                     ? campos.medicamentos.map(m => limparDosagemDoNome(String(m).trim()))
-                        .filter(m => m && (mensagem === null || nomeEscritoNaMensagem(m, mensagem)))
+                        .filter(m => m && nomeEscritoNoTurno(m))
                     : [],
                 horarios: Array.isArray(campos.horarios) ? campos.horarios.map(h => String(h).trim()).filter(Boolean) : [],
                 medicamento: texto(campos.medicamento),
@@ -275,7 +283,7 @@ export function normalizarDecisao(input, mensagem = null) {
 
 // UMA chamada de interpretação. Duas tentativas; na falha dupla, degradar()
 // e o roteador faz a pergunta segura.
-export async function interpretarComPrincipal({ contexto, mensagem = null, image = null, model = MODELO_PRINCIPAL }) {
+export async function interpretarComPrincipal({ contexto, mensagem = null, image = null, model = MODELO_PRINCIPAL, textosReferentes = [] }) {
     const content = image
         ? [{ type: 'image', source: { type: 'url', url: image } }, { type: 'text', text: contexto }]
         : [{ type: 'text', text: contexto }];
@@ -295,7 +303,7 @@ export async function interpretarComPrincipal({ contexto, mensagem = null, image
         fallback: DECISAO_DEGRADADA
     });
     if (degradado || parsed?.tipo === 'degradado') return null;
-    return normalizarDecisao(parsed, mensagem);
+    return normalizarDecisao(parsed, mensagem, textosReferentes);
 }
 
 // ------------------------------------------------------------

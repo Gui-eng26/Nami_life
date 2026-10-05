@@ -3814,6 +3814,28 @@ export const CASOS = [
                 detalhe: 'ramo intacto'
             });
 
+            // ---- §2 (porta, validação 05/10): nome de medicamento vindo da FALA
+            // REFERIDA sobrevive à porta (aceite de oferta); sem referente, o
+            // filtro anti-invenção continua apagando como sempre.
+            const { normalizarDecisao } = await import('../src/agentes/principal.js');
+            const decisaoOferta = {
+                tipo: 'delegar', message: '', doses: [], feedback: 'nenhum',
+                delegar: { especialista: 'cadastro', relacao_pendencia: 'sem_pendencia', campos: { medicamentos: ['Ômega 3'] } }
+            };
+            const comReferente = normalizarDecisao(decisaoOferta, 'Quero', [textoDirecionada]);
+            checks.push({
+                nome: '§2 porta: "Quero" + nome escrito na fala referida → o nome SOBREVIVE (aceite de oferta)',
+                ok: comReferente.delegar?.campos?.medicamentos?.length === 1
+                    && comReferente.delegar.campos.medicamentos[0] === 'Ômega 3',
+                detalhe: JSON.stringify(comReferente.delegar?.campos?.medicamentos)
+            });
+            const semReferente = normalizarDecisao(decisaoOferta, 'Quero', []);
+            checks.push({
+                nome: '§2 porta: sem fala referida, nome não escrito na mensagem segue APAGADO (anti-invenção intacto)',
+                ok: (semReferente.delegar?.campos?.medicamentos || []).length === 0,
+                detalhe: JSON.stringify(semReferente.delegar?.campos?.medicamentos)
+            });
+
             // ---- §2/§8 (construção, não comportamento): as regras novas estão
             // no contrato do principal — o comportamento é validação manual.
             const { NAMI_SYSTEM_PROMPT } = await import('../src/prompts.js');

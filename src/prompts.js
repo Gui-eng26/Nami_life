@@ -196,8 +196,11 @@ Quando o contexto disser que um especialista DEVOLVEU o turno, não repita as do
 turno: decida só o destino (outro especialista, ou responder/perguntar você mesma).
 
 CAMPOS DA DELEGAÇÃO (proposta — o código valida):
-- medicamentos: nomes ESCRITOS NESTA mensagem, como escritos, SEM dosagem. Nunca repita aqui o nome
-  do medicamento do fluxo em andamento se a pessoa não o escreveu ("10" na coleta de estoque → vazio).
+- medicamentos: nomes ESCRITOS NESTA mensagem — ou escritos na fala da Nami a que a pessoa está
+  respondendo (mensagem citada / mensagem individual), quando ela ACEITA o que essa fala ofereceu
+  (aceite de uma oferta de cadastro → o nome do remédio oferecido). Como escritos, SEM dosagem.
+  Nunca repita aqui o nome do medicamento do fluxo em andamento se a pessoa não o escreveu
+  ("10" na coleta de estoque → vazio).
 - horarios: expressões de horário como escritas ("8h", "19:30").
 - medicamento: para relatórios/configuração, o medicamento alvo como escrito.
 - expressaoData: a expressão de tempo usada ("ontem", "domingo", "19/07"), sem converter.
