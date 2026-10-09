@@ -3852,5 +3852,86 @@ export const CASOS = [
             });
             return checks;
         }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A72',
+        marco: 'M4',
+        titulo: 'v47 ajuste-referente, correções da validação 08/10 — C-a: janela proativa mantém os MAIS RECENTES e gatilho da fala exige direcionada por último; C-b: aceite preserva a mensagem da pessoa',
+        async executar({ ctx, seeds }) {
+            const checks = [];
+            const fs = await import('node:fs');
+            const path = await import('node:path');
+            const url = await import('node:url');
+            const raizSrc = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../src');
+            const { getContextoProativoRecente, getFalaDirecionadaRecente } = await import('../src/database.js');
+
+            const agora = Date.now();
+            const minAtras = (m) => new Date(agora - m * 60_000).toISOString();
+            const semearEvento = async (userId, tipo, minutosAtras) => {
+                const { error } = await ctx.db.from('eventos_proativos')
+                    .insert({ user_id: userId, tipo, enviado_at: minAtras(minutosAtras) });
+                if (error) throw new Error(`Seed de evento proativo falhou: ${error.message}`);
+            };
+
+            // ---- C-a cenário 1 (o caso Quero de 08/10): 7 lembretes antigos +
+            // direcionada como evento MAIS RECENTE. A janela de 6 mantém os mais
+            // novos, em ordem cronológica, com a direcionada POR ÚLTIMO.
+            const u1 = await seeds.criarUsuario({ nome: 'Guilherme', onboarded: true, estado: 'idle' });
+            for (let i = 0; i < 7; i++) await semearEvento(u1.id, 'lembrete', 55 - i * 5); // -55…-25 min
+            await semearEvento(u1.id, 'mensagem_direcionada', 5);
+            const janela1 = await getContextoProativoRecente(u1.id, minAtras(60));
+            const cronologica = janela1.every((e, i) => i === 0 || new Date(e.enviadoAt) >= new Date(janela1[i - 1].enviadoAt));
+            checks.push({
+                nome: 'C-a: janela transbordada (8 eventos) devolve os 6 MAIS RECENTES, em ordem cronológica',
+                ok: janela1.length === 6 && cronologica
+                    && new Date(janela1[0].enviadoAt) > new Date(minAtras(55)),
+                detalhe: janela1.map(e => e.tipo).join(',')
+            });
+            checks.push({
+                nome: 'C-a: a direcionada (evento mais novo) está na janela e é o ÚLTIMO item (gatilho do §1 dispara)',
+                ok: janela1.at(-1)?.tipo === 'mensagem_direcionada',
+                detalhe: `último: ${janela1.at(-1)?.tipo}`
+            });
+
+            // ---- C-a cenário 2 (resposta tardia): direcionada antiga + 7
+            // lembretes mais novos. Ela sai da janela (gatilho NÃO dispara — a
+            // última coisa dita foi um lembrete); a citação continua cobrindo o
+            // caso, e getFalaDirecionadaRecente segue achando o texto integral.
+            const u2 = await seeds.criarUsuario({ nome: 'Fran', onboarded: true, estado: 'idle' });
+            const textoOferta = 'Oi, Fran! Quer que eu cadastre o Ômega 3 pra você? É só me responder que sim 🌿';
+            await seeds.criarEnvioFunil({ user: u2, minutosAtras: 50, origem: 'proativo:mensagem_direcionada', texto: textoOferta });
+            await semearEvento(u2.id, 'mensagem_direcionada', 50);
+            for (let i = 0; i < 7; i++) await semearEvento(u2.id, 'lembrete', 45 - i * 5); // -45…-15 min
+            const janela2 = await getContextoProativoRecente(u2.id, minAtras(60));
+            checks.push({
+                nome: 'C-a: direcionada seguida de 6+ lembretes fica FORA da janela e não é o último item',
+                ok: janela2.length === 6 && janela2.every(e => e.tipo === 'lembrete'),
+                detalhe: janela2.map(e => e.tipo).join(',')
+            });
+            const falaTardia = await getFalaDirecionadaRecente(u2.id, minAtras(60));
+            checks.push({
+                nome: 'C-a: o texto integral segue recuperável por getFalaDirecionadaRecente (a citação usa funil_envios)',
+                ok: falaTardia?.texto === textoOferta,
+                detalhe: JSON.stringify(falaTardia?.texto?.slice(0, 40) ?? null)
+            });
+
+            // ---- Guards de construção: o gatilho do router exige a direcionada
+            // por ÚLTIMO; o aceite de oferta CONCATENA a mensagem da pessoa.
+            const router = fs.readFileSync(path.join(raizSrc, 'router.js'), 'utf8');
+            checks.push({
+                nome: 'C-a (grep): gatilho da fala usa o ÚLTIMO evento da janela (.at(-1)), não .some()',
+                ok: /contextoProativo\.at\(-1\)\?\.tipo === 'mensagem_direcionada'/.test(router)
+                    && !/contextoProativo\.some\(e => e\.tipo === 'mensagem_direcionada'\)/.test(router),
+                detalhe: 'gatilho por ordem'
+            });
+            checks.push({
+                nome: 'C-b (grep): aceite de oferta preserva a mensagem da pessoa (nome na frente, mensagem junto)',
+                ok: router.includes('mensagem = `${nomesPorta.join(\' e \')}\\n${message}`'),
+                detalhe: 'concatenação presente'
+            });
+            return checks;
+        }
     }
 ];

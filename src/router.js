@@ -256,13 +256,13 @@ async function delegarCadastro({ user, message, image, state, historicoConversa,
 
         // v47 ajuste-referente §2 (aceite de OFERTA): os nomes propostos vieram
         // da fala referida — NENHUM está escrito na mensagem da pessoa. A
-        // mensagem entregue ao runner se reduz à linha dos nomes (o mesmo
-        // mecanismo da fila multi-med): a coleta abre já carregando o remédio
-        // que a própria Nami ofereceu, e segue pedindo o resto.
+        // mensagem entregue ao runner ganha a linha dos nomes NA FRENTE,
+        // preservando o que a pessoa escreveu (correção 08/10: "Sim, eu tomo
+        // 1 cp as 20h" perdia a posologia quando a mensagem era substituída).
         const nomesPorta = camposPorta?.medicamentos || [];
         if (nomesPorta.length && !nomesPorta.some(m => nomeEscritoNaMensagem(m, message))) {
             console.log(`💊 [CADASTRO] Aceite de oferta: coleta aberta com ${nomesPorta.join(' e ')} (nome vindo da fala referida) — ${user.phone}`);
-            mensagem = nomesPorta.join(' e ');
+            mensagem = `${nomesPorta.join(' e ')}\n${message}`;
         }
 
         // Pedido de cadastro SEM remédio nomeado ("Quero cadastrar mais um!"): o
@@ -649,9 +649,12 @@ async function processarTurno({ user, message, image, referenceMessageId }) {
     const historicoConversa = await getHistoricoRecente(user.id, 3);
     const ultimoTurnoAt = historicoConversa.at(-1)?.created_at ?? null;
     const contextoProativo = await getContextoProativoRecente(user.id, ultimoTurnoAt);
-    // v47 ajuste-referente §1: existindo direcionada DEPOIS do último turno, a
-    // fala chega ao principal com texto integral (só a mais recente).
-    const falaDirecionada = contextoProativo.some(e => e.tipo === 'mensagem_direcionada')
+    // v47 ajuste-referente §1 (gatilho refinado na validação de 08/10): a fala
+    // integral entra SÓ quando a direcionada é o evento proativo MAIS RECENTE
+    // desde o último turno — a linha injetada afirma "foi a última coisa dita",
+    // e o código só a afirma quando ela é verdadeira. Direcionada seguida de
+    // lembretes = resposta tardia: o caminho é a citação (§3), não esta fala.
+    const falaDirecionada = contextoProativo.at(-1)?.tipo === 'mensagem_direcionada'
         ? await getFalaDirecionadaRecente(user.id, ultimoTurnoAt)
         : null;
 

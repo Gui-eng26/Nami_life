@@ -2488,10 +2488,16 @@ export async function getContextoProativoRecente(userId, ultimoTurnoAt) {
             .from('eventos_proativos')
             // v47 ajuste-referente §6: o id entra para a observabilidade do
             // contexto (contexto_conversa registra quais eventos foram ao prompt).
+            //
+            // Correção 08/10 (validação do caso Quero): quando a janela
+            // transborda, sobrevivem os MAIS RECENTES — descending + limit, e o
+            // reverse abaixo devolve em ordem cronológica para a renderização.
+            // O ascending+limit original (MH-71) cortava os mais novos: 3 dias
+            // de silêncio = 47 eventos, e a direcionada (a 47ª) ficava fora.
             .select('id, tipo, tentativa, horario_agendado, enviado_at, resumo, medications(nome)')
             .eq('user_id', userId)
             .gt('enviado_at', corteMinimo)
-            .order('enviado_at', { ascending: true })
+            .order('enviado_at', { ascending: false })
             .limit(MAX_EVENTOS_PROATIVOS);
 
         if (error) {
@@ -2505,7 +2511,7 @@ export async function getContextoProativoRecente(userId, ultimoTurnoAt) {
             });
         }
 
-        return (data || []).map(e => ({
+        return (data || []).reverse().map(e => ({
             id: e.id,
             tipo: e.tipo,
             medicamento: e.medications?.nome || null,
