@@ -2415,6 +2415,12 @@ export const CASOS = [
     // --------------------------------------------------------
     {
         id: 'A40',
+        // v47 promoção §0 — APOSENTADO (MH-106): caso LLM escrito para o
+        // mundo pré-compositor ('Yes' citando o lembrete — turno de dose agora sai pelo compositor).
+        // A cobertura de qualidade da composição migra para o corpus mínimo
+        // de casos-ouro da Etapa 2 (MH-106); a mecânica de banco segue coberta
+        // pelos casos sem LLM (A61–A73).
+        aposentado: 'MH-106',
         marco: 'M4',
         titulo: 'Guilherme 26/09 13:25 — "Yes" CITANDO o lembrete: confirma o grupo citado',
         async executar({ ctx, seeds }) {
@@ -2470,6 +2476,12 @@ export const CASOS = [
     // --------------------------------------------------------
     {
         id: 'A42',
+        // v47 promoção §0 — APOSENTADO (MH-106): caso LLM escrito para o
+        // mundo pré-compositor (compra + sim citando alerta — texto do turno com fatos agora é composto).
+        // A cobertura de qualidade da composição migra para o corpus mínimo
+        // de casos-ouro da Etapa 2 (MH-106); a mecânica de banco segue coberta
+        // pelos casos sem LLM (A61–A73).
+        aposentado: 'MH-106',
         marco: 'M4',
         titulo: 'Flávia 24/09 — "Comprei 60 comprimidos / Sim": dose confirmada E estoque atualizado',
         async executar({ ctx, seeds }) {
@@ -2498,6 +2510,12 @@ export const CASOS = [
     // --------------------------------------------------------
     {
         id: 'A43',
+        // v47 promoção §0 — APOSENTADO (MH-106): caso LLM escrito para o
+        // mundo pré-compositor ('não'/'pulei' — a linha fixa do nao_tomou agora entra na composição).
+        // A cobertura de qualidade da composição migra para o corpus mínimo
+        // de casos-ouro da Etapa 2 (MH-106); a mecânica de banco segue coberta
+        // pelos casos sem LLM (A61–A73).
+        aposentado: 'MH-106',
         marco: 'M4',
         titulo: 'Fran 25–26/09 — "Não"/"não tomei" com a dose aberta = ainda não; "pulei" fecha (P1-copy §3)',
         async executar({ ctx, seeds }) {
@@ -2712,6 +2730,12 @@ export const CASOS = [
     // --------------------------------------------------------
     {
         id: 'A50',
+        // v47 promoção §0 — APOSENTADO (MH-106): caso LLM escrito para o
+        // mundo pré-compositor ('120' fora de coleta — turno de estoque pode compor com intenção).
+        // A cobertura de qualidade da composição migra para o corpus mínimo
+        // de casos-ouro da Etapa 2 (MH-106); a mecânica de banco segue coberta
+        // pelos casos sem LLM (A61–A73).
+        aposentado: 'MH-106',
         marco: 'M4',
         titulo: 'P1-ajustes §1 (Fran 26/09 22:27, Evandro 26/09 18:14) — "120" fora de coleta: principal com UPDATE_STOCK, número uma vez',
         async executar({ ctx, seeds }) {
@@ -2901,6 +2925,12 @@ export const CASOS = [
     // --------------------------------------------------------
     {
         id: 'A57',
+        // v47 promoção §0 — APOSENTADO (MH-106): caso LLM escrito para o
+        // mundo pré-compositor (compra fora de coleta — asserção byte a byte do canônico de estoque).
+        // A cobertura de qualidade da composição migra para o corpus mínimo
+        // de casos-ouro da Etapa 2 (MH-106); a mecânica de banco segue coberta
+        // pelos casos sem LLM (A61–A73).
+        aposentado: 'MH-106',
         marco: 'M4',
         titulo: 'P1-ajustes 2 §2 — "Comprei 20 comprimidos do Atenolol" fora de coleta: abertura + linha 📦 do código, número uma vez',
         async executar({ ctx, seeds }) {
@@ -2922,6 +2952,12 @@ export const CASOS = [
     // --------------------------------------------------------
     {
         id: 'A58',
+        // v47 promoção §0 — APOSENTADO (MH-106): caso LLM escrito para o
+        // mundo pré-compositor (compra + sim com dose aberta — abertura/ordem canônicas agora compostas).
+        // A cobertura de qualidade da composição migra para o corpus mínimo
+        // de casos-ouro da Etapa 2 (MH-106); a mecânica de banco segue coberta
+        // pelos casos sem LLM (A61–A73).
+        aposentado: 'MH-106',
         marco: 'M4',
         titulo: 'P1-ajustes 2 §2 — "Comprei 60 comprimidos / Sim" com a dose aberta: uma abertura, a linha da dose, a linha do estoque',
         async executar({ ctx, seeds }) {

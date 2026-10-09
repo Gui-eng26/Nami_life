@@ -54,6 +54,15 @@ let verdes = 0;
 const resumo = [];
 
 for (const caso of casosParaRodar) {
+    // v47 promoção §0 (MH-106): casos LLM do mundo pré-compositor ficam
+    // APOSENTADOS — listados, nunca executados; a cobertura vai ao corpus
+    // mínimo de casos-ouro da Etapa 2.
+    if (caso.aposentado) {
+        console.log(`\n━━ ${caso.id} [${caso.marco}] ${caso.titulo}`);
+        console.log(`   💤 APOSENTADO (${caso.aposentado}) — não executa`);
+        resumo.push({ id: caso.id, marco: caso.marco, status: 'APOSENTADO', duracao: '0.0' });
+        continue;
+    }
     console.log(`\n━━ ${caso.id} [${caso.marco}] ${caso.titulo}`);
     let checks;
     const inicio = Date.now();
@@ -91,7 +100,7 @@ for (const caso of casosParaRodar) {
 
 console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 for (const r of resumo) {
-    const icone = r.status === 'FALHOU' ? '❌' : r.status.startsWith('VERDE (') ? '🟡' : '✅';
+    const icone = r.status === 'FALHOU' ? '❌' : r.status === 'APOSENTADO' ? '💤' : r.status.startsWith('VERDE (') ? '🟡' : '✅';
     console.log(`${icone} ${r.id} [${r.marco}] — ${r.status} (${r.duracao}s)`);
 }
 console.log(`\nAsserções: ${verdes} verdes · ${falhasDoAlvo} falhas no alvo ${args.alvo} · ${conhecidos} conhecidas (marco futuro)`);
