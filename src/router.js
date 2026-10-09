@@ -479,12 +479,17 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
     // sai como UMA mensagem composta dos fatos tipados, sob âncora, com
     // fallback no canônico (a montagem determinística abaixo). A `message` do
     // principal deixa de ir ao usuário como está: vira intenção conversacional.
-    if (resultadoDoses) {
-        const canonico = juntar(resultadoDoses.texto, resultadoDoses.textoDepois, resultadoAcoes.texto);
+    // Correção 09/10 (estoque + pergunta): turno de AÇÃO com intenção compõe
+    // pela MESMA porta — o fato 📦 é do código (canônico), a resposta à
+    // pergunta vem na message (contrato do tipo "acao") e o compositor
+    // entrelaça; sem intenção, o turno só de estoque segue no canônico direto.
+    const intencaoDoTurno = (decisao.tipo !== 'delegar' && !aindaNaoDoTurno) ? decisao.message : '';
+    if (resultadoDoses || (resultadoAcoes.fatos.length && intencaoDoTurno)) {
+        const canonico = juntar(resultadoDoses?.texto, resultadoDoses?.textoDepois, resultadoAcoes.texto);
         const composicao = await comporComAncora({
             user,
-            fatos: [...resultadoDoses.fatosDoTurno, ...resultadoAcoes.fatos],
-            intencao: (decisao.tipo !== 'delegar' && !aindaNaoDoTurno) ? decisao.message : '',
+            fatos: [...(resultadoDoses?.fatosDoTurno ?? []), ...resultadoAcoes.fatos],
+            intencao: intencaoDoTurno,
             assuntoCitacao: envioCitado ? { origem: envioCitado.origem } : null,
             historicoCurto: historicoConversa.slice(-2).map(h => h?.agent_response).filter(Boolean),
             medicamentosDoUsuario: medicamentos.map(m => m.nome).filter(Boolean),
@@ -493,10 +498,12 @@ async function turnoDoPrincipal({ user, message, image, state, historicoConversa
         partes.push(composicao.texto);
         composicaoDoTurno = composicao.caminho;
     } else {
-        // SEM fato de dose executado: fluxo de hoje, intocado — este é o ÚNICO
-        // ponto que concatena a `message` do principal (grep-guard A66).
-        // P1-ajustes 2 §1/§2: no turno que grava estoque ou que é "ainda não",
-        // o fato é do código — e o texto também; a `message` não entra.
+        // SEM fato de dose executado (nem ação com intenção): fluxo de hoje,
+        // intocado — este é o ÚNICO ponto que concatena a `message` do
+        // principal (grep-guard A66).
+        // P1-ajustes 2 §1/§2: no turno que grava estoque SEM nada além, ou que
+        // é "ainda não", o fato é do código — e o texto também; a `message`
+        // não entra.
         if (decisao.message && decisao.tipo !== 'delegar') {
             if (executaEstoque || aindaNaoDoTurno) {
                 console.log(`🧾 [PRINCIPAL] message do principal descartada: o texto do ${executaEstoque ? 'estoque' : '"ainda não"'} é do código — ${user.phone}`);

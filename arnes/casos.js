@@ -566,7 +566,10 @@ export const CASOS = [
             const principalSrc = conteudo.get(path.join('agentes', 'principal.js')) || '';
             const corpoValida = principalSrc.match(/function decisaoValida\([\s\S]*?\n\}/)?.[0] || '';
             checks.push({ marco: 'M4', nome: 'grep (P1-ajustes 3 §1.2): nenhuma regra de tipo escrita à mão no validador', ok: !!corpoValida && !/input\.tipo\s*===|\.message\.trim|doses\.length/.test(corpoValida) && /violacaoDoContrato/.test(corpoValida), detalhe: corpoValida ? 'só o contrato' : 'decisaoValida não encontrada' });
-            checks.push({ marco: 'M4', nome: 'P1-ajustes 3 §1.3: estoque manda usar o tipo "acao" com message vazia', ok: /use o tipo "acao"[\s\S]{0,80}deixe "message" vazia/.test(promptP), detalhe: 'regra UM FATO, UM AUTOR' });
+            // v47 09/10 (pacote turno misto): a regra foi AMPLIADA por decisão —
+            // a message do estoque carrega SÓ o que há além do fato (a resposta
+            // a uma pergunta do mesmo turno); o número continua sendo do código.
+            checks.push({ marco: 'M4', nome: 'v47 09/10 (ex-P1-ajustes 3 §1.3): no estoque, a message carrega SÓ o que há além do fato — nunca a gravação/número', ok: /você NUNCA os escreve/.test(promptP) && /"message" carrega SÓ essa parte/.test(promptP) && /Sem nada além, deixe "message"[\s\S]{0,3}vazia/.test(promptP), detalhe: 'regra UM FATO, UM AUTOR (ampliada para o turno misto)' });
             return checks;
         }
     },
@@ -3301,9 +3304,13 @@ export const CASOS = [
             // §6.3 — uma única chamada ao compositor, dentro do guard de fatos.
             const chamadas = linhasRouter.map((l, i) => ({ l, i })).filter(({ l }) => /comporComAncora\(/.test(l) && !/import/.test(l));
             checks.push({ nome: 'compositor chamado UMA vez no router', ok: chamadas.length === 1, detalhe: `${chamadas.length} chamada(s)` });
+            // Correção 09/10: o guard foi AMPLIADO de propósito — compõe com
+            // fatos de dose OU com fatos de ação acompanhados de intenção
+            // (estoque + pergunta). Turno sem fato nenhum continua não compondo.
             const guardOk = chamadas.length === 1
-                && linhasRouter.slice(Math.max(0, chamadas[0].i - 12), chamadas[0].i).join('\n').includes('if (resultadoDoses)');
-            checks.push({ nome: 'chamada guardada por "if (resultadoDoses)" — turno sem fatos não compõe', ok: guardOk, detalhe: guardOk ? 'guard presente' : 'guard ausente na vizinhança' });
+                && linhasRouter.slice(Math.max(0, chamadas[0].i - 14), chamadas[0].i).join('\n')
+                    .includes('if (resultadoDoses || (resultadoAcoes.fatos.length && intencaoDoTurno))');
+            checks.push({ nome: 'chamada guardada por "fatos de dose OU ação com intenção" — turno sem fatos não compõe', ok: guardOk, detalhe: guardOk ? 'guard presente' : 'guard ausente na vizinhança' });
 
             // §6.4 — isenções por construção: atalho, proativas e o próprio dono
             // do canônico não conhecem o compositor.
@@ -3930,6 +3937,111 @@ export const CASOS = [
                 nome: 'C-b (grep): aceite de oferta preserva a mensagem da pessoa (nome na frente, mensagem junto)',
                 ok: router.includes('mensagem = `${nomesPorta.join(\' e \')}\\n${message}`'),
                 detalhe: 'concatenação presente'
+            });
+            return checks;
+        }
+    },
+
+    // --------------------------------------------------------
+    {
+        id: 'A73',
+        marco: 'M4',
+        titulo: 'v47 pacote turno misto (validação 09/10) — próxima dose respeita recorrência; âncora aceita a intenção como entrada; fallback preserva a intenção; contrato do tipo acao',
+        async executar() {
+            const checks = [];
+            const fs = await import('node:fs');
+            const path = await import('node:path');
+            const url = await import('node:url');
+            const raizSrc = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../src');
+            const { calcularProximaDose } = await import('../src/database.js');
+            const { verificarComposicao } = await import('../src/compositor.js');
+
+            // ---- 1. calcularProximaDose com recorrência (caso Farmix, puro).
+            // Sexta 09/10/2026, 15:47 BRT = 18:47Z. Farmix: toda terça, 16:00.
+            const sexta1547 = new Date('2026-10-09T18:47:00Z');
+            const farmix = { horario: '16:00:00', dias_semana: ['ter'], intervalo_dias: null };
+            const diario = { horario: '21:00:00', dias_semana: null, intervalo_dias: null };
+            const cenarios = [
+                ['semanal (ter) numa sexta 15:47 → terça-feira (13/10), NUNCA hoje',
+                    [farmix], sexta1547, { horario: '16:00', quando: 'terça-feira (13/10)' }],
+                ['semanal (ter) na própria terça 15:00 → hoje',
+                    [farmix], new Date('2026-10-13T18:00:00Z'), { horario: '16:00', quando: 'hoje' }],
+                ['semanal (ter) na terça 17:00 (já passou) → terça-feira (20/10)',
+                    [farmix], new Date('2026-10-13T20:00:00Z'), { horario: '16:00', quando: 'terça-feira (20/10)' }],
+                ['diário às 21:00, sexta 15:47 → hoje (comportamento legado intacto)',
+                    [diario], sexta1547, { horario: '21:00', quando: 'hoje' }],
+                ['diário às 21:00, sexta 22:00 → amanhã (legado intacto)',
+                    [diario], new Date('2026-10-10T01:00:00Z'), { horario: '21:00', quando: 'amanhã' }],
+                ['diário + semanal juntos, sexta 15:47 → o diário de hoje vence (21:00 hoje)',
+                    [farmix, diario], sexta1547, { horario: '21:00', quando: 'hoje' }],
+                ['intervalo de 2 dias com início ontem, hoje não cobre → amanhã',
+                    [{ horario: '08:00:00', dias_semana: null, intervalo_dias: 2, data_inicio: '2026-10-08' }],
+                    sexta1547, { horario: '08:00', quando: 'amanhã' }]
+            ];
+            const errados = cenarios.filter(([, scheds, agora, esperado]) => {
+                const r = calcularProximaDose(scheds, agora);
+                return !r || r.horario !== esperado.horario || r.quando !== esperado.quando;
+            }).map(([rotulo, scheds, agora]) => `${rotulo} → ${JSON.stringify(calcularProximaDose(scheds, agora))}`);
+            checks.push({
+                nome: `calcularProximaDose respeita recorrência: ${cenarios.length} cenários (semanal, legado diário, misto, intervalo)`,
+                ok: errados.length === 0,
+                detalhe: errados.join(' | ') || 'todos conforme'
+            });
+
+            // ---- 2. Âncora: a intenção é entrada permitida (medicamento e
+            // horário citados NELA não reprovam; fora dela e dos fatos, reprova).
+            const fatos = [{
+                tipo: 'dose_confirmada', sujeito: 'usuario', medicamento: 'Dorflex',
+                medicationId: 'm1', retroativa: true,
+                quando: { rotulo: 'ontem', entreParenteses: '(ontem, 08/10, 18:22)' },
+                canonico: '*Dorflex* de ontem (08/10, 18:22) confirmada 💊'
+            }];
+            const meds = ['Dorflex', 'Farmix', 'Rivotril'];
+            const intencao = 'Seu próximo remédio hoje é o Farmix às 16:00.';
+            const textoMisto = 'Que bom, Guilherme! ✅ *Dorflex* de ontem (08/10, 18:22) confirmada 💊\n\nE o seu próximo remédio hoje é o *Farmix*, às 16:00. 🌿';
+            checks.push({
+                nome: 'âncora APROVA composição que cita medicamento e horário vindos da intenção',
+                ok: verificarComposicao(fatos, textoMisto, { medicamentosDoUsuario: meds, intencao }).ok === true,
+                detalhe: JSON.stringify(verificarComposicao(fatos, textoMisto, { medicamentosDoUsuario: meds, intencao }))
+            });
+            checks.push({
+                nome: 'sem a intenção, o MESMO texto reprova (medicamento_fora_dos_fatos — anti-invenção intacto)',
+                ok: /^medicamento_fora_dos_fatos/.test(verificarComposicao(fatos, textoMisto, { medicamentosDoUsuario: meds }).motivo || ''),
+                detalhe: verificarComposicao(fatos, textoMisto, { medicamentosDoUsuario: meds }).motivo
+            });
+            const textoInventado = `${textoMisto} O Rivotril fica para as 19:30.`;
+            checks.push({
+                nome: 'com intenção, remédio/horário fora de fatos+intenção CONTINUA reprovando',
+                ok: verificarComposicao(fatos, textoInventado, { medicamentosDoUsuario: meds, intencao }).ok === false,
+                detalhe: verificarComposicao(fatos, textoInventado, { medicamentosDoUsuario: meds, intencao }).motivo
+            });
+
+            // ---- 3. Greps de construção: fallback preserva a intenção; o guard
+            // do router compõe ação+intenção; o contrato do tipo acao mudou.
+            const compositor = fs.readFileSync(path.join(raizSrc, 'compositor.js'), 'utf8');
+            checks.push({
+                nome: 'grep: fallback do compositor concatena a intenção ao canônico (pergunta nunca é engolida)',
+                ok: compositor.includes('? `${canonico}\\n\\n${String(intencao).trim()}`'),
+                detalhe: 'fallback com intenção'
+            });
+            const router = fs.readFileSync(path.join(raizSrc, 'router.js'), 'utf8');
+            checks.push({
+                nome: 'grep: guard do compositor cobre ação com intenção (estoque + pergunta compõe)',
+                ok: router.includes('if (resultadoDoses || (resultadoAcoes.fatos.length && intencaoDoTurno))'),
+                detalhe: 'guard ampliado'
+            });
+            const { TIPOS_DECISAO } = await import('../src/contratoPrincipal.js');
+            const regraAcao = TIPOS_DECISAO.find(t => t.tipo === 'acao').regras.map(r => r.texto).join(' ');
+            checks.push({
+                nome: 'contrato do tipo acao: message carrega SÓ o que há além do fato (nunca o número)',
+                ok: /ALÉM do fato de estoque/.test(regraAcao) && /nunca a gravação nem o número/.test(regraAcao),
+                detalhe: 'regra atualizada (prompt e validador leem a mesma definição)'
+            });
+            const prompts = fs.readFileSync(path.join(raizSrc, 'prompts.js'), 'utf8');
+            checks.push({
+                nome: 'prompt: campo "próxima dose" documenta as três formas (hoje | amanhã | dia da semana)',
+                ok: /dia da\s+semana \(dd\/mm\)/.test(prompts),
+                detalhe: 'formato documentado'
             });
             return checks;
         }

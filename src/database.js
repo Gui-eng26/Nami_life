@@ -2318,6 +2318,11 @@ export function calcularAlertaEstoque({ diasRestantes, tipo_tratamento, tratamen
 
 // Retorna o próximo horário de dose a partir de agora (timezone São Paulo).
 // Se todos os horários já passaram hoje, retorna o primeiro de amanhã.
+// v47 correção 09/10 (caso Farmix): a próxima dose respeita a RECORRÊNCIA.
+// A versão anterior só olhava a hora do dia — assumia dose diária — e, numa
+// sexta, afirmava que o remédio "toda terça, 16:00" era a próxima dose de
+// HOJE; o principal (obrigado a usar o campo sem deduzir) ecoou o erro. O dia
+// vem de scheduleCobreDia (MH-77, ponto único) — nenhum segundo critério.
 export function calcularProximaDose(schedulesAtivos, agora = new Date()) {
     if (!schedulesAtivos || schedulesAtivos.length === 0) return null;
 
@@ -2326,18 +2331,26 @@ export function calcularProximaDose(schedulesAtivos, agora = new Date()) {
     });
     const [hAtual, mAtual] = horaAtualStr.split(':').map(Number);
     const minutosAgora = hAtual * 60 + mAtual;
+    const emMinutos = (s) => {
+        const [h, m] = s.horario.substring(0, 5).split(':').map(Number);
+        return h * 60 + m;
+    };
 
-    const horariosMinutos = schedulesAtivos
-        .map(s => {
-            const [h, m] = s.horario.substring(0, 5).split(':').map(Number);
-            return { horario: s.horario.substring(0, 5), minutos: h * 60 + m };
-        })
-        .sort((a, b) => a.minutos - b.minutos);
-
-    const proximoHoje = horariosMinutos.find(h => h.minutos > minutosAgora);
-    if (proximoHoje) return { horario: proximoHoje.horario, quando: 'hoje' };
-
-    return { horario: horariosMinutos[0].horario, quando: 'amanhã' };
+    // Varre até 31 dias à frente (cobre semanal e intervalo_dias de até um mês).
+    for (let diasAFrente = 0; diasAFrente <= 31; diasAFrente++) {
+        const dia = new Date(agora.getTime() + diasAFrente * 86400000);
+        const candidatos = schedulesAtivos
+            .filter(s => scheduleCobreDia(s, dia))
+            .map(s => ({ horario: s.horario.substring(0, 5), minutos: emMinutos(s) }))
+            .filter(s => diasAFrente > 0 || s.minutos > minutosAgora)
+            .sort((a, b) => a.minutos - b.minutos);
+        if (!candidatos.length) continue;
+        const quando = diasAFrente === 0 ? 'hoje'
+            : diasAFrente === 1 ? 'amanhã'
+            : `${dia.toLocaleDateString('pt-BR', { weekday: 'long', timeZone: 'America/Sao_Paulo' })} (${dia.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo' })})`;
+        return { horario: candidatos[0].horario, quando };
+    }
+    return null;
 }
 
 // ============================================================

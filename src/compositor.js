@@ -151,7 +151,7 @@ const RE_HORA = /\d{1,2}:\d{2}/g;
 const RE_DATA = /\d{2}\/\d{2}/g;
 const RE_NUMERO = /\d+(?:[.,]\d+)?/g;
 
-function colherPermitidos(fatos) {
+function colherPermitidos(fatos, intencao = '') {
     const horas = new Set();
     const datas = new Set();
     const numeros = new Set();
@@ -169,10 +169,14 @@ function colherPermitidos(fatos) {
         if (f.estoqueNovo !== null && f.estoqueNovo !== undefined) numeros.add(String(f.estoqueNovo).replace(',', '.'));
         if (f.quantidade !== null && f.quantidade !== undefined) numeros.add(String(f.quantidade).replace(',', '.'));
     }
+    // v47 correção 09/10 (turno misto): a INTENÇÃO é entrada da composição —
+    // números/horas/datas escritos nela (ex.: a próxima dose, calculada por
+    // código no contexto do principal) são permitidos, não invenção.
+    colher(intencao);
     return { horas, datas, numeros };
 }
 
-export function verificarComposicao(fatos, texto, { medicamentosDoUsuario = [] } = {}) {
+export function verificarComposicao(fatos, texto, { medicamentosDoUsuario = [], intencao = '' } = {}) {
     const t = String(texto || '');
     if (!t.trim()) return { ok: false, motivo: 'texto_vazio' };
     const tNorm = normalizar(t);
@@ -205,23 +209,28 @@ export function verificarComposicao(fatos, texto, { medicamentosDoUsuario = [] }
         }
     }
 
-    // 2. NÃO-INVENÇÃO — medicamentos: nenhum remédio do usuário fora dos fatos.
+    // 2. NÃO-INVENÇÃO — medicamentos: nenhum remédio do usuário fora dos fatos
+    // NEM da intenção (v47 correção 09/10, caso "qual meu próximo remédio?": a
+    // resposta cita legitimamente OUTRO remédio — escrito na intenção, que é
+    // entrada da composição; fora das duas fontes continua reprovando).
     // Limite documentado (teste A65): a checagem é por substring do nome
     // normalizado — nomes muito curtos podem colidir com palavras comuns; o
     // lado escolhido é reprovar (fallback), nunca deixar passar.
     const medsDosFatos = new Set((fatos || []).map(f => normalizar(f.medicamento)).filter(Boolean));
+    const intencaoNorm = normalizar(intencao);
     for (const nome of medicamentosDoUsuario || []) {
         const n = normalizar(nome);
-        if (n && !medsDosFatos.has(n) && tNorm.includes(n)) {
+        if (n && !medsDosFatos.has(n) && !(intencaoNorm && intencaoNorm.includes(n)) && tNorm.includes(n)) {
             return { ok: false, motivo: `medicamento_fora_dos_fatos:${nome}` };
         }
     }
 
     // 3. NÃO-INVENÇÃO — números, horários e datas do texto pertencem ao
     // conjunto dos fatos (incluindo os fragmentos canônicos, que são a verdade
-    // escrita por código). Só dígitos contam — palavras numéricas ("duas")
-    // ficam fora da heurística de propósito (limite documentado no A65).
-    const permitidos = colherPermitidos(fatos);
+    // escrita por código) ou da intenção. Só dígitos contam — palavras
+    // numéricas ("duas") ficam fora da heurística de propósito (limite
+    // documentado no A65).
+    const permitidos = colherPermitidos(fatos, intencao);
     for (const h of t.match(RE_HORA) || []) {
         if (!permitidos.horas.has(h)) return { ok: false, motivo: `horario_inventado:${h}` };
     }
@@ -257,12 +266,15 @@ export async function comporComAncora({ user, fatos, intencao = '', assuntoCitac
     }
 
     if (composto) {
-        const veredito = verificarComposicao(fatos, composto, { medicamentosDoUsuario });
+        const veredito = verificarComposicao(fatos, composto, { medicamentosDoUsuario, intencao });
         if (veredito.ok) return { texto: composto, caminho: 'composto', natureza };
         motivo = `ancora:${veredito.motivo}`;
     }
 
     // compositor_fallback (§2.4): o sinal de qualidade da composição em produção.
+    // v47 correção 09/10 (turno misto): o fallback PRESERVA a intenção — o
+    // canônico dos fatos seguido da message do principal, em partes (o formato
+    // pré-Onda 1). Pior que dois blocos é engolir a pergunta da pessoa.
     const texto = await degradar({
         origem: 'compositor',
         motivo: motivo?.startsWith('ancora:') ? 'ancora_reprovou' : 'chamada_falhou',
@@ -274,7 +286,9 @@ export async function comporComAncora({ user, fatos, intencao = '', assuntoCitac
             duracao_ms: Date.now() - inicio,
             fatos: (fatos || []).map(f => ({ tipo: f.tipo, medication_id: f.medicationId ?? null }))
         },
-        fallback: canonico
+        fallback: intencao && String(intencao).trim()
+            ? `${canonico}\n\n${String(intencao).trim()}`
+            : canonico
     });
     return { texto, caminho: motivo?.startsWith('ancora:') ? 'fallback_ancora' : 'fallback_chamada', natureza };
 }

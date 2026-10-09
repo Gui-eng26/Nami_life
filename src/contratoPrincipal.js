@@ -44,7 +44,9 @@ export const TIPOS_DECISAO = [
         descricao: 'a pessoa pediu algo do SEU DOMÍNIO que o código executa e escreve (UPDATE_STOCK, SET_USER_NAME) — ex.: "Comprei mais 20 do Decadron", "tenho 20 em estoque".',
         regras: [
             { texto: '"actions" com pelo menos uma ação', ok: d => d.actions.length > 0 },
-            { texto: 'com UPDATE_STOCK, "message" vazia (o texto é do sistema; se vier, é ignorado); com SET_USER_NAME sozinho, "message" obrigatória', ok: d => temTextoDoCodigo(d) || temMessage(d) }
+            // v47 correção 09/10 (estoque + pergunta): a message deixa de ser
+            // obrigatoriamente vazia — ela carrega SÓ o que há além do fato.
+            { texto: 'com UPDATE_STOCK, "message" traz SÓ o que houver ALÉM do fato de estoque (ex.: a resposta a uma pergunta feita na mesma mensagem) — nunca a gravação nem o número, que são do sistema; vazia quando não há nada além; com SET_USER_NAME sozinho, "message" obrigatória', ok: d => temTextoDoCodigo(d) || temMessage(d) }
         ]
     },
     {
