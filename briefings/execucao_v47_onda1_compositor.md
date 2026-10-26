@@ -77,4 +77,4 @@ Claude Code redige a primeira versão (guia + regras de turno + fatos serializad
 
 ## §8 — Relatório final
 
-(1) Resultado do portão, check a check; (2) arquivos tocados e migrações (se houver); (3) o prompt do compositor na íntegra, para revisão do Guilherme; (4) lista explícita da validação manual dele no staging — no mínimo: confirmação simples, o cenário 17:24 reproduzido (correção com desfazer), retroativa com convite de estoque, e um turno misto (confirmação + pergunta na mesma mensagem) para ver a intenção conversacional entrelaçada.
+(1) Resultado do portão, check a check; (2) arquivos tocados e migrações (se houver); (3) o prompt do compositor na íntegra, para revisão do Guilherme; (4) lista explícita da validação manual dele no staging — no mínimo: confirmação simples, o cenário 17:24 reproduzido (correção com desfazer), retroativa com convite de estoque, e um turno misto (confirmação + pergunta na mesma mensagem) para ver a intenção conversacional entrelaçada.   
